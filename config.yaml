@@ -34,6 +34,6 @@ detector_min_area: 500
 lost_target_hover_seconds: 3
 lost_target_land_seconds: 8
 llm_enabled: true
-llm_base_url: "https://api.openai.com/v1/chat/completions"
-llm_model: "gpt-4o-mini"
+llm_base_url: "https://api.deepseek.com/chat/completions"
+llm_model: "deepseek-chat"
 llm_timeout_seconds: 8
