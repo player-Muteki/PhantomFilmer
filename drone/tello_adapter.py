@@ -6,8 +6,6 @@ project should use DroneAdapter so hardware details stay isolated here.
 
 from typing import Any, Optional
 
-import cv2
-
 from .drone_adapter import DroneAdapter
 
 
@@ -123,6 +121,10 @@ class TelloDroneAdapter(DroneAdapter):
         self._require_connection()
         if not self.streaming:
             raise RuntimeError("读取画面失败：请先调用 stream_on() 开启视频流。")
+        try:
+            import cv2
+        except ModuleNotFoundError as exc:
+            raise RuntimeError("缺少 opencv-python 依赖：请先安装 requirements.txt。") from exc
         try:
             frame_reader = self._tello.get_frame_read()
             frame = frame_reader.frame

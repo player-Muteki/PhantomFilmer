@@ -4,7 +4,6 @@ from math import sin
 from time import monotonic
 from typing import Any
 
-import cv2
 import numpy as np
 
 from .drone_adapter import DroneAdapter
@@ -95,6 +94,11 @@ class FakeDroneAdapter(DroneAdapter):
 
     def get_frame(self) -> Any:
         """Return a dynamic BGR test image with a moving red target."""
+        try:
+            import cv2
+        except ModuleNotFoundError as exc:
+            raise RuntimeError("缺少 opencv-python 依赖：请先安装 requirements.txt。") from exc
+
         self.frame_index += 1
         frame = np.zeros((self.camera_height, self.camera_width, 3), dtype=np.uint8)
         cv2.putText(

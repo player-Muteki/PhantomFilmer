@@ -33,3 +33,7 @@ detector_min_area_ratio: 0.002
 detector_min_area: 500
 lost_target_hover_seconds: 3
 lost_target_land_seconds: 8
+llm_enabled: false
+llm_base_url: "https://api.openai.com/v1/chat/completions"
+llm_model: "gpt-4o-mini"
+llm_timeout_seconds: 8

@@ -2,7 +2,6 @@
 
 from typing import Any, Dict, Optional
 
-import cv2
 import numpy as np
 
 
@@ -35,6 +34,7 @@ class TargetDetector:
 
     def detect(self, frame: Any) -> DetectionResult:
         """Detect a red target and return found, center, area, and bbox."""
+        cv2 = _import_cv2()
         if frame is None:
             self.last_mask = None
             return self._empty_result()
@@ -69,9 +69,9 @@ class TargetDetector:
 
     def create_red_mask(self, frame: Any) -> Any:
         """Create a denoised mask for vivid red regions from a BGR frame."""
+        cv2 = _import_cv2()
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
-        # 只保留高饱和、高亮度的鲜红色，减少木地板这类橙褐色误检。
         lower_red1 = np.array([0, 120, 120])
         upper_red1 = np.array([8, 255, 255])
         lower_red2 = np.array([172, 120, 120])
@@ -99,6 +99,7 @@ class TargetDetector:
 
     def draw_debug(self, frame: Any, result: DetectionResult) -> Any:
         """Draw target box, target center, frame center, area, and found status."""
+        cv2 = _import_cv2()
         if frame is None:
             return frame
 
@@ -106,7 +107,6 @@ class TargetDetector:
         height, width = debug_frame.shape[:2]
         frame_center = (width // 2, height // 2)
 
-        # 画面中心线和中心点用于观察横向、纵向偏移。
         cv2.line(debug_frame, (frame_center[0], 0), (frame_center[0], height), (255, 0, 0), 1)
         cv2.line(debug_frame, (0, frame_center[1]), (width, frame_center[1]), (255, 0, 0), 1)
         cv2.circle(debug_frame, frame_center, 6, (255, 0, 0), -1)
@@ -133,7 +133,6 @@ class TargetDetector:
                 cv2.circle(debug_frame, (cx, cy), 6, (0, 255, 255), -1)
                 cv2.line(debug_frame, frame_center, (int(cx), int(cy)), (0, 255, 255), 2)
 
-        # 左上角状态区使用固定背景和行距，避免不同模式叠字。
         cv2.rectangle(debug_frame, (12, 12), (280, 76), (0, 0, 0), -1)
         cv2.putText(
             debug_frame,
@@ -165,6 +164,15 @@ class TargetDetector:
             "area": area,
             "bbox": None,
         }
+
+
+def _import_cv2():
+    """Import OpenCV only when image processing is actually used."""
+    try:
+        import cv2
+    except ModuleNotFoundError as exc:
+        raise RuntimeError("缺少 opencv-python 依赖：请先安装 requirements.txt。") from exc
+    return cv2
 
 
 ColorTargetDetector = TargetDetector

@@ -2,9 +2,16 @@
 
 import inspect
 import sys
+import threading
 import unittest
 from pathlib import Path
 from time import monotonic
+
+
+try:
+    import cv2  # noqa: F401
+except ModuleNotFoundError:
+    cv2 = None
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -12,6 +19,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from agent.follow_session import AgentFollowSession
+import agent.tools as agent_tools_module
 from agent.tools import AgentTools
 from control.follow_control import FollowController, RCCommand
 from control.follow_session import FollowSession
@@ -60,6 +68,22 @@ class RaisingLoopSession(FollowSession):
         raise RuntimeError("forced loop failure")
 
 
+class BlockingSession:
+    """Long-running session stub used to verify Agent command-loop behavior."""
+
+    started = threading.Event()
+    release = threading.Event()
+
+    def __init__(self, **kwargs) -> None:
+        self.kwargs = kwargs
+
+    def run(self):
+        BlockingSession.started.set()
+        BlockingSession.release.wait(timeout=2.0)
+        return type("Result", (), {"state": "STOPPED", "airborne": False, "streaming": False})()
+
+
+@unittest.skipIf(cv2 is None, "opencv-python is required for fake camera and visual detection tests")
 class FakeAdapterTestCase(unittest.TestCase):
     """Verify the fake camera behaves like a real image source."""
 
@@ -318,6 +342,36 @@ class AgentFollowSessionTestCase(unittest.TestCase):
         self.assertIn("FollowSession", follow_source)
         self.assertIn("FollowSession", agent_source)
         self.assertTrue(issubclass(AgentFollowSession, FollowSession))
+
+    def test_agent_start_follow_task_returns_while_session_is_running(self) -> None:
+        drone = FakeDroneAdapter(verbose_rc=False)
+        drone.connect()
+        safety = build_safety()
+        tools = AgentTools(
+            drone=drone,
+            safety_manager=safety,
+            detector=TargetDetector(),
+            follow_controller=FollowController(safety_manager=safety),
+            config={"display_agent_camera": False},
+            mode_label="FAKE",
+        )
+        tools.connected = True
+        BlockingSession.started.clear()
+        BlockingSession.release.clear()
+
+        original_session = agent_tools_module.FollowSession
+        agent_tools_module.FollowSession = BlockingSession
+        starter_thread = threading.Thread(target=tools.start_follow_task)
+        try:
+            starter_thread.start()
+            self.assertTrue(BlockingSession.started.wait(timeout=1.0))
+            starter_thread.join(timeout=0.2)
+            self.assertFalse(starter_thread.is_alive())
+            self.assertTrue(tools.is_task_active())
+        finally:
+            BlockingSession.release.set()
+            starter_thread.join(timeout=1.0)
+            agent_tools_module.FollowSession = original_session
 
     def test_pause_forces_zero_rc(self) -> None:
         drone = FakeDroneAdapter(verbose_rc=False)

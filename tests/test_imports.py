@@ -15,7 +15,10 @@ class ImportTestCase(unittest.TestCase):
 
     def test_import_all_modules(self) -> None:
         import agent.agent_controller
+        import agent.command_parser
+        import agent.commands
         import agent.follow_session
+        import agent.llm_client
         import agent.tools
         import control.follow_session
         import control.follow_control
@@ -31,7 +34,10 @@ class ImportTestCase(unittest.TestCase):
 
         self.assertIsNotNone(main)
         self.assertIsNotNone(agent.agent_controller)
+        self.assertIsNotNone(agent.command_parser)
+        self.assertIsNotNone(agent.commands)
         self.assertIsNotNone(agent.follow_session)
+        self.assertIsNotNone(agent.llm_client)
         self.assertIsNotNone(agent.tools)
         self.assertIsNotNone(control.follow_session)
         self.assertIsNotNone(control.follow_control)

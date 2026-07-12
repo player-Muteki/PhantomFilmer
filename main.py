@@ -6,6 +6,13 @@ from time import sleep
 from typing import Optional
 
 from agent.agent_controller import AgentController
+from agent.command_parser import CommandParser
+from agent.llm_client import (
+    DEFAULT_BASE_URL,
+    DEFAULT_MODEL,
+    DEFAULT_TIMEOUT_SECONDS,
+    LLMClient,
+)
 from agent.tools import AgentTools
 from control.follow_control import FollowController
 from control.follow_session import FollowSession
@@ -38,9 +45,30 @@ def load_config(path: Path = CONFIG_PATH) -> dict:
             if not line.strip() or line.lstrip().startswith("#"):
                 continue
             key, value = line.split(":", 1)
-            value = value.strip()
-            config[key.strip()] = int(value) if value.isdigit() else value
+            config[key.strip()] = _parse_config_value(value.strip())
         return config
+
+
+def _parse_config_value(value: str) -> object:
+    """Parse a small subset of YAML scalars for local fallback loading."""
+    if value.startswith(('"', "'")) and value.endswith(('"', "'")):
+        return value[1:-1]
+
+    lowered = value.lower()
+    if lowered == "true":
+        return True
+    if lowered == "false":
+        return False
+
+    try:
+        return int(value)
+    except ValueError:
+        pass
+
+    try:
+        return float(value)
+    except ValueError:
+        return value
 
 
 def build_safety_manager() -> SafetyManager:
@@ -83,7 +111,7 @@ def create_drone_adapter(
 
 
 def build_system(use_fake: bool = False) -> AgentController:
-    """Create the rule-based Agent with safety-wrapped tools."""
+    """Create the natural-language Agent with safety-wrapped tools."""
     config = load_config()
     safety_manager = SafetyManager(SafetyConfig.from_dict(config))
     detector = TargetDetector.from_config(config)
@@ -101,7 +129,14 @@ def build_system(use_fake: bool = False) -> AgentController:
         frame_width=int(config.get("camera_width", 640)),
         frame_height=int(config.get("camera_height", 480)),
     )
-    return AgentController(tools=tools)
+    llm_client = LLMClient(
+        base_url=str(config.get("llm_base_url", DEFAULT_BASE_URL)),
+        model=str(config.get("llm_model", DEFAULT_MODEL)),
+        timeout_seconds=float(config.get("llm_timeout_seconds", DEFAULT_TIMEOUT_SECONDS)),
+        enabled=bool(config.get("llm_enabled", False)),
+    )
+    parser = CommandParser(llm_client=llm_client)
+    return AgentController(tools=tools, parser=parser, llm_client=llm_client)
 
 
 def run_status(use_fake: bool = False) -> int:

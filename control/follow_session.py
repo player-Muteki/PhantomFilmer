@@ -1,6 +1,7 @@
 """Shared single-drone visual follow session."""
 
 from dataclasses import dataclass
+from threading import Event
 from time import monotonic, sleep
 from typing import Any, Dict, Optional, Tuple
 
@@ -34,6 +35,7 @@ class FollowSession:
         window_name: Optional[str] = None,
         state_label: str = "FOLLOW",
         allow_pause: bool = False,
+        stop_event: Optional[Event] = None,
     ) -> None:
         self.drone = drone
         self.safety_manager = safety_manager
@@ -46,6 +48,7 @@ class FollowSession:
         )
         self.state_label = state_label
         self.allow_pause = allow_pause
+        self.stop_event = stop_event or Event()
         self.display_enabled = bool(config.get("display_agent_camera", True))
         self.frame_failure_limit = int(config.get("frame_failure_limit", 30))
         self.control_interval = self._read_control_interval(config)
@@ -138,7 +141,7 @@ class FollowSession:
 
     def send_command(self, command: RCCommand) -> None:
         """Send a command through SafetyManager and DroneAdapter."""
-        if self.emergency_stop or self.paused:
+        if self.emergency_stop or self.paused or self.stop_event.is_set():
             command = self.follow_controller.hover()
 
         limited = self.safety_manager.limit_rc_command(*command.as_tuple())
@@ -169,6 +172,20 @@ class FollowSession:
             return "stop"
 
         return None
+
+    def request_stop(self) -> None:
+        """Request a normal stop from outside the OpenCV window loop."""
+        if self.session_state != "EMERGENCY_STOP":
+            self.session_state = "STOPPED"
+        self.stop_event.set()
+
+    def request_emergency_stop(self) -> None:
+        """Request an emergency stop from outside the OpenCV window loop."""
+        self.emergency_stop = True
+        self.paused = False
+        self.session_state = "EMERGENCY_STOP"
+        self.stop_event.set()
+        self._safe_zero_output()
 
     def draw_debug_frame(
         self,
@@ -233,7 +250,9 @@ class FollowSession:
 
     def _loop(self) -> None:
         """Run the real-time visual follow loop."""
-        import cv2
+        cv2 = None
+        if self.display_enabled:
+            import cv2
 
         frame_failures = 0
         stats_started_at = monotonic()
@@ -241,6 +260,13 @@ class FollowSession:
         command_counter = 0
 
         while True:
+            if self.stop_event.is_set():
+                if self.emergency_stop:
+                    self.session_state = "EMERGENCY_STOP"
+                elif self.session_state not in ("LOW_BATTERY_LANDING", "TARGET_LOST_LANDING", "FRAME_LOST_LANDING"):
+                    self.session_state = "STOPPED"
+                break
+
             loop_started_at = monotonic()
             frame = self._read_frame()
             if frame is None:
@@ -262,6 +288,13 @@ class FollowSession:
 
             battery = self._read_battery()
             height = self._read_height()
+            if self.stop_event.is_set():
+                if self.emergency_stop:
+                    self.session_state = "EMERGENCY_STOP"
+                elif self.session_state not in ("LOW_BATTERY_LANDING", "TARGET_LOST_LANDING", "FRAME_LOST_LANDING"):
+                    self.session_state = "STOPPED"
+                break
+
             if battery is not None and self.safety_manager.should_land(battery):
                 print(f"电量已降至 {battery}%，准备安全降落。")
                 self.session_state = "LOW_BATTERY_LANDING"

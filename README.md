@@ -83,9 +83,14 @@
 
 ## 规则版 Agent
 
-当前实现的是规则版 Agent，还没有接入 OpenAI API 或其他大模型 API。Agent 只负责理解固定命令和调度任务，不直接接触底层飞控 SDK。
+当前 Agent 已支持两层命令解析：
 
-Agent 只能调用 `AgentTools` 提供的安全工具。起飞前会经过 `SafetyManager` 电量检查，跟随控制量会经过 `SafetyManager.limit_rc_command` 限速。大模型后续也只能复用这些任务级工具，不能直接调用 `djitellopy`、`tello.send_rc_control` 或绕过安全层。
+1. **本地规则解析**：优先识别固定命令和一组常见自然语言表达。
+2. **在线大模型解析**：当本地规则无法确定意图，且 `llm_enabled: true` 时，再调用 OpenAI 兼容接口做动作分类。
+
+无论本地规则还是在线模型，最终都只能映射为白名单动作：`GET_STATUS`、`START_FOLLOW`、`STOP_TASK`、`EMERGENCY_STOP`、`EXIT`、`UNKNOWN`。Agent 只负责理解高层任务和调度任务，不直接接触底层飞控 SDK。
+
+Agent 只能调用 `AgentTools` 提供的安全工具。起飞前会经过 `SafetyManager` 电量检查，跟随控制量会经过 `SafetyManager.limit_rc_command` 限速。大模型也只能复用这些任务级工具，不能直接调用 `djitellopy`、`tello.send_rc_control` 或绕过安全层。
 
 启动真机规则版 Agent：
 
@@ -99,13 +104,34 @@ python3 main.py --mode agent
 python3 main.py --mode agent --fake
 ```
 
-支持的命令：
+如需启用在线大模型分类，在 `config.yaml` 中设置：
 
-- `状态`：显示电量、高度和当前模式。
-- `开始任务`：检查电量，等待用户确认，然后起飞并打开 `DroneUmbrella Agent Follow` 窗口进行低速跟随。
-- `停止任务`：停止跟随控制并降落。
-- `急停`：立即停止跟随循环并把当前控制输出清零；随后应执行 `停止任务` 完成降落。
-- `退出`：安全结束当前任务并退出 Agent。
+```yaml
+llm_enabled: true
+llm_base_url: "https://api.openai.com/v1/chat/completions"
+llm_model: "gpt-4o-mini"
+llm_timeout_seconds: 8
+```
+
+并在运行前设置环境变量：
+
+```bash
+export LLM_API_KEY="你的接口密钥"
+```
+
+如果 `llm_enabled: true` 但没有设置 `LLM_API_KEY`，Agent 启动时会给出提示，并自动退回到仅使用本地规则解析。
+
+支持的输入包括固定命令和常见自然语言表达：
+
+- `状态` / `看看现在无人机状态` / `还有多少电`：显示电量、高度和当前模式。
+- `开始任务` / `帮我开始跟随目标` / `启动无人机跟随`：检查电量，等待用户确认，然后起飞并打开 `DroneUmbrella Agent Follow` 窗口进行低速跟随；跟随运行时仍可继续在 `Agent>` 输入自然语言停止或急停。
+- `停止任务` / `先停一下` / `停止当前任务`：停止跟随控制并降落。
+- `急停` / `立即急停` / `紧急停止`：立即停止跟随循环、清零当前控制输出并结束跟随任务。
+- `退出` / `退出系统`：安全结束当前任务并退出 Agent。
+
+含糊、询问式或不确定的动作表达会返回 `UNKNOWN`，不会触发起飞、停止、急停或退出。
+
+如果本地规则和在线模型都无法安全确定意图，系统会返回 `UNKNOWN`，不会执行危险动作。
 
 Agent 跟随窗口显示实时画面、目标框、目标中心、画面中心、误差线、Agent 状态、REAL/FAKE 模式、电量、高度和当前 RC 控制量。窗口按键：
 
