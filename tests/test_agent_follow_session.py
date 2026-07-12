@@ -2,7 +2,6 @@
 
 import inspect
 import sys
-import threading
 import unittest
 from pathlib import Path
 from time import monotonic
@@ -18,8 +17,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from agent.follow_session import AgentFollowSession
 import agent.tools as agent_tools_module
+from agent.follow_session import AgentFollowSession
 from agent.tools import AgentTools
 from control.follow_control import FollowController, RCCommand
 from control.follow_session import FollowSession
@@ -68,18 +67,16 @@ class RaisingLoopSession(FollowSession):
         raise RuntimeError("forced loop failure")
 
 
-class BlockingSession:
-    """Long-running session stub used to verify Agent command-loop behavior."""
+class ImmediateSession:
+    """Session stub used to verify Agent starts follow on the caller thread."""
 
-    started = threading.Event()
-    release = threading.Event()
+    run_count = 0
 
     def __init__(self, **kwargs) -> None:
         self.kwargs = kwargs
 
     def run(self):
-        BlockingSession.started.set()
-        BlockingSession.release.wait(timeout=2.0)
+        ImmediateSession.run_count += 1
         return type("Result", (), {"state": "STOPPED", "airborne": False, "streaming": False})()
 
 
@@ -343,7 +340,7 @@ class AgentFollowSessionTestCase(unittest.TestCase):
         self.assertIn("FollowSession", agent_source)
         self.assertTrue(issubclass(AgentFollowSession, FollowSession))
 
-    def test_agent_start_follow_task_returns_while_session_is_running(self) -> None:
+    def test_agent_start_follow_task_runs_session_on_caller_thread(self) -> None:
         drone = FakeDroneAdapter(verbose_rc=False)
         drone.connect()
         safety = build_safety()
@@ -356,22 +353,19 @@ class AgentFollowSessionTestCase(unittest.TestCase):
             mode_label="FAKE",
         )
         tools.connected = True
-        BlockingSession.started.clear()
-        BlockingSession.release.clear()
+        ImmediateSession.run_count = 0
 
         original_session = agent_tools_module.FollowSession
-        agent_tools_module.FollowSession = BlockingSession
-        starter_thread = threading.Thread(target=tools.start_follow_task)
+        agent_tools_module.FollowSession = ImmediateSession
         try:
-            starter_thread.start()
-            self.assertTrue(BlockingSession.started.wait(timeout=1.0))
-            starter_thread.join(timeout=0.2)
-            self.assertFalse(starter_thread.is_alive())
-            self.assertTrue(tools.is_task_active())
+            result = tools.start_follow_task()
         finally:
-            BlockingSession.release.set()
-            starter_thread.join(timeout=1.0)
             agent_tools_module.FollowSession = original_session
+
+        self.assertTrue(result)
+        self.assertEqual(ImmediateSession.run_count, 1)
+        self.assertFalse(tools.is_task_active())
+        self.assertEqual(tools.current_mode, "STOPPED")
 
     def test_pause_forces_zero_rc(self) -> None:
         drone = FakeDroneAdapter(verbose_rc=False)

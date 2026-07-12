@@ -1,6 +1,6 @@
 """Safety-wrapped tools exposed to the rule-based Agent scheduler."""
 
-from threading import Event, Lock, Thread, current_thread
+from threading import Event, Lock
 from typing import Dict, Optional, Tuple
 
 from control.follow_control import FollowController
@@ -45,7 +45,6 @@ class AgentTools:
         self._stop_event = Event()
         self._control_lock = Lock()
         self._active_session: Optional[FollowSession] = None
-        self._session_thread: Optional[Thread] = None
 
     def connect(self) -> None:
         """Connect through the selected DroneAdapter."""
@@ -105,14 +104,21 @@ class AgentTools:
         self._active_session = session
         self.current_mode = "跟随任务"
         self._stop_event.clear()
-        self._session_thread = Thread(
-            target=self._run_follow_session,
-            args=(session,),
-            daemon=True,
-        )
-        self._session_thread.start()
-        print("Agent 跟随任务已启动，可继续输入“停止任务”或“急停”。")
-        return True
+
+        try:
+            result = session.run()
+            self.airborne = result.airborne
+            self.streaming = result.streaming
+            self.current_mode = result.state
+            print(f"Agent 跟随任务结束，当前状态：{self.current_mode}")
+            return result.state not in ("EMERGENCY_STOP", "FRAME_LOST_LANDING")
+        except Exception:
+            self.current_mode = "异常保护"
+            raise
+        finally:
+            self.airborne = False
+            self.streaming = False
+            self._active_session = None
 
     def is_task_active(self) -> bool:
         """Return whether a visual follow session is currently active."""
@@ -139,7 +145,6 @@ class AgentTools:
         if active_session is not None and hasattr(active_session, "request_stop"):
             active_session.request_stop()
         self._safe_zero_output()
-        self._wait_for_active_session()
         if self.airborne:
             self._safe_land()
         self._stop_stream()
@@ -153,7 +158,6 @@ class AgentTools:
         if active_session is not None and hasattr(active_session, "request_emergency_stop"):
             active_session.request_emergency_stop()
         self._safe_zero_output()
-        self._wait_for_active_session()
         self.current_mode = "急停"
         print("急停已执行：当前控制输出已清零，跟随任务已停止。")
 
@@ -220,30 +224,3 @@ class AgentTools:
         """Reject task tools until the adapter is connected."""
         if not self.connected:
             raise RuntimeError("Agent 尚未连接无人机。")
-
-    def _run_follow_session(self, session: FollowSession) -> None:
-        """Run the active visual follow session and publish final state."""
-        try:
-            result = session.run()
-            self.airborne = result.airborne
-            self.streaming = result.streaming
-            self.current_mode = result.state
-            print(f"Agent 跟随任务结束，当前状态：{self.current_mode}")
-        except Exception as exc:
-            self.current_mode = "异常保护"
-            print(f"Agent 跟随任务异常：{exc}")
-        finally:
-            self.airborne = False
-            self.streaming = False
-            if self._active_session is session:
-                self._active_session = None
-
-    def _wait_for_active_session(self) -> None:
-        """Wait briefly for the background follow session to finish cleanup."""
-        thread = self._session_thread
-        if thread is None or thread is current_thread():
-            return
-        if thread.is_alive():
-            thread.join(timeout=10.0)
-        if not thread.is_alive():
-            self._session_thread = None
