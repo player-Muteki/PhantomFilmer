@@ -20,7 +20,9 @@ from drone.drone_adapter import DroneAdapter
 from drone.fake_adapter import FakeDroneAdapter
 from drone.safety import SafetyConfig, SafetyManager
 from drone.tello_adapter import TelloDroneAdapter
+from swarm.fake_swarm import create_fake_swarm_nodes
 from swarm.formation_sim import FormationSimulator
+from swarm.swarm_manager import SwarmBatchResult, SwarmManager
 from vision.camera import CameraStream
 from vision.target_detect import TargetDetector
 
@@ -593,14 +595,97 @@ def run_swarm_sim() -> int:
     return 0
 
 
+def build_fake_swarm_manager(config: dict) -> SwarmManager:
+    """Create a fake four-node swarm manager from config.yaml."""
+    swarm_config = config.get("swarm", {})
+    if not isinstance(swarm_config, dict):
+        swarm_config = {}
+    drone_configs = swarm_config.get("drones")
+    nodes = create_fake_swarm_nodes(drone_configs if isinstance(drone_configs, list) else None)
+    return SwarmManager.from_config(config, nodes)
+
+
+def print_swarm_batch(result: SwarmBatchResult) -> None:
+    """Print compact per-node swarm results for manual checks."""
+    print(f"{result.action}: success={result.success}, elapsed_ms={result.elapsed_ms:.1f}")
+    for drone_id, item in result.results.items():
+        status = item.status
+        print(
+            f"- {drone_id}: "
+            f"success={item.success}, "
+            f"connected={status.connected}, "
+            f"airborne={status.airborne}, "
+            f"battery={status.battery}, "
+            f"height={status.height}, "
+            f"command={item.command}, "
+            f"error={item.error}"
+        )
+
+
+def run_swarm_status(use_fake: bool = False) -> int:
+    """Read fake swarm status without takeoff."""
+    if not use_fake:
+        print("swarm-status 当前只允许 --fake，避免误连真机。")
+        return 1
+    manager = build_fake_swarm_manager(load_config())
+    print_swarm_batch(manager.connect_all())
+    print_swarm_batch(manager.status_all())
+    return 0
+
+
+def run_swarm_connect_test(use_fake: bool = False) -> int:
+    """Connect fake swarm nodes and send zero RC only."""
+    if not use_fake:
+        print("swarm-connect-test 当前只允许 --fake，避免误连真机。")
+        return 1
+    manager = build_fake_swarm_manager(load_config())
+    print_swarm_batch(manager.connect_all())
+    print_swarm_batch(manager.zero_rc_all())
+    print_swarm_batch(manager.emergency_stop_all())
+    return 0
+
+
+def run_swarm_basic_test(use_fake: bool = False) -> int:
+    """Run fake swarm connect, takeoff, zero RC, and landing sequence."""
+    if not use_fake:
+        print("swarm-basic-test 当前只允许 --fake，真机起降入口后续单独审核。")
+        return 1
+    answer = input("即将运行 Fake Swarm 起降流程。输入 YES 继续：").strip()
+    if answer != "YES":
+        print("已取消 Fake Swarm 基础测试：未收到 YES 确认。")
+        return 0
+    manager = build_fake_swarm_manager(load_config())
+    print_swarm_batch(manager.connect_all())
+    print_swarm_batch(manager.takeoff_sequence())
+    print_swarm_batch(manager.zero_rc_all())
+    print_swarm_batch(manager.land_sequence())
+    print_swarm_batch(manager.emergency_stop_all())
+    return 0
+
+
 def parse_args() -> argparse.Namespace:
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(description="DroneUmbrella prototype controller")
     parser.add_argument(
         "--mode",
-        choices=("demo", "status", "safety-test", "follow-test", "follow-dry-run", "basic-flight-test", "camera-debug", "camera", "follow", "agent", "swarm-sim"),
+        choices=(
+            "demo",
+            "status",
+            "safety-test",
+            "follow-test",
+            "follow-dry-run",
+            "basic-flight-test",
+            "camera-debug",
+            "camera",
+            "follow",
+            "agent",
+            "swarm-sim",
+            "swarm-status",
+            "swarm-connect-test",
+            "swarm-basic-test",
+        ),
         default="demo",
-        help="运行模式：demo 启动骨架说明，status 读取无人机状态，safety-test 测试安全保护逻辑，follow-test 测试跟随方向逻辑，follow-dry-run 真机起飞前干跑验证，basic-flight-test 真机基础起降测试，camera-debug 调试颜色通道和红色 mask，camera 显示视频识别画面，follow 低速目标跟随，agent 规则版任务调度，swarm-sim 多机编队仿真。",
+        help="运行模式：demo 启动骨架说明，status 读取无人机状态，safety-test 测试安全保护逻辑，follow-test 测试跟随方向逻辑，follow-dry-run 真机起飞前干跑验证，basic-flight-test 真机基础起降测试，camera-debug 调试颜色通道和红色 mask，camera 显示视频识别画面，follow 低速目标跟随，agent 规则版任务调度，swarm-sim 多机编队仿真，swarm-status/swarm-connect-test/swarm-basic-test 运行 Fake Swarm 验证。",
     )
     parser.add_argument(
         "--fake",
@@ -633,6 +718,12 @@ def main() -> int:
         return run_agent(use_fake=args.fake)
     if args.mode == "swarm-sim":
         return run_swarm_sim()
+    if args.mode == "swarm-status":
+        return run_swarm_status(use_fake=args.fake)
+    if args.mode == "swarm-connect-test":
+        return run_swarm_connect_test(use_fake=args.fake)
+    if args.mode == "swarm-basic-test":
+        return run_swarm_basic_test(use_fake=args.fake)
 
     controller = build_system(use_fake=args.fake)
     controller.describe()

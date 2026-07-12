@@ -28,6 +28,11 @@ class ImportTestCase(unittest.TestCase):
         import drone.tello_adapter
         import main
         import swarm.formation_sim
+        import swarm.fake_swarm
+        import swarm.formation_control
+        import swarm.swarm_manager
+        import swarm.swarm_node
+        import swarm.swarm_safety
         import ui.dashboard
         import vision.camera
         import vision.target_detect
@@ -46,6 +51,11 @@ class ImportTestCase(unittest.TestCase):
         self.assertIsNotNone(drone.safety)
         self.assertIsNotNone(drone.tello_adapter)
         self.assertIsNotNone(swarm.formation_sim)
+        self.assertIsNotNone(swarm.fake_swarm)
+        self.assertIsNotNone(swarm.formation_control)
+        self.assertIsNotNone(swarm.swarm_manager)
+        self.assertIsNotNone(swarm.swarm_node)
+        self.assertIsNotNone(swarm.swarm_safety)
         self.assertIsNotNone(ui.dashboard)
         self.assertIsNotNone(vision.camera)
         self.assertIsNotNone(vision.target_detect)

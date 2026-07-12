@@ -37,3 +37,28 @@ llm_enabled: true
 llm_base_url: "https://api.deepseek.com/chat/completions"
 llm_model: "deepseek-chat"
 llm_timeout_seconds: 8
+
+swarm:
+  enabled: false
+  command_interval_ms: 200
+  takeoff_interval_s: 1.0
+  max_lr_speed: 10
+  max_fb_speed: 10
+  max_ud_speed: 10
+  max_yaw_speed: 10
+  minimum_takeoff_battery: 30
+  leader_id: drone_1
+  video_drone_id: drone_1
+  drones:
+    - id: drone_1
+      ip: 192.168.1.101
+      role: leader
+    - id: drone_2
+      ip: 192.168.1.102
+      role: follower
+    - id: drone_3
+      ip: 192.168.1.103
+      role: follower
+    - id: drone_4
+      ip: 192.168.1.104
+      role: follower
