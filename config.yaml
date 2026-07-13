@@ -33,6 +33,14 @@ detector_min_area_ratio: 0.002
 detector_min_area: 500
 lost_target_hover_seconds: 3
 lost_target_land_seconds: 8
+vision:
+  detector_type: red
+  aruco_dictionary: DICT_4X4_50
+  target_marker_id: 23
+  smoothing_alpha: 0.30
+  temporary_lost_frames: 3
+  min_marker_area: 300.0
+
 llm_enabled: true
 llm_base_url: "https://api.deepseek.com/chat/completions"
 llm_model: "deepseek-chat"
