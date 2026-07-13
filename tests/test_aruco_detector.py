@@ -169,6 +169,7 @@ class ArucoDetectorEdgeCaseTestCase(unittest.TestCase):
         self.assertIsNotNone(out)
         self.assertEqual(out.size, 0)
 
+    @unittest.skipIf(not CV2_AVAILABLE, "cv2 not available — skipping frame-lost debug test")
     def test_draw_debug_valid_frame_lost(self) -> None:
         result = self.detector.detect(np.ones((480, 640, 3), dtype=np.uint8) * 128)
         frame = np.ones((480, 640, 3), dtype=np.uint8) * 200
