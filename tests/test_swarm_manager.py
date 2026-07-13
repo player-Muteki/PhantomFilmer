@@ -65,8 +65,9 @@ class SwarmManagerTestCase(unittest.TestCase):
         result = manager.send_rc_all((99, -99, 50, -50))
 
         self.assertTrue(result.success)
+        self.assertEqual(result.results["drone_1"].command, (10, -10, 10, -10))
         for node in nodes:
-            self.assertEqual(node.adapter.last_rc_command, (10, -10, 10, -10))
+            self.assertEqual(node.adapter.last_rc_command, (0, 0, 0, 0))
 
     def test_zero_rc_all_sends_zero_to_all_nodes(self) -> None:
         nodes = create_fake_swarm_nodes()
@@ -116,6 +117,17 @@ class SwarmManagerTestCase(unittest.TestCase):
         self.assertEqual(result.action, "send_rc_all_blocked")
         for node in nodes:
             self.assertEqual(node.adapter.last_rc_command, (0, 0, 0, 0))
+
+    def test_runtime_rc_failure_marks_one_node_offline(self) -> None:
+        nodes = create_fake_swarm_nodes(rc_failing_ids=["drone_3"])
+        manager = build_manager(nodes)
+        manager.connect_all()
+
+        result = manager.send_rc_all((5, 0, 0, 0))
+
+        self.assertFalse(result.success)
+        self.assertFalse(result.results["drone_3"].status.connected)
+        self.assertTrue(result.results["drone_1"].success)
 
 
 if __name__ == "__main__":

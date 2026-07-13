@@ -2,7 +2,7 @@
 
 ## 当前结论
 
-当前 `swarm/` 目录只有 `formation_sim.py` 的二维虚拟结构仿真，还没有四机真机连接、状态管理、多机命令分发、统一急停和集群安全状态机。现阶段应先完成 Fake Swarm 和网络方案确认，不起飞、不转桨。
+当前 `swarm/` 已建立 `SwarmDroneNode`、`SwarmManager`、`SwarmSafetyManager`、Fake Swarm 和真机节点工厂。现阶段真机推进顺序仍然是网络与状态读取优先，不起飞、不转桨；确认四机 IP 和端口后，再进入单机、两机、四机飞行测试。
 
 ## 四台 TT 联网目标
 
@@ -27,14 +27,14 @@
 
 ## djitellopy 多实例风险
 
-当前 `drone/tello_adapter.py` 只创建默认 `Tello()` 实例，适合单机链路。四机控制可能遇到：
+当前 `drone/tello_adapter.py` 支持按 `host` 创建 `TelloDroneAdapter`，四机配置由 `config.yaml` 的 `swarm.drones` 提供。四机控制仍可能遇到：
 
 - 多个实例监听相同本地状态端口，导致状态包来源混乱。
 - 视频流端口冲突或带宽不足。
 - 命令发送间隔过短导致 UDP 拥塞。
 - 某一台失联后普通命令继续发送，造成盲飞风险。
 
-阶段0必须先验证 `djitellopy` 是否支持对不同 IP 的多实例控制和独立状态读取。未验证前不得进入两机或四机起飞。
+阶段0必须先验证当前 `djitellopy` 版本是否支持对不同 IP 的多实例控制和独立状态读取。未验证前不得进入两机或四机起飞。如果运行时报出“不支持指定 host”，需要升级 `djitellopy` 或切换到原始 UDP 方案。
 
 ## 原始 UDP 备选方案
 

@@ -1,6 +1,6 @@
 """Factory helpers for four-node fake swarm validation."""
 
-from typing import Dict, Iterable, List
+from typing import Dict, Iterable, List, Optional
 
 from drone.fake_adapter import FakeDroneAdapter
 
@@ -35,18 +35,21 @@ class FailableFakeDroneAdapter(FakeDroneAdapter):
 
 
 def create_fake_swarm_nodes(
-    drone_configs: Iterable[dict] | None = None,
-    failing_ids: Iterable[str] | None = None,
+    drone_configs: Optional[Iterable[dict]] = None,
+    failing_ids: Optional[Iterable[str]] = None,
+    rc_failing_ids: Optional[Iterable[str]] = None,
     verbose_rc: bool = False,
 ) -> List[SwarmDroneNode]:
     """Create fake nodes from swarm config."""
     failing = set(failing_ids or ())
+    rc_failing = set(rc_failing_ids or ())
     configs = list(drone_configs or DEFAULT_FAKE_DRONES)
     nodes: List[SwarmDroneNode] = []
     for item in configs:
         drone_id = str(item.get("id"))
         adapter = FailableFakeDroneAdapter(
             fail_connect=drone_id in failing,
+            fail_rc=drone_id in rc_failing,
             verbose_rc=verbose_rc,
         )
         nodes.append(

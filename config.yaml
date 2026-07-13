@@ -42,6 +42,12 @@ swarm:
   enabled: false
   command_interval_ms: 200
   takeoff_interval_s: 1.0
+  hover_test_seconds: 10
+  rc_test_seconds: 0.5
+  rc_test_left_right: 0
+  rc_test_forward_backward: 8
+  rc_test_up_down: 0
+  rc_test_yaw: 0
   max_lr_speed: 10
   max_fb_speed: 10
   max_ud_speed: 10
