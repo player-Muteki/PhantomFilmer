@@ -7,7 +7,7 @@ from control.follow_control import FollowController
 from control.follow_session import FollowSession
 from drone.drone_adapter import DroneAdapter
 from drone.safety import SafetyManager
-from vision.target_detect import TargetDetector
+from vision.detector_protocol import DetectorProtocol
 
 
 class AgentTools:
@@ -22,12 +22,14 @@ class AgentTools:
         self,
         drone: DroneAdapter,
         safety_manager: SafetyManager,
-        detector: TargetDetector,
+        detector: DetectorProtocol,
         follow_controller: FollowController,
         config: Optional[dict] = None,
         mode_label: str = "REAL",
         frame_width: int = 640,
         frame_height: int = 480,
+        follow_task_allowed: bool = True,
+        follow_task_block_reason: Optional[str] = None,
     ) -> None:
         self._drone = drone
         self._safety_manager = safety_manager
@@ -37,6 +39,8 @@ class AgentTools:
         self._mode_label = mode_label
         self.frame_width = frame_width
         self.frame_height = frame_height
+        self._follow_task_allowed = follow_task_allowed
+        self._follow_task_block_reason = follow_task_block_reason
 
         self.current_mode = "未连接"
         self.connected = False
@@ -78,6 +82,9 @@ class AgentTools:
     def start_follow_task(self) -> bool:
         """Check safety, take off, and run the visual Agent follow session."""
         self._require_connection()
+        if not self._follow_task_allowed:
+            print(self._follow_task_block_reason or "当前配置不允许启动跟随任务。")
+            return False
         if self.airborne or self._active_session is not None:
             print("任务已经在运行，请先停止当前任务。")
             return False

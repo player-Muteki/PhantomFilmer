@@ -6,7 +6,7 @@ from control.follow_control import FollowController
 from control.follow_session import FollowSession, FollowSessionResult
 from drone.drone_adapter import DroneAdapter
 from drone.safety import SafetyManager
-from vision.target_detect import TargetDetector
+from vision.detector_protocol import DetectorProtocol
 
 
 class AgentFollowSession(FollowSession):
@@ -16,7 +16,7 @@ class AgentFollowSession(FollowSession):
         self,
         drone: DroneAdapter,
         safety_manager: SafetyManager,
-        detector: TargetDetector,
+        detector: DetectorProtocol,
         follow_controller: FollowController,
         config: Dict[str, object],
         mode_label: str,

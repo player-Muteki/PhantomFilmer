@@ -42,7 +42,7 @@ class ArucoTargetDetector:
         self.dictionary_name = dictionary_name
         self.target_marker_id = target_marker_id
         self.smoothing_alpha = max(0.0, min(1.0, float(smoothing_alpha)))
-        self.temporary_lost_frames = max(1, int(temporary_lost_frames))
+        self.temporary_lost_frames = max(0, int(temporary_lost_frames))
         self.min_marker_area = float(min_marker_area)
 
         # Smoothing state
@@ -148,6 +148,7 @@ class ArucoTargetDetector:
 
         return {
             "found": True,
+            "is_predicted": False,
             "center": center,
             "target_center_x": center[0],
             "target_center_y": center[1],
@@ -258,6 +259,7 @@ class ArucoTargetDetector:
         if self._lost_count <= self.temporary_lost_frames and self._smooth_initialized:
             return {
                 "found": True,
+                "is_predicted": True,
                 "center": self._last_valid_center,
                 "target_center_x": self._last_valid_center[0] if self._last_valid_center else None,
                 "target_center_y": self._last_valid_center[1] if self._last_valid_center else None,
@@ -273,6 +275,7 @@ class ArucoTargetDetector:
     def _empty_result(self) -> DetectionResult:
         return {
             "found": False,
+            "is_predicted": False,
             "center": None,
             "target_center_x": None,
             "target_center_y": None,

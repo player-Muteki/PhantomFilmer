@@ -30,7 +30,7 @@ def create_detector(config: Dict) -> object:
     if not isinstance(cfg, dict):
         cfg = config
 
-    detector_type = str(cfg.get("detector_type", "red"))
+    detector_type = str(cfg.get("detector_type", "red")).strip().lower()
 
     if detector_type == "red":
         from vision.target_detect import TargetDetector

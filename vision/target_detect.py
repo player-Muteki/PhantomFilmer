@@ -60,6 +60,7 @@ class TargetDetector:
         center = (x + w // 2, y + h // 2)
         return {
             "found": True,
+            "is_predicted": False,
             "center": center,
             "target_center_x": center[0],
             "target_center_y": center[1],
@@ -158,6 +159,7 @@ class TargetDetector:
         """Return the standard empty detection result."""
         return {
             "found": False,
+            "is_predicted": False,
             "center": None,
             "target_center_x": None,
             "target_center_y": None,

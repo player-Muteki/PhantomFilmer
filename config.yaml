@@ -8,6 +8,14 @@ target_lost_land_seconds: 8
 camera_width: 640
 camera_height: 480
 target_color: red
+vision:
+  detector_type: red
+  # ArUco 面积与红色轮廓面积不同；真机前请先用 follow-dry-run 标定面积阈值。
+  aruco_dictionary: DICT_4X4_50
+  target_marker_id: 23
+  smoothing_alpha: 0.30
+  temporary_lost_frames: 0
+  min_marker_area: 300
 display_agent_camera: true
 agent_window_name: "DroneUmbrella Agent Follow"
 fake_camera_enabled: true

@@ -9,7 +9,7 @@ from control.follow_control import FollowController, RCCommand
 from drone.drone_adapter import DroneAdapter
 from drone.safety import SafetyManager
 from vision.camera import CameraStream
-from vision.target_detect import TargetDetector
+from vision.detector_protocol import DetectorProtocol
 
 
 @dataclass
@@ -28,7 +28,7 @@ class FollowSession:
         self,
         drone: DroneAdapter,
         safety_manager: SafetyManager,
-        detector: TargetDetector,
+        detector: DetectorProtocol,
         follow_controller: FollowController,
         config: Dict[str, object],
         mode_label: str,
@@ -77,6 +77,7 @@ class FollowSession:
     def run(self) -> FollowSessionResult:
         """Start stream, take off, show the follow window, and clean up safely."""
         try:
+            self._reset_detector()
             self._start_camera()
             self.drone.takeoff()
             sleep(2)
@@ -342,6 +343,12 @@ class FollowSession:
             raise RuntimeError(
                 "无法获取无人机视频流，请检查是否已连接 RoboMaster TT / Tello Wi-Fi。"
             ) from exc
+
+    def _reset_detector(self) -> None:
+        """Clear optional detector state before every independent follow task."""
+        reset_method = getattr(self.detector, "reset", None)
+        if callable(reset_method):
+            reset_method()
 
     def _read_frame(self) -> Any:
         """Read one frame without crashing on a transient failure."""

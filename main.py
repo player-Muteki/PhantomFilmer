@@ -25,6 +25,7 @@ from swarm.formation_sim import FormationSimulator
 from swarm.real_swarm import create_real_swarm_nodes
 from swarm.swarm_manager import SwarmBatchResult, SwarmManager
 from vision.camera import CameraStream
+from vision.detector_factory import create_detector
 from vision.target_detect import TargetDetector
 
 
@@ -63,6 +64,11 @@ def _load_config_without_yaml(path: Path) -> dict:
             config["swarm"] = swarm
             continue
 
+        if raw.startswith("vision:"):
+            vision, index = _parse_flat_block(lines, index + 1)
+            config["vision"] = vision
+            continue
+
         if ":" in raw and not raw.startswith(" "):
             key, value = raw.split(":", 1)
             config[key.strip()] = _parse_config_value(value.strip())
@@ -93,6 +99,25 @@ def _parse_swarm_block(lines: list[str], start_index: int) -> tuple[dict, int]:
             swarm[key.strip()] = _parse_config_value(value.strip())
         index += 1
     return swarm, index
+
+
+def _parse_flat_block(lines: list[str], start_index: int) -> tuple[dict, int]:
+    """Parse a simple indented YAML mapping used by the vision block."""
+    values = {}
+    index = start_index
+    while index < len(lines):
+        raw = lines[index]
+        stripped = raw.strip()
+        if raw and not raw.startswith(" ") and stripped:
+            break
+        if not stripped or stripped.startswith("#"):
+            index += 1
+            continue
+        if ":" in stripped:
+            key, value = stripped.split(":", 1)
+            values[key.strip()] = _parse_config_value(value.strip())
+        index += 1
+    return values, index
 
 
 def _parse_swarm_drones(lines: list[str], start_index: int) -> tuple[list[dict], int]:
@@ -165,6 +190,22 @@ def read_control_interval(config: dict) -> float:
     return max(0.02, min(0.2, interval))
 
 
+def selected_detector_type(config: dict) -> str:
+    """Return the normalized detector type selected by project config."""
+    vision = config.get("vision", {})
+    if not isinstance(vision, dict):
+        return "red"
+    return str(vision.get("detector_type", "red")).strip().lower()
+
+
+def fake_aruco_message() -> str:
+    """Explain why the red-only fake camera cannot validate ArUco following."""
+    return (
+        "当前 FakeDroneAdapter 只生成红色目标，无法验证 ArUco 识别。"
+        "请使用红色 detector_type，或使用真实摄像头/离线 ArUco 图像测试。"
+    )
+
+
 def create_drone_adapter(
     use_fake: bool,
     verbose_fake_rc: bool = True,
@@ -192,7 +233,7 @@ def build_system(use_fake: bool = False) -> AgentController:
     """Create the natural-language Agent with safety-wrapped tools."""
     config = load_config()
     safety_manager = SafetyManager(SafetyConfig.from_dict(config))
-    detector = TargetDetector.from_config(config)
+    detector = create_detector(config)
     follow_controller = FollowController.from_config(
         safety_manager=safety_manager,
         config=config,
@@ -206,6 +247,8 @@ def build_system(use_fake: bool = False) -> AgentController:
         mode_label="FAKE" if use_fake else "REAL",
         frame_width=int(config.get("camera_width", 640)),
         frame_height=int(config.get("camera_height", 480)),
+        follow_task_allowed=not (use_fake and selected_detector_type(config) == "aruco"),
+        follow_task_block_reason=fake_aruco_message(),
     )
     llm_client = LLMClient(
         base_url=str(config.get("llm_base_url", DEFAULT_BASE_URL)),
@@ -265,7 +308,11 @@ def run_camera(use_fake: bool = False) -> int:
     config = load_config()
     drone = create_drone_adapter(use_fake, config=config)
     camera = None
-    detector = TargetDetector.from_config(config)
+    detector = create_detector(config)
+
+    if use_fake and selected_detector_type(config) == "aruco":
+        print(fake_aruco_message())
+        return 0
 
     try:
         print("正在连接模拟无人机..." if use_fake else "正在连接 RoboMaster TT / Tello...")
@@ -287,8 +334,9 @@ def run_camera(use_fake: bool = False) -> int:
             result = detector.detect(frame)
             debug_frame = detector.draw_debug(frame, result)
             cv2.imshow("DroneUmbrella Camera", debug_frame)
-            if detector.last_mask is not None:
-                cv2.imshow("DroneUmbrella Red Mask", detector.last_mask)
+            last_mask = getattr(detector, "last_mask", None)
+            if last_mask is not None:
+                cv2.imshow("DroneUmbrella Red Mask", last_mask)
 
             key = cv2.waitKey(1) & 0xFF
             if key == ord("q"):
@@ -432,8 +480,12 @@ def run_follow(use_fake: bool = False) -> int:
     config = load_config()
     safety = SafetyManager.from_dict(config)
     drone = create_drone_adapter(use_fake, config=config)
-    detector = TargetDetector.from_config(config)
+    detector = create_detector(config)
     controller = FollowController.from_config(safety_manager=safety, config=config)
+
+    if use_fake and selected_detector_type(config) == "aruco":
+        print(fake_aruco_message())
+        return 0
 
     try:
         print("正在连接模拟无人机..." if use_fake else "正在连接 RoboMaster TT / Tello...")
@@ -488,9 +540,13 @@ def run_follow_dry_run(use_fake: bool = False) -> int:
     safety = SafetyManager.from_dict(config)
     drone = create_drone_adapter(use_fake, config=config)
     camera = None
-    detector = TargetDetector.from_config(config)
+    detector = create_detector(config)
     controller = FollowController.from_config(safety_manager=safety, config=config)
     control_interval = read_control_interval(config)
+
+    if use_fake and selected_detector_type(config) == "aruco":
+        print(fake_aruco_message())
+        return 0
 
     try:
         print("正在连接模拟无人机..." if use_fake else "正在连接 RoboMaster TT / Tello...")
