@@ -184,9 +184,9 @@ Fake Agent 手动验收建议：
 8. 按 `q` 停止并降落。
 9. 确认视频流和窗口关闭。
 
-## 四机协同打伞仿真
+## 四机协同打伞与真机协同底座
 
-初赛阶段的实物验证以单台 RoboMaster TT / Tello Talent 缩比原型为主，优先验证视觉识别、低速跟随和安全保护。四机协同打伞目前只做算法仿真，不控制真实四架无人机。
+初赛阶段的实物验证仍以安全为第一优先级。项目已经加入四机协同管理底座：`SwarmDroneNode` 负责单节点状态，`SwarmManager` 负责连接、状态、顺序起降、RC 分发、全体零 RC 和急停，`SwarmSafetyManager` 负责低电量、失联和速度限幅。真机推进顺序必须是 `Fake -> 单机 -> 两机 -> 四机`。
 
 仿真采用“虚拟结构法”：把行人目标中心记为 `target=(x, y, z)`，设 `d` 为四架无人机相对伞面中心的水平偏移，`h` 为相对目标中心的飞行高度。四架无人机目标位置为：
 
@@ -203,7 +203,34 @@ drone_4 = target + (+d, -d, h)
 python3 main.py --mode swarm-sim
 ```
 
-程序会在终端输出四架无人机的目标坐标，并用 matplotlib 生成二维示意图，显示行人目标、伞面中心、四架无人机位置和伞面矩形。真实多机控制、通信同步和避障逻辑留到后续阶段扩展。
+程序会在终端输出四架无人机的目标坐标，并用 matplotlib 生成二维示意图，显示行人目标、伞面中心、四架无人机位置和伞面矩形。
+
+Fake Swarm 验证：
+
+```bash
+python3 main.py --mode swarm-status --fake
+python3 main.py --mode swarm-connect-test --fake
+python3 main.py --mode swarm-basic-test --fake
+python3 main.py --mode swarm-hover-test --fake
+python3 main.py --mode swarm-rc-test --fake
+```
+
+真机 Swarm 状态读取不会起飞，也不会打开视频流：
+
+```bash
+python3 main.py --mode swarm-status
+python3 main.py --mode swarm-connect-test
+```
+
+真机飞行测试必须在四机编号、IP、电量和空域安全全部确认后运行，并会要求输入 `YES`：
+
+```bash
+python3 main.py --mode swarm-basic-test
+python3 main.py --mode swarm-hover-test
+python3 main.py --mode swarm-rc-test
+```
+
+四机网络方案见 `docs/swarm_network_plan.md`，真机测试流程见 `docs/swarm_real_test_plan.md`，测试记录见 `docs/swarm_test_record.md`。
 
 ## 开发路线
 
