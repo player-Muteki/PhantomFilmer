@@ -22,6 +22,7 @@ from drone.safety import SafetyConfig, SafetyManager
 from drone.tello_adapter import TelloDroneAdapter
 from swarm.fake_swarm import create_fake_swarm_nodes
 from swarm.formation_sim import FormationSimulator
+from swarm.real_swarm import create_real_swarm_nodes
 from swarm.swarm_manager import SwarmBatchResult, SwarmManager
 from vision.camera import CameraStream
 from vision.target_detect import TargetDetector
@@ -42,13 +43,88 @@ def load_config(path: Path = CONFIG_PATH) -> dict:
         with path.open("r", encoding="utf-8") as file:
             return yaml.safe_load(file)
     except ModuleNotFoundError:
-        config = {}
-        for line in path.read_text(encoding="utf-8").splitlines():
-            if not line.strip() or line.lstrip().startswith("#"):
-                continue
-            key, value = line.split(":", 1)
+        return _load_config_without_yaml(path)
+
+
+def _load_config_without_yaml(path: Path) -> dict:
+    """Parse the project's simple config.yaml shape when PyYAML is missing."""
+    config = {}
+    lines = path.read_text(encoding="utf-8").splitlines()
+    index = 0
+    while index < len(lines):
+        raw = lines[index]
+        stripped = raw.strip()
+        if not stripped or stripped.startswith("#"):
+            index += 1
+            continue
+
+        if raw.startswith("swarm:"):
+            swarm, index = _parse_swarm_block(lines, index + 1)
+            config["swarm"] = swarm
+            continue
+
+        if ":" in raw and not raw.startswith(" "):
+            key, value = raw.split(":", 1)
             config[key.strip()] = _parse_config_value(value.strip())
-        return config
+        index += 1
+    return config
+
+
+def _parse_swarm_block(lines: list[str], start_index: int) -> tuple[dict, int]:
+    """Parse the flat swarm block and its drones list."""
+    swarm = {}
+    index = start_index
+    while index < len(lines):
+        raw = lines[index]
+        stripped = raw.strip()
+        if raw and not raw.startswith(" ") and stripped:
+            break
+        if not stripped or stripped.startswith("#"):
+            index += 1
+            continue
+
+        if stripped == "drones:":
+            drones, index = _parse_swarm_drones(lines, index + 1)
+            swarm["drones"] = drones
+            continue
+
+        if ":" in stripped:
+            key, value = stripped.split(":", 1)
+            swarm[key.strip()] = _parse_config_value(value.strip())
+        index += 1
+    return swarm, index
+
+
+def _parse_swarm_drones(lines: list[str], start_index: int) -> tuple[list[dict], int]:
+    """Parse the drones list from config.yaml fallback loading."""
+    drones = []
+    current = None
+    index = start_index
+    while index < len(lines):
+        raw = lines[index]
+        stripped = raw.strip()
+        if raw and not raw.startswith(" ") and stripped:
+            break
+        if not stripped or stripped.startswith("#"):
+            index += 1
+            continue
+
+        if stripped.startswith("- "):
+            if current:
+                drones.append(current)
+            current = {}
+            item = stripped[2:]
+            if ":" in item:
+                key, value = item.split(":", 1)
+                current[key.strip()] = _parse_config_value(value.strip())
+        elif current is not None and ":" in stripped:
+            key, value = stripped.split(":", 1)
+            current[key.strip()] = _parse_config_value(value.strip())
+        index += 1
+
+    if current:
+        drones.append(current)
+    return drones, index
 
 
 def _parse_config_value(value: str) -> object:
@@ -597,11 +673,20 @@ def run_swarm_sim() -> int:
 
 def build_fake_swarm_manager(config: dict) -> SwarmManager:
     """Create a fake four-node swarm manager from config.yaml."""
+    return build_swarm_manager(config, use_fake=True)
+
+
+def build_swarm_manager(config: dict, use_fake: bool = False) -> SwarmManager:
+    """Create a fake or real swarm manager from config.yaml."""
     swarm_config = config.get("swarm", {})
     if not isinstance(swarm_config, dict):
         swarm_config = {}
     drone_configs = swarm_config.get("drones")
-    nodes = create_fake_swarm_nodes(drone_configs if isinstance(drone_configs, list) else None)
+    configs = drone_configs if isinstance(drone_configs, list) else None
+    if use_fake:
+        nodes = create_fake_swarm_nodes(configs)
+    else:
+        nodes = create_real_swarm_nodes(configs)
     return SwarmManager.from_config(config, nodes)
 
 
@@ -623,22 +708,19 @@ def print_swarm_batch(result: SwarmBatchResult) -> None:
 
 
 def run_swarm_status(use_fake: bool = False) -> int:
-    """Read fake swarm status without takeoff."""
-    if not use_fake:
-        print("swarm-status 当前只允许 --fake，避免误连真机。")
-        return 1
-    manager = build_fake_swarm_manager(load_config())
+    """Read swarm status without takeoff or video."""
+    manager = build_swarm_manager(load_config(), use_fake=use_fake)
+    print("Swarm 状态读取：不会起飞，不打开视频流。")
     print_swarm_batch(manager.connect_all())
     print_swarm_batch(manager.status_all())
     return 0
 
 
 def run_swarm_connect_test(use_fake: bool = False) -> int:
-    """Connect fake swarm nodes and send zero RC only."""
-    if not use_fake:
-        print("swarm-connect-test 当前只允许 --fake，避免误连真机。")
-        return 1
-    manager = build_fake_swarm_manager(load_config())
+    """Connect swarm nodes and send zero RC only."""
+    if not use_fake and not confirm_real_swarm_action("连接四机并发送零 RC/急停清理"):
+        return 0
+    manager = build_swarm_manager(load_config(), use_fake=use_fake)
     print_swarm_batch(manager.connect_all())
     print_swarm_batch(manager.zero_rc_all())
     print_swarm_batch(manager.emergency_stop_all())
@@ -646,21 +728,79 @@ def run_swarm_connect_test(use_fake: bool = False) -> int:
 
 
 def run_swarm_basic_test(use_fake: bool = False) -> int:
-    """Run fake swarm connect, takeoff, zero RC, and landing sequence."""
-    if not use_fake:
-        print("swarm-basic-test 当前只允许 --fake，真机起降入口后续单独审核。")
-        return 1
-    answer = input("即将运行 Fake Swarm 起降流程。输入 YES 继续：").strip()
-    if answer != "YES":
-        print("已取消 Fake Swarm 基础测试：未收到 YES 确认。")
+    """Run swarm connect, takeoff, zero RC, and landing sequence."""
+    if not use_fake and not confirm_real_swarm_action("四机顺序起飞、清零、顺序降落"):
         return 0
-    manager = build_fake_swarm_manager(load_config())
+    manager = build_swarm_manager(load_config(), use_fake=use_fake)
     print_swarm_batch(manager.connect_all())
     print_swarm_batch(manager.takeoff_sequence())
     print_swarm_batch(manager.zero_rc_all())
     print_swarm_batch(manager.land_sequence())
     print_swarm_batch(manager.emergency_stop_all())
     return 0
+
+
+def run_swarm_hover_test(use_fake: bool = False) -> int:
+    """Run sequential takeoff, short synchronized hover, and landing."""
+    config = load_config()
+    if not use_fake and not confirm_real_swarm_action("四机顺序起飞、同步悬停、顺序降落"):
+        return 0
+    manager = build_swarm_manager(config, use_fake=use_fake)
+    swarm_config = config.get("swarm", {})
+    if not isinstance(swarm_config, dict):
+        swarm_config = {}
+    hover_seconds = float(swarm_config.get("hover_test_seconds", 10))
+    print_swarm_batch(manager.connect_all())
+    takeoff = manager.takeoff_sequence()
+    print_swarm_batch(takeoff)
+    if takeoff.success:
+        print(f"同步悬停 {hover_seconds:.1f} 秒。")
+        sleep(max(0.0, hover_seconds))
+        print_swarm_batch(manager.zero_rc_all())
+    print_swarm_batch(manager.land_sequence())
+    print_swarm_batch(manager.emergency_stop_all())
+    return 0
+
+
+def run_swarm_rc_test(use_fake: bool = False) -> int:
+    """Run one low-speed, short RC move and immediately zero all nodes."""
+    config = load_config()
+    if not use_fake and not confirm_real_swarm_action("四机顺序起飞、低速短时移动、立即清零并降落"):
+        return 0
+    swarm_config = config.get("swarm", {})
+    if not isinstance(swarm_config, dict):
+        swarm_config = {}
+    move_seconds = float(swarm_config.get("rc_test_seconds", 0.5))
+    command = (
+        int(swarm_config.get("rc_test_left_right", 0)),
+        int(swarm_config.get("rc_test_forward_backward", 8)),
+        int(swarm_config.get("rc_test_up_down", 0)),
+        int(swarm_config.get("rc_test_yaw", 0)),
+    )
+
+    manager = build_swarm_manager(config, use_fake=use_fake)
+    print_swarm_batch(manager.connect_all())
+    takeoff = manager.takeoff_sequence()
+    print_swarm_batch(takeoff)
+    if takeoff.success:
+        print(f"低速短时 RC 指令 {command}，持续 {move_seconds:.1f} 秒后立即清零。")
+        result = manager.send_rc_all(command, duration_s=move_seconds)
+        print_swarm_batch(result)
+        print_swarm_batch(manager.zero_rc_all())
+    print_swarm_batch(manager.land_sequence())
+    print_swarm_batch(manager.emergency_stop_all())
+    return 0
+
+
+def confirm_real_swarm_action(action_label: str) -> bool:
+    """Require explicit confirmation before any real swarm action with risk."""
+    print(f"即将执行真机 Swarm 操作：{action_label}。")
+    print("请确认空域安全、桨叶/保护罩状态正确、四机 IP 与编号已经核对。")
+    answer = input("输入 YES 继续，其他输入取消：").strip()
+    if answer != "YES":
+        print("已取消真机 Swarm 操作：未收到 YES 确认。")
+        return False
+    return True
 
 
 def parse_args() -> argparse.Namespace:
@@ -683,9 +823,11 @@ def parse_args() -> argparse.Namespace:
             "swarm-status",
             "swarm-connect-test",
             "swarm-basic-test",
+            "swarm-hover-test",
+            "swarm-rc-test",
         ),
         default="demo",
-        help="运行模式：demo 启动骨架说明，status 读取无人机状态，safety-test 测试安全保护逻辑，follow-test 测试跟随方向逻辑，follow-dry-run 真机起飞前干跑验证，basic-flight-test 真机基础起降测试，camera-debug 调试颜色通道和红色 mask，camera 显示视频识别画面，follow 低速目标跟随，agent 规则版任务调度，swarm-sim 多机编队仿真，swarm-status/swarm-connect-test/swarm-basic-test 运行 Fake Swarm 验证。",
+        help="运行模式：demo 启动骨架说明，status 读取无人机状态，safety-test 测试安全保护逻辑，follow-test 测试跟随方向逻辑，follow-dry-run 真机起飞前干跑验证，basic-flight-test 真机基础起降测试，camera-debug 调试颜色通道和红色 mask，camera 显示视频识别画面，follow 低速目标跟随，agent 规则版任务调度，swarm-sim 多机编队仿真，swarm-status/swarm-connect-test/swarm-basic-test/swarm-hover-test/swarm-rc-test 运行 Swarm 验证。",
     )
     parser.add_argument(
         "--fake",
@@ -724,6 +866,10 @@ def main() -> int:
         return run_swarm_connect_test(use_fake=args.fake)
     if args.mode == "swarm-basic-test":
         return run_swarm_basic_test(use_fake=args.fake)
+    if args.mode == "swarm-hover-test":
+        return run_swarm_hover_test(use_fake=args.fake)
+    if args.mode == "swarm-rc-test":
+        return run_swarm_rc_test(use_fake=args.fake)
 
     controller = build_system(use_fake=args.fake)
     controller.describe()

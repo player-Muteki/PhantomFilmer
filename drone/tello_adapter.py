@@ -12,7 +12,8 @@ from .drone_adapter import DroneAdapter
 class TelloDroneAdapter(DroneAdapter):
     """Control RoboMaster TT / Tello Talent through djitellopy.Tello."""
 
-    def __init__(self) -> None:
+    def __init__(self, host: str = "192.168.10.1") -> None:
+        self.host = host
         self._tello: Optional[Any] = None
         self.connected = False
         self.streaming = False
@@ -38,8 +39,7 @@ class TelloDroneAdapter(DroneAdapter):
         self._require_connection()
         answer = input("即将起飞，请确认周围安全并输入 YES 继续：").strip()
         if answer != "YES":
-            print("已取消起飞：未收到用户确认。")
-            return
+            raise RuntimeError("已取消起飞：未收到用户确认。")
         try:
             self._tello.takeoff()
         except Exception as exc:
@@ -138,7 +138,15 @@ class TelloDroneAdapter(DroneAdapter):
             from djitellopy import Tello
         except ModuleNotFoundError as exc:
             raise RuntimeError("缺少 djitellopy 依赖：请先安装 requirements.txt。") from exc
-        return Tello()
+        try:
+            return Tello(host=self.host)
+        except TypeError:
+            tello = Tello()
+            if self.host != "192.168.10.1":
+                raise RuntimeError(
+                    "当前 djitellopy 版本不支持指定 host，无法安全连接多台 TT。"
+                )
+            return tello
 
     def _require_connection(self) -> None:
         """Raise a Chinese error if no aircraft connection is available."""

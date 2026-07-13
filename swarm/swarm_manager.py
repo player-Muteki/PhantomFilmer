@@ -112,15 +112,24 @@ class SwarmManager:
             interval_s=self.takeoff_interval_s,
         )
 
-    def send_rc_all(self, command: Union[RCCommand, RC_Tuple]) -> SwarmBatchResult:
+    def send_rc_all(self, command: Union[RCCommand, RC_Tuple], duration_s: float = 0.0) -> SwarmBatchResult:
         """Send a base command to all nodes after formation and safety checks."""
         commands = self.formation_controller.distribute(self.nodes.keys(), self._as_tuple(command))
         nonzero_requested = any(not self.safety_manager.is_zero_command(cmd) for cmd in commands.values())
         if nonzero_requested and not self.safety_manager.allow_nonzero_rc(self.nodes.values()):
             return self.zero_rc_all(action="send_rc_all_blocked")
-        return self._send_commands("send_rc_all", commands)
+        result = self._send_commands("send_rc_all", commands)
+        if nonzero_requested:
+            sleep(max(0.0, float(duration_s)))
+            self.zero_rc_all(action="send_rc_all_auto_zero")
+        return result
 
-    def send_node_rc(self, drone_id: str, command: Union[RCCommand, RC_Tuple]) -> SwarmBatchResult:
+    def send_node_rc(
+        self,
+        drone_id: str,
+        command: Union[RCCommand, RC_Tuple],
+        duration_s: float = 0.0,
+    ) -> SwarmBatchResult:
         """Send one command to a selected node."""
         if drone_id not in self.nodes:
             raise KeyError(f"unknown swarm drone id: {drone_id}")
@@ -129,7 +138,11 @@ class SwarmManager:
             self.nodes.values()
         ):
             return self.zero_rc_all(action="send_node_rc_blocked")
-        return self._send_commands("send_node_rc", {drone_id: rc_command})
+        result = self._send_commands("send_node_rc", {drone_id: rc_command})
+        if not self.safety_manager.is_zero_command(rc_command):
+            sleep(max(0.0, float(duration_s)))
+            self.zero_rc_all(action="send_node_rc_auto_zero")
+        return result
 
     def zero_rc_all(self, action: str = "zero_rc_all") -> SwarmBatchResult:
         """Send zero velocity to every node."""
