@@ -27,21 +27,21 @@ horizontal_dead_zone_ratio: 0.08
 yaw_kp: 160
 minimum_yaw_speed: 20
 maximum_yaw_speed: 35
-# 已标定的 ArUco 理想打伞距离：area_ratio 约 0.080。
-target_area_ratio_min: 0.075
-target_area_ratio_max: 0.085
+# ArUco 前后距离分区：0.020–0.080 悬停，0.010–0.100 小幅调整。
+target_area_ratio_min: 0.020
+target_area_ratio_max: 0.080
 forward_kp: 1300
 minimum_forward_speed: 12
 maximum_forward_speed: 35
-forward_slow_area_ratio_min: 0.040
-forward_slow_area_ratio_max: 0.125
+forward_slow_area_ratio_min: 0.010
+forward_slow_area_ratio_max: 0.100
 large_horizontal_error_ratio: 0.28
 forward_speed_while_turning_ratio: 0.25
 vertical_dead_zone_ratio: 0.10
 vertical_speed: 16
 target_lock_stable_frames: 15
-target_lock_exit_area_ratio_min: 0.060
-target_lock_exit_area_ratio_max: 0.105
+target_lock_exit_area_ratio_min: 0.020
+target_lock_exit_area_ratio_max: 0.080
 target_lock_exit_horizontal_dead_zone_ratio: 0.12
 target_lock_exit_vertical_dead_zone_ratio: 0.15
 control_interval: 0.05

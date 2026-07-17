@@ -220,26 +220,26 @@ class FollowControllerTestCase(unittest.TestCase):
         controller = FollowController.from_config(
             safety_manager=build_safety(max_rc_speed=35),
             config={
-                "target_area_ratio_min": 0.075,
-                "target_area_ratio_max": 0.085,
+                "target_area_ratio_min": 0.020,
+                "target_area_ratio_max": 0.080,
                 "minimum_forward_speed": 12,
                 "maximum_forward_speed": 35,
-                "forward_slow_area_ratio_min": 0.040,
-                "forward_slow_area_ratio_max": 0.125,
+                "forward_slow_area_ratio_min": 0.010,
+                "forward_slow_area_ratio_max": 0.100,
             },
         )
 
         near_far = controller.compute_command(
-            {"found": True, "center": (320, 240), "area": 0.050 * 640 * 480}, 640, 480
+            {"found": True, "center": (320, 240), "area": 0.015 * 640 * 480}, 640, 480
         )
         far = controller.compute_command(
-            {"found": True, "center": (320, 240), "area": 0.030 * 640 * 480}, 640, 480
+            {"found": True, "center": (320, 240), "area": 0.005 * 640 * 480}, 640, 480
         )
         near_close = controller.compute_command(
-            {"found": True, "center": (320, 240), "area": 0.110 * 640 * 480}, 640, 480
+            {"found": True, "center": (320, 240), "area": 0.090 * 640 * 480}, 640, 480
         )
         close = controller.compute_command(
-            {"found": True, "center": (320, 240), "area": 0.130 * 640 * 480}, 640, 480
+            {"found": True, "center": (320, 240), "area": 0.110 * 640 * 480}, 640, 480
         )
 
         self.assertEqual(near_far.forward_backward, 12)
