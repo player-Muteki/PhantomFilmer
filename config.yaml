@@ -9,7 +9,7 @@ camera_width: 640
 camera_height: 480
 target_color: red
 vision:
-  detector_type: red
+  detector_type: aruco
   # ArUco 面积与红色轮廓面积不同；真机前请先用 follow-dry-run 标定面积阈值。
   aruco_dictionary: DICT_4X4_50
   target_marker_id: 23
@@ -27,8 +27,8 @@ horizontal_dead_zone_ratio: 0.08
 yaw_kp: 160
 minimum_yaw_speed: 20
 maximum_yaw_speed: 35
-target_area_ratio_min: 0.045
-target_area_ratio_max: 0.085
+target_area_ratio_min: 0.440
+target_area_ratio_max: 0.441
 forward_kp: 1300
 minimum_forward_speed: 28
 maximum_forward_speed: 35
