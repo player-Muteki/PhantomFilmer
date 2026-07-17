@@ -216,7 +216,7 @@ class FollowControllerTestCase(unittest.TestCase):
 
         self.assertLess(command.forward_backward, 0)
 
-    def test_large_horizontal_error_suppresses_forward(self) -> None:
+    def test_horizontal_error_blocks_forward_until_centered(self) -> None:
         controller = self.build_controller()
         centered_far = controller.compute_command(
             {"found": True, "center": (320, 240), "area": 1000, "bbox": (305, 225, 30, 30)},
@@ -229,7 +229,8 @@ class FollowControllerTestCase(unittest.TestCase):
             480,
         )
 
-        self.assertLess(large_error_far.forward_backward, centered_far.forward_backward)
+        self.assertGreater(centered_far.forward_backward, 0)
+        self.assertEqual(large_error_far.forward_backward, 0)
 
     def test_small_horizontal_error_allows_forward(self) -> None:
         controller = self.build_controller()
@@ -240,6 +241,29 @@ class FollowControllerTestCase(unittest.TestCase):
         )
 
         self.assertGreater(command.forward_backward, 0)
+
+    def test_vertical_error_blocks_forward_until_centered(self) -> None:
+        controller = self.build_controller()
+        command = controller.compute_command(
+            {"found": True, "center": (320, 100), "area": 1000, "bbox": (305, 85, 30, 30)},
+            640,
+            480,
+        )
+
+        self.assertGreater(command.up_down, 0)
+        self.assertEqual(command.forward_backward, 0)
+
+    def test_horizontal_alignment_precedes_vertical_adjustment(self) -> None:
+        controller = self.build_controller()
+        command = controller.compute_command(
+            {"found": True, "center": (120, 100), "area": 10000, "bbox": (90, 70, 60, 60)},
+            640,
+            480,
+        )
+
+        self.assertLess(command.yaw, 0)
+        self.assertEqual(command.up_down, 0)
+        self.assertEqual(command.forward_backward, 0)
 
     def test_lost_target_outputs_zero(self) -> None:
         controller = self.build_controller()

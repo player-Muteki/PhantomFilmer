@@ -153,13 +153,14 @@ class FollowController:
         area_ratio = area / frame_area
 
         left_right = 0
-        up_down = self._compute_vertical(vertical_error_ratio)
         yaw = self._compute_yaw(horizontal_error_ratio)
-        forward_backward = self._compute_forward(area_ratio)
+        horizontal_centered = abs(horizontal_error_ratio) <= self.horizontal_dead_zone_ratio
+        vertical_centered = abs(vertical_error_ratio) <= self.vertical_dead_zone_ratio
 
-        # 大角度未对准时先偏航对准，避免无人机朝错误方向前冲。
-        if abs(horizontal_error_ratio) >= self.large_horizontal_error_ratio:
-            forward_backward = int(forward_backward * self.forward_speed_while_turning_ratio)
+        # 串行对准：先水平偏航，再调整高度；只有目标在画面中心附近时才
+        # 根据面积前进或后退。这样可避免目标明显偏离画面中心时继续靠近。
+        up_down = self._compute_vertical(vertical_error_ratio) if horizontal_centered else 0
+        forward_backward = self._compute_forward(area_ratio) if horizontal_centered and vertical_centered else 0
 
         limited = self.safety_manager.limit_rc_command(
             left_right,
