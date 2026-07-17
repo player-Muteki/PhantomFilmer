@@ -216,7 +216,7 @@ class FollowControllerTestCase(unittest.TestCase):
 
         self.assertLess(command.forward_backward, 0)
 
-    def test_distance_control_uses_slow_and_fast_fixed_speeds(self) -> None:
+    def test_distance_control_uses_full_speed_outside_hover_band(self) -> None:
         controller = FollowController.from_config(
             safety_manager=build_safety(max_rc_speed=35),
             config={
@@ -224,27 +224,17 @@ class FollowControllerTestCase(unittest.TestCase):
                 "target_area_ratio_max": 0.080,
                 "minimum_forward_speed": 12,
                 "maximum_forward_speed": 35,
-                "forward_slow_area_ratio_min": 0.010,
-                "forward_slow_area_ratio_max": 0.100,
             },
         )
 
-        near_far = controller.compute_command(
+        far = controller.compute_command(
             {"found": True, "center": (320, 240), "area": 0.020 * 640 * 480}, 640, 480
         )
-        far = controller.compute_command(
-            {"found": True, "center": (320, 240), "area": 0.005 * 640 * 480}, 640, 480
-        )
-        near_close = controller.compute_command(
+        close = controller.compute_command(
             {"found": True, "center": (320, 240), "area": 0.090 * 640 * 480}, 640, 480
         )
-        close = controller.compute_command(
-            {"found": True, "center": (320, 240), "area": 0.110 * 640 * 480}, 640, 480
-        )
 
-        self.assertEqual(near_far.forward_backward, 12)
         self.assertEqual(far.forward_backward, 35)
-        self.assertEqual(near_close.forward_backward, -12)
         self.assertEqual(close.forward_backward, -35)
 
     def test_horizontal_error_allows_slow_forward_while_turning(self) -> None:
