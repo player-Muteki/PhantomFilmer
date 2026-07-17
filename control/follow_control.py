@@ -61,6 +61,7 @@ class FollowController:
         forward_kp: float = 500.0,
         minimum_forward_speed: int = 10,
         maximum_forward_speed: int = 20,
+        forward_speed_while_aligning: int = 20,
         large_horizontal_error_ratio: float = 0.28,
         forward_speed_while_turning_ratio: float = 0.25,
         vertical_dead_zone_ratio: float = 0.10,
@@ -83,6 +84,9 @@ class FollowController:
         self.forward_kp = self._positive_float(forward_kp, 500.0)
         self.minimum_forward_speed = self._non_negative_int(minimum_forward_speed, 10)
         self.maximum_forward_speed = self._positive_int(maximum_forward_speed, 20)
+        self.forward_speed_while_aligning = min(
+            self._non_negative_int(forward_speed_while_aligning, 20), self.maximum_forward_speed
+        )
         self.large_horizontal_error_ratio = self._clamp_float(
             large_horizontal_error_ratio, self.horizontal_dead_zone_ratio, 1.0, 0.28
         )
@@ -134,6 +138,7 @@ class FollowController:
             forward_kp=cls._config_float(config, "forward_kp", 500.0),
             minimum_forward_speed=cls._config_int(config, "minimum_forward_speed", 10),
             maximum_forward_speed=cls._config_int(config, "maximum_forward_speed", 20),
+            forward_speed_while_aligning=cls._config_int(config, "forward_speed_while_aligning", 20),
             large_horizontal_error_ratio=cls._config_float(config, "large_horizontal_error_ratio", 0.28),
             forward_speed_while_turning_ratio=cls._config_float(
                 config, "forward_speed_while_turning_ratio", 0.25
@@ -234,13 +239,15 @@ class FollowController:
             else:
                 self._stable_frame_count = 0
 
-            # 上下未居中时优先调整高度。左右偏离时允许同时按面积前后调整，
-            # 但将前后速度限制为最低速度，避免转向时高速接近或远离。
-            up_down = self._compute_vertical(vertical_error_ratio) if horizontal_centered else 0
-            forward_backward = self._compute_forward(area_ratio) if vertical_centered else 0
-            if yaw != 0 and forward_backward != 0:
+            # 三轴可同时对准。存在转向或上下修正时，前后速度固定限为较低值，
+            # 避免飞机在姿态尚未稳定时以前后最大速度移动。
+            up_down = self._compute_vertical(vertical_error_ratio)
+            forward_backward = self._compute_forward(area_ratio)
+            if (yaw != 0 or up_down != 0) and forward_backward != 0:
                 forward_backward = (
-                    self.minimum_forward_speed if forward_backward > 0 else -self.minimum_forward_speed
+                    self.forward_speed_while_aligning
+                    if forward_backward > 0
+                    else -self.forward_speed_while_aligning
                 )
 
             if target_state == "LOCKED":

@@ -237,7 +237,7 @@ class FollowControllerTestCase(unittest.TestCase):
         self.assertEqual(far.forward_backward, 35)
         self.assertEqual(close.forward_backward, -35)
 
-    def test_horizontal_error_allows_slow_forward_while_turning(self) -> None:
+    def test_horizontal_error_allows_alignment_speed_forward_while_turning(self) -> None:
         controller = self.build_controller()
         centered_far = controller.compute_command(
             {"found": True, "center": (320, 240), "area": 1000, "bbox": (305, 225, 30, 30)},
@@ -251,7 +251,7 @@ class FollowControllerTestCase(unittest.TestCase):
         )
 
         self.assertGreater(centered_far.forward_backward, 0)
-        self.assertEqual(large_error_far.forward_backward, controller.minimum_forward_speed)
+        self.assertEqual(large_error_far.forward_backward, controller.forward_speed_while_aligning)
         self.assertLess(large_error_far.yaw, 0)
 
     def test_small_horizontal_error_allows_forward(self) -> None:
@@ -264,7 +264,7 @@ class FollowControllerTestCase(unittest.TestCase):
 
         self.assertGreater(command.forward_backward, 0)
 
-    def test_vertical_error_blocks_forward_until_centered(self) -> None:
+    def test_vertical_error_allows_alignment_speed_forward(self) -> None:
         controller = self.build_controller()
         command = controller.compute_command(
             {"found": True, "center": (320, 100), "area": 1000, "bbox": (305, 85, 30, 30)},
@@ -273,9 +273,9 @@ class FollowControllerTestCase(unittest.TestCase):
         )
 
         self.assertGreater(command.up_down, 0)
-        self.assertEqual(command.forward_backward, 0)
+        self.assertEqual(command.forward_backward, controller.forward_speed_while_aligning)
 
-    def test_horizontal_alignment_precedes_vertical_adjustment(self) -> None:
+    def test_yaw_and_vertical_adjustments_can_run_together(self) -> None:
         controller = self.build_controller()
         command = controller.compute_command(
             {"found": True, "center": (120, 100), "area": 10000, "bbox": (90, 70, 60, 60)},
@@ -284,8 +284,20 @@ class FollowControllerTestCase(unittest.TestCase):
         )
 
         self.assertLess(command.yaw, 0)
-        self.assertEqual(command.up_down, 0)
+        self.assertGreater(command.up_down, 0)
         self.assertEqual(command.forward_backward, 0)
+
+    def test_three_axis_alignment_uses_fixed_forward_speed(self) -> None:
+        controller = self.build_controller()
+        command = controller.compute_command(
+            {"found": True, "center": (120, 100), "area": 1000, "bbox": (105, 85, 30, 30)},
+            640,
+            480,
+        )
+
+        self.assertLess(command.yaw, 0)
+        self.assertGreater(command.up_down, 0)
+        self.assertEqual(command.forward_backward, controller.forward_speed_while_aligning)
 
     def test_lock_hovers_after_target_is_stable_for_configured_frames(self) -> None:
         controller = FollowController.from_config(

@@ -51,15 +51,15 @@ class FollowArucoIntegrationTestCase(unittest.TestCase):
         self.assertGreater(self.command_for((320, 240), area=100).forward_backward, 0)
         self.assertLess(self.command_for((320, 240), area=40000).forward_backward, 0)
 
-    def test_off_center_marker_adjusts_distance_at_slow_speed_while_turning(self) -> None:
+    def test_off_center_marker_adjusts_distance_at_alignment_speed_while_turning(self) -> None:
         command = self.command_for((120, 240), area=100)
         self.assertLess(command.yaw, 0)
-        self.assertEqual(command.forward_backward, self.controller.minimum_forward_speed)
+        self.assertEqual(command.forward_backward, self.controller.forward_speed_while_aligning)
 
-    def test_height_is_aligned_before_distance_adjustment(self) -> None:
+    def test_height_adjustment_allows_alignment_speed_distance_control(self) -> None:
         command = self.command_for((320, 100), area=100)
         self.assertGreater(command.up_down, 0)
-        self.assertEqual(command.forward_backward, 0)
+        self.assertEqual(command.forward_backward, self.controller.forward_speed_while_aligning)
 
     def test_lost_marker_hovers(self) -> None:
         command = self.controller.compute_command(
