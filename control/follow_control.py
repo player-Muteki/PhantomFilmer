@@ -65,6 +65,8 @@ class FollowController:
         forward_speed_while_turning_ratio: float = 0.25,
         vertical_dead_zone_ratio: float = 0.10,
         vertical_speed: int = 8,
+        forward_slow_area_ratio_min: Optional[float] = None,
+        forward_slow_area_ratio_max: Optional[float] = None,
         target_lock_stable_frames: int = 15,
         target_lock_exit_area_ratio_min: Optional[float] = None,
         target_lock_exit_area_ratio_max: Optional[float] = None,
@@ -91,6 +93,18 @@ class FollowController:
         )
         self.vertical_dead_zone_ratio = self._clamp_float(vertical_dead_zone_ratio, 0.0, 0.5, 0.10)
         self.vertical_speed = self._non_negative_int(vertical_speed, 8)
+        self.forward_slow_area_ratio_min = self._clamp_float(
+            forward_slow_area_ratio_min,
+            0.0001,
+            self.target_area_ratio_min,
+            self.target_area_ratio_min,
+        )
+        self.forward_slow_area_ratio_max = self._clamp_float(
+            forward_slow_area_ratio_max,
+            self.target_area_ratio_max,
+            1.0,
+            self.target_area_ratio_max,
+        )
         self.target_lock_stable_frames = self._positive_int(target_lock_stable_frames, 15)
         self.target_lock_exit_area_ratio_min = self._clamp_float(
             target_lock_exit_area_ratio_min,
@@ -140,6 +154,8 @@ class FollowController:
             ),
             vertical_dead_zone_ratio=cls._config_float(config, "vertical_dead_zone_ratio", 0.10),
             vertical_speed=cls._config_int(config, "vertical_speed", 8),
+            forward_slow_area_ratio_min=config.get("forward_slow_area_ratio_min"),
+            forward_slow_area_ratio_max=config.get("forward_slow_area_ratio_max"),
             target_lock_stable_frames=cls._config_int(config, "target_lock_stable_frames", 15),
             target_lock_exit_area_ratio_min=cls._config_float(
                 config, "target_lock_exit_area_ratio_min", 0.015
@@ -327,18 +343,22 @@ class FollowController:
         return -self.vertical_speed
 
     def _compute_forward(self, area_ratio: float) -> int:
-        """Compute forward/backward tracking from target area ratio."""
+        """Use a slow near-distance speed and a fast far-distance speed."""
         if area_ratio < self.target_area_ratio_min:
-            error = self.target_area_ratio_min - area_ratio
-            raw = int(error * self.forward_kp)
-            forward = self.minimum_forward_speed + max(0, raw)
-            return self._clamp_int(forward, 0, self.maximum_forward_speed)
+            speed = (
+                self.minimum_forward_speed
+                if area_ratio >= self.forward_slow_area_ratio_min
+                else self.maximum_forward_speed
+            )
+            return self._clamp_int(speed, 0, self.maximum_forward_speed)
 
         if area_ratio > self.target_area_ratio_max:
-            error = area_ratio - self.target_area_ratio_max
-            raw = int(error * self.forward_kp)
-            backward = self.minimum_forward_speed + max(0, raw)
-            return -self._clamp_int(backward, 0, self.maximum_forward_speed)
+            speed = (
+                self.minimum_forward_speed
+                if area_ratio <= self.forward_slow_area_ratio_max
+                else self.maximum_forward_speed
+            )
+            return -self._clamp_int(speed, 0, self.maximum_forward_speed)
 
         return 0
 

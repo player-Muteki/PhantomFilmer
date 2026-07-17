@@ -28,7 +28,7 @@ import main
 from vision.target_detect import TargetDetector
 
 
-def build_safety() -> SafetyManager:
+def build_safety(max_rc_speed: int = 25) -> SafetyManager:
     """Build a test safety manager with short target-loss timing."""
     return SafetyManager(
         SafetyConfig(
@@ -36,7 +36,7 @@ def build_safety() -> SafetyManager:
             low_battery_land=20,
             max_height_cm=150,
             min_height_cm=60,
-            max_rc_speed=25,
+            max_rc_speed=max_rc_speed,
             target_lost_hover_seconds=1,
             target_lost_land_seconds=2,
         )
@@ -215,6 +215,37 @@ class FollowControllerTestCase(unittest.TestCase):
         )
 
         self.assertLess(command.forward_backward, 0)
+
+    def test_distance_control_uses_slow_and_fast_fixed_speeds(self) -> None:
+        controller = FollowController.from_config(
+            safety_manager=build_safety(max_rc_speed=35),
+            config={
+                "target_area_ratio_min": 0.075,
+                "target_area_ratio_max": 0.085,
+                "minimum_forward_speed": 12,
+                "maximum_forward_speed": 35,
+                "forward_slow_area_ratio_min": 0.040,
+                "forward_slow_area_ratio_max": 0.125,
+            },
+        )
+
+        near_far = controller.compute_command(
+            {"found": True, "center": (320, 240), "area": 0.050 * 640 * 480}, 640, 480
+        )
+        far = controller.compute_command(
+            {"found": True, "center": (320, 240), "area": 0.030 * 640 * 480}, 640, 480
+        )
+        near_close = controller.compute_command(
+            {"found": True, "center": (320, 240), "area": 0.110 * 640 * 480}, 640, 480
+        )
+        close = controller.compute_command(
+            {"found": True, "center": (320, 240), "area": 0.130 * 640 * 480}, 640, 480
+        )
+
+        self.assertEqual(near_far.forward_backward, 12)
+        self.assertEqual(far.forward_backward, 35)
+        self.assertEqual(near_close.forward_backward, -12)
+        self.assertEqual(close.forward_backward, -35)
 
     def test_horizontal_error_blocks_forward_until_centered(self) -> None:
         controller = self.build_controller()
