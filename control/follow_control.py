@@ -250,10 +250,14 @@ class FollowController:
             else:
                 self._stable_frame_count = 0
 
-        # 串行对准：先水平偏航，再调整高度；只有目标在画面中心附近时才
-        # 根据面积前进或后退。这样可避免目标明显偏离画面中心时继续靠近。
+            # 上下未居中时优先调整高度。左右偏离时允许同时按面积前后调整，
+            # 但将前后速度限制为最低速度，避免转向时高速接近或远离。
             up_down = self._compute_vertical(vertical_error_ratio) if horizontal_centered else 0
-            forward_backward = self._compute_forward(area_ratio) if horizontal_centered and vertical_centered else 0
+            forward_backward = self._compute_forward(area_ratio) if vertical_centered else 0
+            if yaw != 0 and forward_backward != 0:
+                forward_backward = (
+                    self.minimum_forward_speed if forward_backward > 0 else -self.minimum_forward_speed
+                )
 
             if target_state == "LOCKED":
                 up_down = 0

@@ -27,8 +27,8 @@ horizontal_dead_zone_ratio: 0.08
 yaw_kp: 160
 minimum_yaw_speed: 20
 maximum_yaw_speed: 35
-# ArUco 前后距离分区：0.020–0.080 悬停，0.010–0.100 小幅调整。
-target_area_ratio_min: 0.020
+# ArUco 前后距离分区：0.030–0.080 悬停，0.010–0.100 小幅调整。
+target_area_ratio_min: 0.030
 target_area_ratio_max: 0.080
 forward_kp: 1300
 minimum_forward_speed: 12
@@ -40,7 +40,7 @@ forward_speed_while_turning_ratio: 0.25
 vertical_dead_zone_ratio: 0.10
 vertical_speed: 16
 target_lock_stable_frames: 15
-target_lock_exit_area_ratio_min: 0.020
+target_lock_exit_area_ratio_min: 0.030
 target_lock_exit_area_ratio_max: 0.080
 target_lock_exit_horizontal_dead_zone_ratio: 0.12
 target_lock_exit_vertical_dead_zone_ratio: 0.15

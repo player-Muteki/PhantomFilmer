@@ -220,7 +220,7 @@ class FollowControllerTestCase(unittest.TestCase):
         controller = FollowController.from_config(
             safety_manager=build_safety(max_rc_speed=35),
             config={
-                "target_area_ratio_min": 0.020,
+                "target_area_ratio_min": 0.030,
                 "target_area_ratio_max": 0.080,
                 "minimum_forward_speed": 12,
                 "maximum_forward_speed": 35,
@@ -230,7 +230,7 @@ class FollowControllerTestCase(unittest.TestCase):
         )
 
         near_far = controller.compute_command(
-            {"found": True, "center": (320, 240), "area": 0.015 * 640 * 480}, 640, 480
+            {"found": True, "center": (320, 240), "area": 0.020 * 640 * 480}, 640, 480
         )
         far = controller.compute_command(
             {"found": True, "center": (320, 240), "area": 0.005 * 640 * 480}, 640, 480
@@ -247,7 +247,7 @@ class FollowControllerTestCase(unittest.TestCase):
         self.assertEqual(near_close.forward_backward, -12)
         self.assertEqual(close.forward_backward, -35)
 
-    def test_horizontal_error_blocks_forward_until_centered(self) -> None:
+    def test_horizontal_error_allows_slow_forward_while_turning(self) -> None:
         controller = self.build_controller()
         centered_far = controller.compute_command(
             {"found": True, "center": (320, 240), "area": 1000, "bbox": (305, 225, 30, 30)},
@@ -261,7 +261,8 @@ class FollowControllerTestCase(unittest.TestCase):
         )
 
         self.assertGreater(centered_far.forward_backward, 0)
-        self.assertEqual(large_error_far.forward_backward, 0)
+        self.assertEqual(large_error_far.forward_backward, controller.minimum_forward_speed)
+        self.assertLess(large_error_far.yaw, 0)
 
     def test_small_horizontal_error_allows_forward(self) -> None:
         controller = self.build_controller()
