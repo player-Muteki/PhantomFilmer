@@ -299,6 +299,23 @@ class FollowControllerTestCase(unittest.TestCase):
         self.assertGreater(command.up_down, 0)
         self.assertEqual(command.forward_backward, controller.forward_speed_while_aligning)
 
+    def test_configured_vertical_and_alignment_speeds_are_applied(self) -> None:
+        controller = FollowController.from_config(
+            safety_manager=build_safety(max_rc_speed=35),
+            config={
+                "vertical_speed": 20,
+                "forward_speed_while_aligning": 16,
+                "target_area_ratio_min": 0.03,
+                "target_area_ratio_max": 0.08,
+            },
+        )
+        command = controller.compute_command(
+            {"found": True, "center": (120, 100), "area": 1000}, 640, 480
+        )
+
+        self.assertEqual(command.up_down, 20)
+        self.assertEqual(command.forward_backward, 16)
+
     def test_lock_hovers_after_target_is_stable_for_configured_frames(self) -> None:
         controller = FollowController.from_config(
             safety_manager=build_safety(),

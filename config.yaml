@@ -33,11 +33,11 @@ target_area_ratio_max: 0.080
 forward_kp: 1300
 minimum_forward_speed: 12
 maximum_forward_speed: 35
-forward_speed_while_aligning: 20
+forward_speed_while_aligning: 16
 large_horizontal_error_ratio: 0.28
 forward_speed_while_turning_ratio: 0.25
 vertical_dead_zone_ratio: 0.10
-vertical_speed: 16
+vertical_speed: 20
 target_lock_stable_frames: 15
 target_lock_exit_area_ratio_min: 0.030
 target_lock_exit_area_ratio_max: 0.080
