@@ -35,7 +35,7 @@ maximum_forward_speed: 35
 large_horizontal_error_ratio: 0.28
 forward_speed_while_turning_ratio: 0.25
 vertical_dead_zone_ratio: 0.10
-vertical_speed: 8
+vertical_speed: 16
 control_interval: 0.05
 detector_min_area_ratio: 0.002
 detector_min_area: 500
