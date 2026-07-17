@@ -77,7 +77,7 @@ class FollowSession:
     def run(self) -> FollowSessionResult:
         """Start stream, take off, show the follow window, and clean up safely."""
         try:
-            self._reset_detector()
+            self._reset_tracking_state()
             self._start_camera()
             self.drone.takeoff()
             sleep(2)
@@ -344,11 +344,12 @@ class FollowSession:
                 "无法获取无人机视频流，请检查是否已连接 RoboMaster TT / Tello Wi-Fi。"
             ) from exc
 
-    def _reset_detector(self) -> None:
-        """Clear optional detector state before every independent follow task."""
+    def _reset_tracking_state(self) -> None:
+        """Clear detector and controller state before every independent follow task."""
         reset_method = getattr(self.detector, "reset", None)
         if callable(reset_method):
             reset_method()
+        self.follow_controller.reset()
 
     def _read_frame(self) -> Any:
         """Read one frame without crashing on a transient failure."""

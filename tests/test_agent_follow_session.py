@@ -265,6 +265,80 @@ class FollowControllerTestCase(unittest.TestCase):
         self.assertEqual(command.up_down, 0)
         self.assertEqual(command.forward_backward, 0)
 
+    def test_lock_hovers_after_target_is_stable_for_configured_frames(self) -> None:
+        controller = FollowController.from_config(
+            safety_manager=build_safety(),
+            config={
+                "target_area_ratio_min": 0.02,
+                "target_area_ratio_max": 0.04,
+                "target_lock_stable_frames": 2,
+                "target_lock_exit_area_ratio_min": 0.015,
+                "target_lock_exit_area_ratio_max": 0.05,
+                "target_lock_exit_horizontal_dead_zone_ratio": 0.12,
+                "target_lock_exit_vertical_dead_zone_ratio": 0.15,
+            },
+        )
+        result = {"found": True, "is_predicted": False, "center": (320, 240), "area": 9000}
+
+        controller.compute_command(result, 640, 480)
+        command = controller.compute_command(result, 640, 480)
+
+        self.assertEqual(command.as_tuple(), (0, 0, 0, 0))
+        self.assertEqual(controller.last_debug.target_state, "LOCKED")
+
+    def test_locked_target_ignores_small_motion_but_resumes_following_when_moved(self) -> None:
+        controller = FollowController.from_config(
+            safety_manager=build_safety(),
+            config={
+                "target_area_ratio_min": 0.02,
+                "target_area_ratio_max": 0.04,
+                "target_lock_stable_frames": 1,
+                "target_lock_exit_area_ratio_min": 0.015,
+                "target_lock_exit_area_ratio_max": 0.05,
+                "target_lock_exit_horizontal_dead_zone_ratio": 0.12,
+                "target_lock_exit_vertical_dead_zone_ratio": 0.15,
+            },
+        )
+        stable = {"found": True, "is_predicted": False, "center": (320, 240), "area": 9000}
+        controller.compute_command(stable, 640, 480)
+
+        small_motion = controller.compute_command(
+            {"found": True, "is_predicted": False, "center": (350, 240), "area": 9000}, 640, 480
+        )
+        moved = controller.compute_command(
+            {"found": True, "is_predicted": False, "center": (320, 240), "area": 3000}, 640, 480
+        )
+
+        self.assertEqual(small_motion.as_tuple(), (0, 0, 0, 0))
+        self.assertEqual(controller.last_debug.target_state, "FOUND")
+        self.assertGreater(moved.forward_backward, 0)
+
+    def test_predicted_detection_cannot_enter_lock(self) -> None:
+        controller = FollowController.from_config(
+            safety_manager=build_safety(),
+            config={"target_area_ratio_min": 0.02, "target_area_ratio_max": 0.04, "target_lock_stable_frames": 1},
+        )
+        command = controller.compute_command(
+            {"found": True, "is_predicted": True, "center": (320, 240), "area": 9000}, 640, 480
+        )
+
+        self.assertEqual(command.as_tuple(), (0, 0, 0, 0))
+        self.assertEqual(controller.last_debug.target_state, "FOUND")
+
+    def test_predicted_detection_releases_existing_lock(self) -> None:
+        controller = FollowController.from_config(
+            safety_manager=build_safety(),
+            config={"target_area_ratio_min": 0.02, "target_area_ratio_max": 0.04, "target_lock_stable_frames": 1},
+        )
+        controller.compute_command(
+            {"found": True, "is_predicted": False, "center": (320, 240), "area": 9000}, 640, 480
+        )
+        controller.compute_command(
+            {"found": True, "is_predicted": True, "center": (320, 240), "area": 9000}, 640, 480
+        )
+
+        self.assertEqual(controller.last_debug.target_state, "FOUND")
+
     def test_lost_target_outputs_zero(self) -> None:
         controller = self.build_controller()
         command = controller.compute_command(

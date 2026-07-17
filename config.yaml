@@ -27,8 +27,8 @@ horizontal_dead_zone_ratio: 0.08
 yaw_kp: 160
 minimum_yaw_speed: 20
 maximum_yaw_speed: 35
-target_area_ratio_min: 0.400
-target_area_ratio_max: 0.401
+target_area_ratio_min: 0.200
+target_area_ratio_max: 0.210
 forward_kp: 1300
 minimum_forward_speed: 28
 maximum_forward_speed: 35
@@ -36,6 +36,11 @@ large_horizontal_error_ratio: 0.28
 forward_speed_while_turning_ratio: 0.25
 vertical_dead_zone_ratio: 0.10
 vertical_speed: 16
+target_lock_stable_frames: 15
+target_lock_exit_area_ratio_min: 0.185
+target_lock_exit_area_ratio_max: 0.225
+target_lock_exit_horizontal_dead_zone_ratio: 0.12
+target_lock_exit_vertical_dead_zone_ratio: 0.15
 control_interval: 0.05
 detector_min_area_ratio: 0.002
 detector_min_area: 500

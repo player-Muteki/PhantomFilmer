@@ -65,6 +65,11 @@ class FollowController:
         forward_speed_while_turning_ratio: float = 0.25,
         vertical_dead_zone_ratio: float = 0.10,
         vertical_speed: int = 8,
+        target_lock_stable_frames: int = 15,
+        target_lock_exit_area_ratio_min: Optional[float] = None,
+        target_lock_exit_area_ratio_max: Optional[float] = None,
+        target_lock_exit_horizontal_dead_zone_ratio: Optional[float] = None,
+        target_lock_exit_vertical_dead_zone_ratio: Optional[float] = None,
     ) -> None:
         self.safety_manager = safety_manager
         self.horizontal_dead_zone_ratio = self._clamp_float(horizontal_dead_zone_ratio, 0.0, 0.5, 0.08)
@@ -86,6 +91,33 @@ class FollowController:
         )
         self.vertical_dead_zone_ratio = self._clamp_float(vertical_dead_zone_ratio, 0.0, 0.5, 0.10)
         self.vertical_speed = self._non_negative_int(vertical_speed, 8)
+        self.target_lock_stable_frames = self._positive_int(target_lock_stable_frames, 15)
+        self.target_lock_exit_area_ratio_min = self._clamp_float(
+            target_lock_exit_area_ratio_min,
+            0.0001,
+            self.target_area_ratio_min,
+            self.target_area_ratio_min,
+        )
+        self.target_lock_exit_area_ratio_max = self._clamp_float(
+            target_lock_exit_area_ratio_max,
+            self.target_area_ratio_max,
+            1.0,
+            self.target_area_ratio_max,
+        )
+        self.target_lock_exit_horizontal_dead_zone_ratio = self._clamp_float(
+            target_lock_exit_horizontal_dead_zone_ratio,
+            self.horizontal_dead_zone_ratio,
+            1.0,
+            self.horizontal_dead_zone_ratio,
+        )
+        self.target_lock_exit_vertical_dead_zone_ratio = self._clamp_float(
+            target_lock_exit_vertical_dead_zone_ratio,
+            self.vertical_dead_zone_ratio,
+            1.0,
+            self.vertical_dead_zone_ratio,
+        )
+        self._target_locked = False
+        self._stable_frame_count = 0
         self.last_debug = FollowDebugInfo()
 
     @classmethod
@@ -108,6 +140,19 @@ class FollowController:
             ),
             vertical_dead_zone_ratio=cls._config_float(config, "vertical_dead_zone_ratio", 0.10),
             vertical_speed=cls._config_int(config, "vertical_speed", 8),
+            target_lock_stable_frames=cls._config_int(config, "target_lock_stable_frames", 15),
+            target_lock_exit_area_ratio_min=cls._config_float(
+                config, "target_lock_exit_area_ratio_min", 0.015
+            ),
+            target_lock_exit_area_ratio_max=cls._config_float(
+                config, "target_lock_exit_area_ratio_max", 0.060
+            ),
+            target_lock_exit_horizontal_dead_zone_ratio=cls._config_float(
+                config, "target_lock_exit_horizontal_dead_zone_ratio", 0.08
+            ),
+            target_lock_exit_vertical_dead_zone_ratio=cls._config_float(
+                config, "target_lock_exit_vertical_dead_zone_ratio", 0.10
+            ),
         )
 
     def compute_command(
@@ -121,6 +166,7 @@ class FollowController:
         frame_center_x = int(frame_width) // 2
         frame_center_y = int(frame_height) // 2
         if not target_result or not target_result.get("found"):
+            self._clear_lock_state()
             self.last_debug = FollowDebugInfo(
                 frame_center_x=frame_center_x,
                 frame_center_y=frame_center_y,
@@ -136,6 +182,7 @@ class FollowController:
                 center = (target_center_x, target_center_y)
         area = float(target_result.get("area") or 0.0)
         if center is None:
+            self._clear_lock_state()
             self.last_debug = FollowDebugInfo(
                 frame_center_x=frame_center_x,
                 frame_center_y=frame_center_y,
@@ -156,11 +203,46 @@ class FollowController:
         yaw = self._compute_yaw(horizontal_error_ratio)
         horizontal_centered = abs(horizontal_error_ratio) <= self.horizontal_dead_zone_ratio
         vertical_centered = abs(vertical_error_ratio) <= self.vertical_dead_zone_ratio
+        detected_this_frame = not bool(target_result.get("is_predicted", False))
+
+        target_state = "FOUND"
+        if self._target_locked:
+            if (
+                not detected_this_frame
+                or self._outside_lock_exit_range(horizontal_error_ratio, vertical_error_ratio, area_ratio)
+            ):
+                self._clear_lock_state()
+            else:
+                target_state = "LOCKED"
+
+        if target_state == "LOCKED":
+            up_down = 0
+            yaw = 0
+            forward_backward = 0
+        else:
+            is_stable = (
+                detected_this_frame
+                and horizontal_centered
+                and vertical_centered
+                and self.target_area_ratio_min <= area_ratio <= self.target_area_ratio_max
+            )
+            if is_stable:
+                self._stable_frame_count += 1
+                if self._stable_frame_count >= self.target_lock_stable_frames:
+                    self._target_locked = True
+                    target_state = "LOCKED"
+            else:
+                self._stable_frame_count = 0
 
         # 串行对准：先水平偏航，再调整高度；只有目标在画面中心附近时才
         # 根据面积前进或后退。这样可避免目标明显偏离画面中心时继续靠近。
-        up_down = self._compute_vertical(vertical_error_ratio) if horizontal_centered else 0
-        forward_backward = self._compute_forward(area_ratio) if horizontal_centered and vertical_centered else 0
+            up_down = self._compute_vertical(vertical_error_ratio) if horizontal_centered else 0
+            forward_backward = self._compute_forward(area_ratio) if horizontal_centered and vertical_centered else 0
+
+            if target_state == "LOCKED":
+                up_down = 0
+                yaw = 0
+                forward_backward = 0
 
         limited = self.safety_manager.limit_rc_command(
             left_right,
@@ -180,7 +262,7 @@ class FollowController:
             vertical_error_ratio=vertical_error_ratio,
             target_area=area,
             area_ratio=area_ratio,
-            target_state="FOUND",
+            target_state=target_state,
             yaw=command.yaw,
             left_right=command.left_right,
             forward_backward=command.forward_backward,
@@ -188,10 +270,33 @@ class FollowController:
         )
         return command
 
+    def reset(self) -> None:
+        """Clear lock state before a new independent follow task."""
+        self._clear_lock_state()
+        self.last_debug = FollowDebugInfo()
+
     def hover(self) -> RCCommand:
         """Return a zero-velocity command."""
         limited = self.safety_manager.limit_rc_command(0, 0, 0, 0)
         return RCCommand(*limited)
+
+    def _clear_lock_state(self) -> None:
+        self._target_locked = False
+        self._stable_frame_count = 0
+
+    def _outside_lock_exit_range(
+        self,
+        horizontal_error_ratio: float,
+        vertical_error_ratio: float,
+        area_ratio: float,
+    ) -> bool:
+        """Return whether a locked target moved enough to resume following."""
+        return (
+            abs(horizontal_error_ratio) > self.target_lock_exit_horizontal_dead_zone_ratio
+            or abs(vertical_error_ratio) > self.target_lock_exit_vertical_dead_zone_ratio
+            or area_ratio < self.target_lock_exit_area_ratio_min
+            or area_ratio > self.target_lock_exit_area_ratio_max
+        )
 
     def _compute_yaw(self, horizontal_error_ratio: float) -> int:
         """Compute yaw-first horizontal tracking.

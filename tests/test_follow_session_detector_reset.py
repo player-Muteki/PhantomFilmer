@@ -42,6 +42,16 @@ class ThreeFrameSession(FollowSession):
             self.detector.detect(None)
 
 
+class RecordingFollowController(FollowController):
+    def __init__(self, safety_manager) -> None:
+        super().__init__(safety_manager=safety_manager)
+        self.reset_calls = 0
+
+    def reset(self) -> None:
+        self.reset_calls += 1
+        super().reset()
+
+
 class FollowSessionDetectorResetTestCase(unittest.TestCase):
     def build_session(self, detector):
         safety = SafetyManager(SafetyConfig(30, 20, 150, 60, 35, 3, 8))
@@ -64,6 +74,21 @@ class FollowSessionDetectorResetTestCase(unittest.TestCase):
     def test_detector_without_reset_remains_supported(self) -> None:
         with patch("control.follow_session.sleep", return_value=None):
             self.build_session(NoResetDetector()).run()
+
+    def test_controller_reset_is_called_once_before_a_new_session(self) -> None:
+        safety = SafetyManager(SafetyConfig(30, 20, 150, 60, 35, 3, 8))
+        controller = RecordingFollowController(safety)
+        session = ThreeFrameSession(
+            drone=FakeDroneAdapter(verbose_rc=False),
+            safety_manager=safety,
+            detector=NoResetDetector(),
+            follow_controller=controller,
+            config={"display_agent_camera": False},
+            mode_label="FAKE",
+        )
+        with patch("control.follow_session.sleep", return_value=None):
+            session.run()
+        self.assertEqual(controller.reset_calls, 1)
 
 
 if __name__ == "__main__":
