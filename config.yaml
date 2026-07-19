@@ -9,7 +9,7 @@ camera_width: 640
 camera_height: 480
 target_color: red
 vision:
-  detector_type: aruco
+  detector_type: red
   # ArUco 面积与红色轮廓面积不同；真机前请先用 follow-dry-run 标定面积阈值。
   aruco_dictionary: DICT_4X4_50
   target_marker_id: 23
