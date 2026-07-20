@@ -1,4 +1,4 @@
-"""Compatibility exports for the Agent follow session."""
+"""Console follow session compatibility exports."""
 
 from typing import Dict, Optional
 
@@ -9,8 +9,8 @@ from drone.safety import SafetyManager
 from vision.detector_protocol import DetectorProtocol
 
 
-class AgentFollowSession(FollowSession):
-    """Agent-facing name for the shared follow session."""
+class ConsoleFollowSession(FollowSession):
+    """Console-facing name for the shared follow session."""
 
     def __init__(
         self,
@@ -21,7 +21,7 @@ class AgentFollowSession(FollowSession):
         config: Dict[str, object],
         mode_label: str,
         window_name: Optional[str] = None,
-        state_label: str = "AGENT",
+        state_label: str = "CONSOLE",
         allow_pause: bool = True,
     ) -> None:
         super().__init__(
@@ -32,10 +32,10 @@ class AgentFollowSession(FollowSession):
             config=config,
             mode_label=mode_label,
             window_name=window_name
-            or str(config.get("agent_window_name", "DroneUmbrella Agent Follow")),
+            or str(config.get("console_window_name", "DroneUmbrella Console Follow")),
             state_label=state_label,
             allow_pause=allow_pause,
         )
 
 
-AgentFollowSessionResult = FollowSessionResult
+ConsoleFollowSessionResult = FollowSessionResult

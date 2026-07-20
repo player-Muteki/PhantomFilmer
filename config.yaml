@@ -16,8 +16,8 @@ vision:
   smoothing_alpha: 0.30
   temporary_lost_frames: 0
   min_marker_area: 300
-display_agent_camera: true
-agent_window_name: "DroneUmbrella Agent Follow"
+display_console_camera: true
+console_window_name: "DroneUmbrella Console Follow"
 fake_camera_enabled: true
 fake_target_speed: 3
 fake_target_lost_interval_seconds: 12

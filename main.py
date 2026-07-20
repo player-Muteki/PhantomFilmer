@@ -5,15 +5,15 @@ from pathlib import Path
 from time import sleep
 from typing import Optional
 
-from agent.agent_controller import AgentController
-from agent.command_parser import CommandParser
-from agent.llm_client import (
+from console.console_controller import ConsoleController
+from console.command_parser import CommandParser
+from console.llm_client import (
     DEFAULT_BASE_URL,
     DEFAULT_MODEL,
     DEFAULT_TIMEOUT_SECONDS,
     LLMClient,
 )
-from agent.tools import AgentTools
+from console.tools import ConsoleTools
 from control.follow_control import FollowController
 from control.follow_session import FollowSession
 from drone.drone_adapter import DroneAdapter
@@ -229,8 +229,8 @@ def create_drone_adapter(
     return TelloDroneAdapter()
 
 
-def build_system(use_fake: bool = False) -> AgentController:
-    """Create the natural-language Agent with safety-wrapped tools."""
+def build_system(use_fake: bool = False) -> ConsoleController:
+    """Create the natural-language Console with safety-wrapped tools."""
     config = load_config()
     safety_manager = SafetyManager(SafetyConfig.from_dict(config))
     detector = create_detector(config)
@@ -238,7 +238,7 @@ def build_system(use_fake: bool = False) -> AgentController:
         safety_manager=safety_manager,
         config=config,
     )
-    tools = AgentTools(
+    tools = ConsoleTools(
         drone=create_drone_adapter(use_fake, verbose_fake_rc=False, config=config),
         safety_manager=safety_manager,
         detector=detector,
@@ -257,7 +257,7 @@ def build_system(use_fake: bool = False) -> AgentController:
         enabled=bool(config.get("llm_enabled", False)),
     )
     parser = CommandParser(llm_client=llm_client)
-    return AgentController(tools=tools, parser=parser, llm_client=llm_client)
+    return ConsoleController(tools=tools, parser=parser, llm_client=llm_client)
 
 
 def run_status(use_fake: bool = False) -> int:
@@ -280,8 +280,8 @@ def run_status(use_fake: bool = False) -> int:
         drone.stop()
 
 
-def run_agent(use_fake: bool = False) -> int:
-    """Run the interactive rule-based Agent scheduler."""
+def run_console(use_fake: bool = False) -> int:
+    """Run the interactive rule-based Console scheduler."""
     controller = build_system(use_fake=use_fake)
     try:
         print("正在连接模拟无人机..." if use_fake else "正在连接 RoboMaster TT / Tello...")
@@ -874,7 +874,7 @@ def parse_args() -> argparse.Namespace:
             "camera-debug",
             "camera",
             "follow",
-            "agent",
+            "console",
             "swarm-sim",
             "swarm-status",
             "swarm-connect-test",
@@ -883,7 +883,7 @@ def parse_args() -> argparse.Namespace:
             "swarm-rc-test",
         ),
         default="demo",
-        help="运行模式：demo 启动骨架说明，status 读取无人机状态，safety-test 测试安全保护逻辑，follow-test 测试跟随方向逻辑，follow-dry-run 真机起飞前干跑验证，basic-flight-test 真机基础起降测试，camera-debug 调试颜色通道和红色 mask，camera 显示视频识别画面，follow 低速目标跟随，agent 规则版任务调度，swarm-sim 多机编队仿真，swarm-status/swarm-connect-test/swarm-basic-test/swarm-hover-test/swarm-rc-test 运行 Swarm 验证。",
+        help="运行模式：demo 启动骨架说明，status 读取无人机状态，safety-test 测试安全保护逻辑，follow-test 测试跟随方向逻辑，follow-dry-run 真机起飞前干跑验证，basic-flight-test 真机基础起降测试，camera-debug 调试颜色通道和红色 mask，camera 显示视频识别画面，follow 低速目标跟随，console 控制台任务调度，swarm-sim 多机编队仿真，swarm-status/swarm-connect-test/swarm-basic-test/swarm-hover-test/swarm-rc-test 运行 Swarm 验证。",
     )
     parser.add_argument(
         "--fake",
@@ -912,8 +912,8 @@ def main() -> int:
         return run_camera(use_fake=args.fake)
     if args.mode == "follow":
         return run_follow(use_fake=args.fake)
-    if args.mode == "agent":
-        return run_agent(use_fake=args.fake)
+    if args.mode == "console":
+        return run_console(use_fake=args.fake)
     if args.mode == "swarm-sim":
         return run_swarm_sim()
     if args.mode == "swarm-status":

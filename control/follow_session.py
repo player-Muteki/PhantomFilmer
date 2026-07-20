@@ -44,12 +44,12 @@ class FollowSession:
         self.config = config
         self.mode_label = mode_label
         self.window_name = window_name or str(
-            config.get("agent_window_name", "DroneUmbrella Follow")
+            config.get("console_window_name", "DroneUmbrella Follow")
         )
         self.state_label = state_label
         self.allow_pause = allow_pause
         self.stop_event = stop_event or Event()
-        self.display_enabled = bool(config.get("display_agent_camera", True))
+        self.display_enabled = bool(config.get("display_console_camera", True))
         self.frame_failure_limit = int(config.get("frame_failure_limit", 30))
         self.control_interval = self._read_control_interval(config)
 
@@ -66,12 +66,12 @@ class FollowSession:
         self.control_hz = 0.0
 
     @property
-    def agent_state(self) -> str:
-        """Compatibility property used by earlier Agent tests."""
+    def console_state(self) -> str:
+        """Compatibility property used by earlier console tests."""
         return self.session_state
 
-    @agent_state.setter
-    def agent_state(self, value: str) -> None:
+    @console_state.setter
+    def console_state(self, value: str) -> None:
         self.session_state = value
 
     def run(self) -> FollowSessionResult:

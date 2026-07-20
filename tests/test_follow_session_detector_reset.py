@@ -60,7 +60,7 @@ class FollowSessionDetectorResetTestCase(unittest.TestCase):
             safety_manager=safety,
             detector=detector,
             follow_controller=FollowController(safety_manager=safety),
-            config={"display_agent_camera": False},
+            config={"display_console_camera": False},
             mode_label="FAKE",
         )
 
@@ -83,7 +83,7 @@ class FollowSessionDetectorResetTestCase(unittest.TestCase):
             safety_manager=safety,
             detector=NoResetDetector(),
             follow_controller=controller,
-            config={"display_agent_camera": False},
+            config={"display_console_camera": False},
             mode_label="FAKE",
         )
         with patch("control.follow_session.sleep", return_value=None):

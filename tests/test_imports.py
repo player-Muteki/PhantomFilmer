@@ -14,12 +14,12 @@ class ImportTestCase(unittest.TestCase):
     """Verify that all project modules can be imported."""
 
     def test_import_all_modules(self) -> None:
-        import agent.agent_controller
-        import agent.command_parser
-        import agent.commands
-        import agent.follow_session
-        import agent.llm_client
-        import agent.tools
+        import console.console_controller
+        import console.command_parser
+        import console.commands
+        import console.follow_session
+        import console.llm_client
+        import console.tools
         import control.follow_session
         import control.follow_control
         import drone.drone_adapter
@@ -40,12 +40,12 @@ class ImportTestCase(unittest.TestCase):
         import vision.detector_factory
 
         self.assertIsNotNone(main)
-        self.assertIsNotNone(agent.agent_controller)
-        self.assertIsNotNone(agent.command_parser)
-        self.assertIsNotNone(agent.commands)
-        self.assertIsNotNone(agent.follow_session)
-        self.assertIsNotNone(agent.llm_client)
-        self.assertIsNotNone(agent.tools)
+        self.assertIsNotNone(console.console_controller)
+        self.assertIsNotNone(console.command_parser)
+        self.assertIsNotNone(console.commands)
+        self.assertIsNotNone(console.follow_session)
+        self.assertIsNotNone(console.llm_client)
+        self.assertIsNotNone(console.tools)
         self.assertIsNotNone(control.follow_session)
         self.assertIsNotNone(control.follow_control)
         self.assertIsNotNone(drone.drone_adapter)

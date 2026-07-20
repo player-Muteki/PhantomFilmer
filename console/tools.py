@@ -1,4 +1,4 @@
-"""Safety-wrapped tools exposed to the rule-based Agent scheduler."""
+"""Console tools for high-level drone task scheduling."""
 
 from threading import Event, Lock
 from typing import Dict, Optional, Tuple
@@ -10,10 +10,10 @@ from drone.safety import SafetyManager
 from vision.detector_protocol import DetectorProtocol
 
 
-class AgentTools:
-    """Safe task-level operations available to the Agent.
+class ConsoleTools:
+    """Safe task-level operations available to the console.
 
-    The Agent may call these task tools, but it never receives direct access to
+    The console may call these task tools, but it never receives direct access to
     djitellopy or Tello.send_rc_control. Real-time RC output stays inside this
     safety wrapper and is always limited by SafetyManager.
     """
@@ -80,7 +80,7 @@ class AgentTools:
         )
 
     def start_follow_task(self) -> bool:
-        """Check safety, take off, and run the visual Agent follow session."""
+        """Check safety, take off, and run the visual console follow session."""
         self._require_connection()
         if not self._follow_task_allowed:
             print(self._follow_task_block_reason or "当前配置不允许启动跟随任务。")
@@ -102,9 +102,9 @@ class AgentTools:
             config=self._config,
             mode_label=self._mode_label,
             window_name=str(
-                self._config.get("agent_window_name", "DroneUmbrella Agent Follow")
+                self._config.get("console_window_name", "DroneUmbrella Console Follow")
             ),
-            state_label="AGENT",
+            state_label="CONSOLE",
             allow_pause=True,
             stop_event=self._stop_event,
         )
@@ -117,7 +117,7 @@ class AgentTools:
             self.airborne = result.airborne
             self.streaming = result.streaming
             self.current_mode = result.state
-            print(f"Agent 跟随任务结束，当前状态：{self.current_mode}")
+            print(f"控制台跟随任务结束，当前状态：{self.current_mode}")
             return result.state not in ("EMERGENCY_STOP", "FRAME_LOST_LANDING")
         except Exception:
             self.current_mode = "异常保护"
@@ -230,4 +230,4 @@ class AgentTools:
     def _require_connection(self) -> None:
         """Reject task tools until the adapter is connected."""
         if not self.connected:
-            raise RuntimeError("Agent 尚未连接无人机。")
+            raise RuntimeError("控制台尚未连接无人机。")

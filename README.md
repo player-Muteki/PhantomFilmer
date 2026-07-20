@@ -27,7 +27,7 @@
 
 项目通过 `DroneAdapter` 统一抽象无人机连接、起飞、降落、视频流、状态读取和 RC 控制接口。当前 `TelloDroneAdapter` 是 RoboMaster TT / Tello Talent 的具体实现，`FakeDroneAdapter` 用于无真机仿真验证。
 
-后续如果更换为其他支持编程接口的大型无人机，应新增对应的适配器实现 `DroneAdapter`，而不是让视觉、控制、Agent 或安全模块直接依赖新的硬件 SDK。当前项目还没有实现真实大型无人机适配器，也不声称已经支持大型无人机真机控制。
+后续如果更换为其他支持编程接口的大型无人机，应新增对应的适配器实现 `DroneAdapter`，而不是让视觉、控制、控制台或安全模块直接依赖新的硬件 SDK。当前项目还没有实现真实大型无人机适配器，也不声称已经支持大型无人机真机控制。
 
 ## 运行方式
 
@@ -71,7 +71,7 @@
 
    follow 模式会连接 RoboMaster TT / Tello、开启视频流，并在用户输入 `YES` 确认后才进入起飞流程。起飞后会根据红色目标块位置进行低速跟随：水平偏差优先使用 `yaw` 原地转向，距离偏差使用目标面积比例控制前进或后退。按 `q` 退出并降落，按 `e` 立即发送零速度并降落。
 
-   普通 `follow` 模式和规则版 `agent` 的跟随任务已经复用同一套 `FollowSession` 核心流程。两者外层入口不同，但每帧的画面读取、红色目标识别、跟随控制、安全限速、目标丢失处理、RC 输出和窗口清理逻辑保持一致。
+   普通 `follow` 模式和规则版 `console` 的跟随任务已经复用同一套 `FollowSession` 核心流程。两者外层入口不同，但每帧的画面读取、红色目标识别、跟随控制、安全限速、目标丢失处理、RC 输出和窗口清理逻辑保持一致。
 
    跟随调试画面会显示 `FPS`、`CTRL_HZ`、水平误差、面积比例和当前 RC 指令。当前单机人物跟随模式不主动使用左右平移，也不加入高度跟随或 yaw 以外的姿态控制扩展。
 
@@ -81,27 +81,27 @@
    PYTHONPATH=. python3 tests/test_imports.py
    ```
 
-## 规则版 Agent
+## 规则版控制台
 
-当前 Agent 已支持两层命令解析：
+当前控制台已支持两层命令解析：
 
 1. **本地规则解析**：优先识别固定命令和一组常见自然语言表达。
 2. **在线大模型解析**：当本地规则无法确定意图，且 `llm_enabled: true` 时，再调用 OpenAI 兼容接口做动作分类。
 
-无论本地规则还是在线模型，最终都只能映射为白名单动作：`GET_STATUS`、`START_FOLLOW`、`STOP_TASK`、`EMERGENCY_STOP`、`EXIT`、`UNKNOWN`。Agent 只负责理解高层任务和调度任务，不直接接触底层飞控 SDK。
+无论本地规则还是在线模型，最终都只能映射为白名单动作：`GET_STATUS`、`START_FOLLOW`、`STOP_TASK`、`EMERGENCY_STOP`、`EXIT`、`UNKNOWN`。控制台只负责理解高层任务和调度任务，不直接接触底层飞控 SDK。
 
-Agent 只能调用 `AgentTools` 提供的安全工具。起飞前会经过 `SafetyManager` 电量检查，跟随控制量会经过 `SafetyManager.limit_rc_command` 限速。大模型也只能复用这些任务级工具，不能直接调用 `djitellopy`、`tello.send_rc_control` 或绕过安全层。
+控制台只能调用 `ConsoleTools` 提供的安全工具。起飞前会经过 `SafetyManager` 电量检查，跟随控制量会经过 `SafetyManager.limit_rc_command` 限速。大模型也只能复用这些任务级工具，不能直接调用 `djitellopy`、`tello.send_rc_control` 或绕过安全层。
 
-启动真机规则版 Agent：
+启动真机规则版控制台：
 
 ```bash
-python3 main.py --mode agent
+python3 main.py --mode console
 ```
 
 无真机时可以运行：
 
 ```bash
-python3 main.py --mode agent --fake
+python3 main.py --mode console --fake
 ```
 
 如需启用在线大模型分类，在 `config.yaml` 中设置：
@@ -119,25 +119,25 @@ llm_timeout_seconds: 8
 export LLM_API_KEY="你的接口密钥"
 ```
 
-如果 `llm_enabled: true` 但没有设置 `LLM_API_KEY`，Agent 启动时会给出提示，并自动退回到仅使用本地规则解析。
+如果 `llm_enabled: true` 但没有设置 `LLM_API_KEY`，控制台启动时会给出提示，并自动退回到仅使用本地规则解析。
 
 支持的输入包括固定命令和常见自然语言表达：
 
 - `状态` / `看看现在无人机状态` / `还有多少电`：显示电量、高度和当前模式。
-- `开始任务` / `帮我开始跟随目标` / `启动无人机跟随`：检查电量，等待用户确认，然后起飞并打开 `DroneUmbrella Agent Follow` 窗口进行低速跟随；跟随运行时请使用窗口按键 `p`、`q`、`e` 控制暂停、停止和急停。
+- `开始任务` / `帮我开始跟随目标` / `启动无人机跟随`：检查电量，等待用户确认，然后起飞并打开 `DroneUmbrella Console Follow` 窗口进行低速跟随；跟随运行时请使用窗口按键 `p`、`q`、`e` 控制暂停、停止和急停。
 - `停止任务` / `先停一下` / `停止当前任务`：在未进入跟随窗口时停止当前任务并降落。
 - `急停` / `立即急停` / `紧急停止`：在未进入跟随窗口时清零当前控制输出；跟随窗口运行中请直接按 `e` 急停。
-- `退出` / `退出系统`：安全结束当前任务并退出 Agent。
+- `退出` / `退出系统`：安全结束当前任务并退出控制台。
 
 含糊、询问式或不确定的动作表达会返回 `UNKNOWN`，不会触发起飞、停止、急停或退出。
 
 如果本地规则和在线模型都无法安全确定意图，系统会返回 `UNKNOWN`，不会执行危险动作。
 
-Agent 跟随窗口显示实时画面、目标框、目标中心、画面中心、误差线、Agent 状态、REAL/FAKE 模式、电量、高度和当前 RC 控制量。窗口按键：
+控制台跟随窗口显示实时画面、目标框、目标中心、画面中心、误差线、控制台状态、REAL/FAKE 模式、电量、高度和当前 RC 控制量。窗口按键：
 
 - `p`：暂停或继续跟随。暂停时继续显示画面和识别结果，但 RC 输出固定为 `0,0,0,0`。
-- `q`：停止跟随、清零控制量、降落、关闭视频流和窗口，然后返回 `Agent>` 命令界面。
-- `e`：急停，立即清零控制量并降落，Agent 状态切换为 `EMERGENCY_STOP`。
+- `q`：停止跟随、清零控制量、降落、关闭视频流和窗口，然后返回 `Console>` 命令界面。
+- `e`：急停，立即清零控制量并降落，控制台状态切换为 `EMERGENCY_STOP`。
 
 后续接入大模型 API 时，大模型只用于把自然语言转换为上述任务命令和编排任务，底层实时飞控仍由确定性的控制器和安全工具负责。
 
@@ -153,29 +153,29 @@ Fake 画面会生成真实 NumPy/OpenCV 图像：红色目标会左右、上下�
 python3 main.py --mode status --fake
 python3 main.py --mode camera --fake
 python3 main.py --mode follow --fake
-python3 main.py --mode agent --fake
+python3 main.py --mode console --fake
 ```
 
 模拟模式适合验证状态读取、红色目标识别和跟随控制理论逻辑；真实飞行前仍必须重新做安全检查。
 
-Fake Agent 手动验收建议：
+Fake 控制台手动验收建议：
 
-1. 运行 `python3 main.py --mode agent --fake`。
+1. 运行 `python3 main.py --mode console --fake`。
 2. 输入 `状态`，确认显示模拟电量和高度。
 3. 输入 `开始任务`，再输入 `yes`。
-4. 确认出现 `DroneUmbrella Agent Follow` 窗口。
+4. 确认出现 `DroneUmbrella Console Follow` 窗口。
 5. 确认红色目标会移动、大小变化，目标框和中心点正常。
 6. 确认 RC 数据随目标位置和面积变化。
 7. 按 `p` 暂停，确认画面继续刷新但 RC 为 0。
 8. 再按 `p` 恢复。
-9. 按 `q` 停止并返回 Agent 命令界面。
+9. 按 `q` 停止并返回控制台命令界面。
 10. 再次输入 `开始任务`，确认不会出现重复窗口。
 11. 按 `e` 测试急停状态。
 
-真机 Agent 安全验收建议：
+真机控制台安全验收建议：
 
 1. 连接 RoboMaster TT / Tello Wi-Fi。
-2. 运行 `python3 main.py --mode agent`。
+2. 运行 `python3 main.py --mode console`。
 3. 输入 `状态`，确认电量满足起飞阈值。
 4. 输入 `开始任务`，按提示完成用户确认。
 5. 起飞后确认电脑显示实时摄像头画面。

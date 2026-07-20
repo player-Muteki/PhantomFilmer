@@ -1,4 +1,4 @@
-"""Tests for fake camera frames and Agent visual follow session logic."""
+"""Tests for fake camera frames and Console visual follow session logic."""
 
 import inspect
 import sys
@@ -17,9 +17,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-import agent.tools as agent_tools_module
-from agent.follow_session import AgentFollowSession
-from agent.tools import AgentTools
+import console.tools as console_tools_module
+from console.follow_session import ConsoleFollowSession
+from console.tools import ConsoleTools
 from control.follow_control import FollowController, RCCommand
 from control.follow_session import FollowSession
 from drone.fake_adapter import FakeDroneAdapter
@@ -43,15 +43,15 @@ def build_safety(max_rc_speed: int = 25) -> SafetyManager:
     )
 
 
-def build_session(drone: FakeDroneAdapter, safety: SafetyManager) -> AgentFollowSession:
-    """Create a no-GUI Agent follow session for unit tests."""
-    return AgentFollowSession(
+def build_session(drone: FakeDroneAdapter, safety: SafetyManager) -> ConsoleFollowSession:
+    """Create a no-GUI Console follow session for unit tests."""
+    return ConsoleFollowSession(
         drone=drone,
         safety_manager=safety,
         detector=TargetDetector(),
         follow_controller=FollowController(safety_manager=safety),
         config={
-            "display_agent_camera": False,
+            "display_console_camera": False,
             "camera_width": 640,
             "camera_height": 480,
             "frame_failure_limit": 3,
@@ -68,7 +68,7 @@ class RaisingLoopSession(FollowSession):
 
 
 class ImmediateSession:
-    """Session stub used to verify Agent starts follow on the caller thread."""
+    """Session stub used to verify Console starts follow on the caller thread."""
 
     run_count = 0
 
@@ -478,38 +478,38 @@ class FollowControllerTestCase(unittest.TestCase):
         self.assertGreater(command.yaw, 0)
 
 
-class AgentFollowSessionTestCase(unittest.TestCase):
-    """Verify Agent follow session safety-state behavior without GUI."""
+class ConsoleFollowSessionTestCase(unittest.TestCase):
+    """Verify Console follow session safety-state behavior without GUI."""
 
-    def test_follow_and_agent_use_shared_follow_session(self) -> None:
+    def test_follow_and_console_use_shared_follow_session(self) -> None:
         follow_source = inspect.getsource(main.run_follow)
-        agent_source = inspect.getsource(AgentTools.start_follow_task)
+        console_source = inspect.getsource(ConsoleTools.start_follow_task)
 
         self.assertIn("FollowSession", follow_source)
-        self.assertIn("FollowSession", agent_source)
-        self.assertTrue(issubclass(AgentFollowSession, FollowSession))
+        self.assertIn("FollowSession", console_source)
+        self.assertTrue(issubclass(ConsoleFollowSession, FollowSession))
 
-    def test_agent_start_follow_task_runs_session_on_caller_thread(self) -> None:
+    def test_console_start_follow_task_runs_session_on_caller_thread(self) -> None:
         drone = FakeDroneAdapter(verbose_rc=False)
         drone.connect()
         safety = build_safety()
-        tools = AgentTools(
+        tools = ConsoleTools(
             drone=drone,
             safety_manager=safety,
             detector=TargetDetector(),
             follow_controller=FollowController(safety_manager=safety),
-            config={"display_agent_camera": False},
+            config={"display_console_camera": False},
             mode_label="FAKE",
         )
         tools.connected = True
         ImmediateSession.run_count = 0
 
-        original_session = agent_tools_module.FollowSession
-        agent_tools_module.FollowSession = ImmediateSession
+        original_session = console_tools_module.FollowSession
+        console_tools_module.FollowSession = ImmediateSession
         try:
             result = tools.start_follow_task()
         finally:
-            agent_tools_module.FollowSession = original_session
+            console_tools_module.FollowSession = original_session
 
         self.assertTrue(result)
         self.assertEqual(ImmediateSession.run_count, 1)
@@ -525,7 +525,7 @@ class AgentFollowSessionTestCase(unittest.TestCase):
         session.send_command(RCCommand(12, 12, 0, 0))
 
         self.assertEqual(drone.last_rc_command, (0, 0, 0, 0))
-        self.assertEqual(session.agent_state, "PAUSED")
+        self.assertEqual(session.console_state, "PAUSED")
 
     def test_emergency_stop_blocks_nonzero_rc(self) -> None:
         drone = FakeDroneAdapter(verbose_rc=False)
@@ -537,7 +537,7 @@ class AgentFollowSessionTestCase(unittest.TestCase):
 
         self.assertEqual(action, "emergency")
         self.assertEqual(drone.last_rc_command, (0, 0, 0, 0))
-        self.assertEqual(session.agent_state, "EMERGENCY_STOP")
+        self.assertEqual(session.console_state, "EMERGENCY_STOP")
 
     def test_long_target_loss_enters_landing_state(self) -> None:
         drone = FakeDroneAdapter(verbose_rc=False)
@@ -553,7 +553,7 @@ class AgentFollowSessionTestCase(unittest.TestCase):
 
         self.assertEqual(action, "land")
         self.assertEqual(command.as_tuple(), (0, 0, 0, 0))
-        self.assertEqual(session.agent_state, "TARGET_LOST_LANDING")
+        self.assertEqual(session.console_state, "TARGET_LOST_LANDING")
 
     def test_frame_failure_stops_with_zero_rc(self) -> None:
         drone = FakeDroneAdapter(verbose_rc=False)
@@ -572,7 +572,7 @@ class AgentFollowSessionTestCase(unittest.TestCase):
 
         session._loop()
 
-        self.assertEqual(session.agent_state, "FRAME_LOST_LANDING")
+        self.assertEqual(session.console_state, "FRAME_LOST_LANDING")
         self.assertEqual(drone.last_rc_command, (0, 0, 0, 0))
 
     def test_exception_cleanup_sends_zero_and_lands(self) -> None:
@@ -584,7 +584,7 @@ class AgentFollowSessionTestCase(unittest.TestCase):
             detector=TargetDetector(),
             follow_controller=FollowController(safety_manager=safety),
             config={
-                "display_agent_camera": False,
+                "display_console_camera": False,
                 "camera_width": 640,
                 "camera_height": 480,
             },
