@@ -32,6 +32,7 @@ from vision.target_detect import TargetDetector
 
 
 CONFIG_PATH = Path(__file__).with_name("config.yaml")
+FOLLOW_MODES = {"follow", "follow-dry-run", "console"}
 
 
 def load_config(path: Path = CONFIG_PATH) -> dict:
@@ -47,6 +48,49 @@ def load_config(path: Path = CONFIG_PATH) -> dict:
             return yaml.safe_load(file)
     except ModuleNotFoundError:
         return _load_config_without_yaml(path)
+
+
+def configured_obstacle_enabled(config: dict) -> bool:
+    """Return whether obstacle avoidance is enabled in project config."""
+    obstacle = config.get("obstacle", {})
+    if not isinstance(obstacle, dict):
+        return False
+    return bool(obstacle.get("enabled", False))
+
+
+def load_runtime_config(obstacle_enabled: Optional[bool] = None) -> dict:
+    """Load config with an optional in-memory obstacle override."""
+    config = load_config()
+    if obstacle_enabled is None:
+        return config
+
+    obstacle = config.get("obstacle", {})
+    runtime_config = dict(config)
+    runtime_obstacle = dict(obstacle) if isinstance(obstacle, dict) else {}
+    runtime_obstacle["enabled"] = obstacle_enabled
+    runtime_config["obstacle"] = runtime_obstacle
+    return runtime_config
+
+
+def prompt_obstacle_enabled(default_enabled: bool) -> Optional[bool]:
+    """Ask whether obstacle avoidance should be enabled for this run."""
+    default_label = "开启" if default_enabled else "关闭"
+    while True:
+        try:
+            answer = input(
+                f"本次运行是否开启避障？[y/n]（配置默认：{default_label}）："
+            ).strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print("\n已取消本次运行。")
+            return None
+
+        if not answer:
+            return default_enabled
+        if answer in {"y", "yes", "是", "开启"}:
+            return True
+        if answer in {"n", "no", "否", "关闭"}:
+            return False
+        print("请输入 y/n、是/否或直接回车使用配置默认值。")
 
 
 def _load_config_without_yaml(path: Path) -> dict:
@@ -250,9 +294,12 @@ def create_drone_adapter(
     return TelloDroneAdapter()
 
 
-def build_system(use_fake: bool = False) -> ConsoleController:
+def build_system(
+    use_fake: bool = False,
+    obstacle_enabled: Optional[bool] = None,
+) -> ConsoleController:
     """Create the natural-language Console with safety-wrapped tools."""
-    config = load_config()
+    config = load_runtime_config(obstacle_enabled)
     safety_manager = SafetyManager(SafetyConfig.from_dict(config))
     detector = create_detector(config)
     follow_controller = FollowController.from_config(
@@ -304,9 +351,15 @@ def run_status(use_fake: bool = False) -> int:
         drone.stop()
 
 
-def run_console(use_fake: bool = False) -> int:
+def run_console(
+    use_fake: bool = False,
+    obstacle_enabled: Optional[bool] = None,
+) -> int:
     """Run the interactive rule-based Console scheduler."""
-    controller = build_system(use_fake=use_fake)
+    controller = build_system(
+        use_fake=use_fake,
+        obstacle_enabled=obstacle_enabled,
+    )
     try:
         print("正在连接模拟无人机..." if use_fake else "正在连接 RoboMaster TT / Tello...")
         controller.tools.connect()
@@ -502,10 +555,13 @@ def run_basic_flight_test() -> int:
         drone.stop()
 
 
-def run_follow(use_fake: bool = False) -> int:
+def run_follow(
+    use_fake: bool = False,
+    obstacle_enabled: Optional[bool] = None,
+) -> int:
     """Connect to the drone and run the shared visual follow session."""
 
-    config = load_config()
+    config = load_runtime_config(obstacle_enabled)
     safety = SafetyManager.from_dict(config)
     drone = create_drone_adapter(use_fake, config=config)
     detector = create_detector(config)
@@ -559,7 +615,10 @@ def run_follow(use_fake: bool = False) -> int:
         drone.stop()
 
 
-def run_follow_dry_run(use_fake: bool = False) -> int:
+def run_follow_dry_run(
+    use_fake: bool = False,
+    obstacle_enabled: Optional[bool] = None,
+) -> int:
     """Preview follow-control commands without takeoff or RC output."""
     try:
         import cv2
@@ -567,7 +626,7 @@ def run_follow_dry_run(use_fake: bool = False) -> int:
         print("缺少 opencv-python 依赖：请先安装 requirements.txt。")
         return 1
 
-    config = load_config()
+    config = load_runtime_config(obstacle_enabled)
     safety = SafetyManager.from_dict(config)
     drone = create_drone_adapter(use_fake, config=config)
     camera = None
@@ -944,6 +1003,15 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     """Run the selected project mode."""
     args = parse_args()
+    obstacle_enabled = None
+    if args.mode in FOLLOW_MODES:
+        config = load_config()
+        obstacle_enabled = prompt_obstacle_enabled(
+            configured_obstacle_enabled(config)
+        )
+        if obstacle_enabled is None:
+            return 0
+
     if args.mode == "status":
         return run_status(use_fake=args.fake)
     if args.mode == "safety-test":
@@ -951,7 +1019,10 @@ def main() -> int:
     if args.mode == "follow-test":
         return run_follow_test()
     if args.mode == "follow-dry-run":
-        return run_follow_dry_run(use_fake=args.fake)
+        return run_follow_dry_run(
+            use_fake=args.fake,
+            obstacle_enabled=obstacle_enabled,
+        )
     if args.mode == "basic-flight-test":
         return run_basic_flight_test()
     if args.mode == "camera-debug":
@@ -959,9 +1030,15 @@ def main() -> int:
     if args.mode == "camera":
         return run_camera(use_fake=args.fake)
     if args.mode == "follow":
-        return run_follow(use_fake=args.fake)
+        return run_follow(
+            use_fake=args.fake,
+            obstacle_enabled=obstacle_enabled,
+        )
     if args.mode == "console":
-        return run_console(use_fake=args.fake)
+        return run_console(
+            use_fake=args.fake,
+            obstacle_enabled=obstacle_enabled,
+        )
     if args.mode == "swarm-sim":
         return run_swarm_sim()
     if args.mode == "swarm-status":
