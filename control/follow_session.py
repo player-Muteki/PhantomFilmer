@@ -5,6 +5,7 @@ from threading import Event
 from time import monotonic, sleep
 from typing import Any, Dict, Optional, Tuple
 
+from control.fixed_demo import FixedDemoManeuver, FixedDemoProgress
 from control.follow_control import FollowController, RCCommand
 from drone.drone_adapter import DroneAdapter
 from drone.safety import SafetyManager
@@ -36,11 +37,13 @@ class FollowSession:
         state_label: str = "FOLLOW",
         allow_pause: bool = False,
         stop_event: Optional[Event] = None,
+        pre_follow_maneuver: Optional[FixedDemoManeuver] = None,
     ) -> None:
         self.drone = drone
         self.safety_manager = safety_manager
         self.detector = detector
         self.follow_controller = follow_controller
+        self.pre_follow_maneuver = pre_follow_maneuver
         self.config = config
         self.mode_label = mode_label
         self.window_name = window_name or str(
@@ -92,13 +95,33 @@ class FollowSession:
                 )
 
             self.airborne = True
-            self.session_state = "FOLLOWING"
-            print(f"跟随任务已启动，当前运行模式：{self.mode_label}")
-            if self.allow_pause:
-                print("窗口按键：p 暂停/继续，q 停止并降落，e 急停并降落。")
-            else:
+            if self.pre_follow_maneuver is not None:
+                self.session_state = "FIXED_DEMO"
+                print("固定演示航线已启动；航线完成后自动进入目标跟随。")
                 print("窗口按键：q 停止并降落，e 急停并降落。")
-            self._loop()
+                completed = self.pre_follow_maneuver.run(
+                    send_command=self.send_command,
+                    should_abort=self._pre_follow_should_abort,
+                    on_progress=self._show_pre_follow_progress,
+                )
+                if not completed:
+                    if self.emergency_stop:
+                        self.session_state = "EMERGENCY_STOP"
+                    elif self.session_state != "STOPPED":
+                        self.session_state = "STOPPED"
+                    print("固定演示航线已中止，准备安全降落。")
+                else:
+                    self._reset_tracking_state()
+                    print("固定演示航线完成，控制输出已清零，开始目标跟随。")
+
+            if self.pre_follow_maneuver is None or completed:
+                self.session_state = "FOLLOWING"
+                print(f"跟随任务已启动，当前运行模式：{self.mode_label}")
+                if self.allow_pause:
+                    print("窗口按键：p 暂停/继续，q 停止并降落，e 急停并降落。")
+                else:
+                    print("窗口按键：q 停止并降落，e 急停并降落。")
+                self._loop()
         except KeyboardInterrupt:
             print("收到 Ctrl+C，正在安全停止跟随任务。")
             self.session_state = "STOPPED"
@@ -114,6 +137,44 @@ class FollowSession:
             airborne=self.airborne,
             streaming=self.streaming,
         )
+
+    def _pre_follow_should_abort(self) -> bool:
+        """Stop a predefined maneuver after an external or emergency request."""
+        return self.stop_event.is_set() or self.emergency_stop
+
+    def _show_pre_follow_progress(self, progress: FixedDemoProgress) -> bool:
+        """Display the raw camera during the route and keep q/e responsive."""
+        if not self.display_enabled:
+            return not self._pre_follow_should_abort()
+
+        frame = self._read_frame()
+        if frame is None:
+            return not self._pre_follow_should_abort()
+
+        import cv2
+
+        phase = "悬停稳定" if progress.settling else progress.step.name
+        cv2.putText(
+            frame,
+            f"FIXED DEMO {progress.step_index}/{progress.step_count}: {phase}",
+            (20, 36),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.65,
+            (0, 255, 255),
+            2,
+        )
+        cv2.putText(
+            frame,
+            "q: stop + land, e: emergency + land",
+            (20, 68),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            (255, 255, 255),
+            1,
+        )
+        cv2.imshow(self.window_name, frame)
+        action = self.handle_key(cv2.waitKey(1) & 0xFF)
+        return action not in ("stop", "emergency")
 
     def process_detection(
         self,

@@ -14,6 +14,7 @@ from console.llm_client import (
     LLMClient,
 )
 from console.tools import ConsoleTools
+from control.fixed_demo import FixedDemoManeuver
 from control.follow_control import FollowController
 from control.follow_session import FollowSession
 from drone.drone_adapter import DroneAdapter
@@ -528,6 +529,63 @@ def run_follow(use_fake: bool = False) -> int:
         drone.stop()
 
 
+def run_fixed_demo(use_fake: bool = False) -> int:
+    """Run the fixed low-speed route, then hand control to normal following."""
+    config = load_config()
+    safety = SafetyManager.from_dict(config)
+    drone = create_drone_adapter(use_fake, config=config)
+    detector = create_detector(config)
+    controller = FollowController.from_config(safety_manager=safety, config=config)
+
+    if use_fake and selected_detector_type(config) == "aruco":
+        print(fake_aruco_message())
+        return 0
+
+    try:
+        print("正在连接模拟无人机..." if use_fake else "正在连接 RoboMaster TT / Tello...")
+        drone.connect()
+        battery = drone.get_battery()
+        print(f"当前电量：{battery}%")
+        if not safety.can_takeoff(battery):
+            print("电量低于安全起飞阈值，禁止起飞。")
+            return 1
+
+        print("固定演示需要起飞。请确认航线净空、已安装保护罩、人员远离。")
+        print("航线：前进 2 秒 → 左移 3 秒 → 前进 1 秒 → 右移 3 秒 → 跟随。")
+        if use_fake:
+            answer = input("输入 YES 确认模拟起飞，其他输入取消：").strip()
+            if answer != "YES":
+                print("已取消固定演示：未收到用户确认。")
+                return 0
+
+        session = FollowSession(
+            drone=drone,
+            safety_manager=safety,
+            detector=detector,
+            follow_controller=controller,
+            config=config,
+            mode_label="FIXED-DEMO FAKE" if use_fake else "FIXED-DEMO REAL",
+            window_name="DroneUmbrella Fixed Demo",
+            state_label="FOLLOW",
+            allow_pause=False,
+            pre_follow_maneuver=FixedDemoManeuver(
+                control_interval=read_control_interval(config)
+            ),
+        )
+        session.run()
+        return 0
+    except RuntimeError as exc:
+        print(str(exc))
+        if not use_fake:
+            print("请先连接 RoboMaster TT / Tello 的 Wi-Fi。")
+        return 1
+    except KeyboardInterrupt:
+        print("已手动中断，准备降落并退出。")
+        return 0
+    finally:
+        drone.stop()
+
+
 def run_follow_dry_run(use_fake: bool = False) -> int:
     """Preview follow-control commands without takeoff or RC output."""
     try:
@@ -870,6 +928,7 @@ def parse_args() -> argparse.Namespace:
             "safety-test",
             "follow-test",
             "follow-dry-run",
+            "fixed-demo",
             "basic-flight-test",
             "camera-debug",
             "camera",
@@ -883,7 +942,7 @@ def parse_args() -> argparse.Namespace:
             "swarm-rc-test",
         ),
         default="demo",
-        help="运行模式：demo 启动骨架说明，status 读取无人机状态，safety-test 测试安全保护逻辑，follow-test 测试跟随方向逻辑，follow-dry-run 真机起飞前干跑验证，basic-flight-test 真机基础起降测试，camera-debug 调试颜色通道和红色 mask，camera 显示视频识别画面，follow 低速目标跟随，console 控制台任务调度，swarm-sim 多机编队仿真，swarm-status/swarm-connect-test/swarm-basic-test/swarm-hover-test/swarm-rc-test 运行 Swarm 验证。",
+        help="运行模式：fixed-demo 执行固定航线后进入目标跟随；其余模式保持原有用途。",
     )
     parser.add_argument(
         "--fake",
@@ -904,6 +963,8 @@ def main() -> int:
         return run_follow_test()
     if args.mode == "follow-dry-run":
         return run_follow_dry_run(use_fake=args.fake)
+    if args.mode == "fixed-demo":
+        return run_fixed_demo(use_fake=args.fake)
     if args.mode == "basic-flight-test":
         return run_basic_flight_test()
     if args.mode == "camera-debug":
