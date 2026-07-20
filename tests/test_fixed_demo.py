@@ -102,15 +102,15 @@ class FixedDemoManeuverTestCase(unittest.TestCase):
     def test_route_matches_the_agreed_speed_and_timing(self) -> None:
         self.assertEqual(
             [step.command.as_tuple() for step in FIXED_DEMO_STEPS],
-            [(0, 24, 0, 0), (-16, 0, 0, 0), (0, 12, 0, 0), (16, 0, 0, 0)],
+            [(-16, 0, 0, 0), (0, 24, 0, 0), (16, 0, 0, 0)],
         )
         self.assertEqual(
             [step.duration_seconds for step in FIXED_DEMO_STEPS],
-            [2.0, 3.0, 1.0, 3.0],
+            [3.0, 2.0, 3.0],
         )
         self.assertEqual(
             [step.settle_seconds for step in FIXED_DEMO_STEPS],
-            [0.5, 0.5, 0.5, 1.0],
+            [0.5, 0.5, 1.0],
         )
 
     def test_route_refreshes_commands_and_zeros_between_segments(self) -> None:
@@ -129,9 +129,10 @@ class FixedDemoManeuverTestCase(unittest.TestCase):
         self.assertIn(RCCommand(left_right=-16), commands)
         self.assertIn(RCCommand(left_right=16), commands)
         self.assertEqual(commands[-1], RCCommand())
-        first_left = commands.index(RCCommand(left_right=-16))
+        first_forward = commands.index(RCCommand(forward_backward=24))
         first_right = commands.index(RCCommand(left_right=16))
-        self.assertEqual(commands[first_left - 1], RCCommand())
+        self.assertEqual(commands[0], RCCommand(left_right=-16))
+        self.assertEqual(commands[first_forward - 1], RCCommand())
         self.assertEqual(commands[first_right - 1], RCCommand())
 
     def test_progress_callback_can_abort_and_output_is_zeroed(self) -> None:

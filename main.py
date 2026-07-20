@@ -551,7 +551,7 @@ def run_fixed_demo(use_fake: bool = False) -> int:
             return 1
 
         print("固定演示需要起飞。请确认航线净空、已安装保护罩、人员远离。")
-        print("航线：前进 2 秒 → 左移 3 秒 → 前进 1 秒 → 右移 3 秒 → 跟随。")
+        print("航线：左移 3 秒 → 前进 2 秒 → 右移 3 秒 → 跟随。")
         if use_fake:
             answer = input("输入 YES 确认模拟起飞，其他输入取消：").strip()
             if answer != "YES":

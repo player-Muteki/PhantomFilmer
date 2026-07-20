@@ -29,9 +29,8 @@ class FixedDemoProgress:
 
 
 FIXED_DEMO_STEPS = (
-    FixedDemoStep("向前飞行", RCCommand(forward_backward=24), 2.0, 0.5),
     FixedDemoStep("向左平移", RCCommand(left_right=-16), 3.0, 0.5),
-    FixedDemoStep("再次向前", RCCommand(forward_backward=12), 1.0, 0.5),
+    FixedDemoStep("向前飞行", RCCommand(forward_backward=24), 2.0, 0.5),
     FixedDemoStep("向右平移", RCCommand(left_right=16), 3.0, 1.0),
 )
 
