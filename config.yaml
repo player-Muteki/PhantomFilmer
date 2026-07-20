@@ -46,6 +46,19 @@ target_lock_exit_vertical_dead_zone_ratio: 0.15
 control_interval: 0.05
 detector_min_area_ratio: 0.002
 detector_min_area: 500
+obstacle:
+  enabled: false
+  risk_zone_width_ratio: 0.55
+  risk_zone_height_ratio: 0.65
+  risk_zone_vertical_offset_ratio: 0.05
+  minimum_obstacle_area: 1500
+  caution_area_ratio: 0.08
+  blocked_area_ratio: 0.18
+  avoidance_yaw_speed: 18
+  avoidance_lateral_speed: 0
+  max_avoidance_seconds: 5.0
+  recovery_clear_frames: 10
+  forward_speed_in_caution_ratio: 0.35
 lost_target_hover_seconds: 3
 lost_target_land_seconds: 8
 llm_enabled: true

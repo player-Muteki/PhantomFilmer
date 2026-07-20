@@ -22,6 +22,7 @@ class ImportTestCase(unittest.TestCase):
         import console.tools
         import control.follow_session
         import control.follow_control
+        import control.obstacle_avoidance
         import drone.drone_adapter
         import drone.fake_adapter
         import drone.safety
@@ -38,6 +39,7 @@ class ImportTestCase(unittest.TestCase):
         import vision.target_detect
         import vision.aruco_detect
         import vision.detector_factory
+        import vision.obstacle_detect
 
         self.assertIsNotNone(main)
         self.assertIsNotNone(console.console_controller)
@@ -48,6 +50,7 @@ class ImportTestCase(unittest.TestCase):
         self.assertIsNotNone(console.tools)
         self.assertIsNotNone(control.follow_session)
         self.assertIsNotNone(control.follow_control)
+        self.assertIsNotNone(control.obstacle_avoidance)
         self.assertIsNotNone(drone.drone_adapter)
         self.assertIsNotNone(drone.fake_adapter)
         self.assertIsNotNone(drone.safety)
@@ -63,6 +66,7 @@ class ImportTestCase(unittest.TestCase):
         self.assertIsNotNone(vision.target_detect)
         self.assertIsNotNone(vision.aruco_detect)
         self.assertIsNotNone(vision.detector_factory)
+        self.assertIsNotNone(vision.obstacle_detect)
 
     def test_safety_manager_import(self) -> None:
         from drone.safety import SafetyConfig, SafetyManager

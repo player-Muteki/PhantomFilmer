@@ -16,6 +16,7 @@ from console.llm_client import (
 from console.tools import ConsoleTools
 from control.follow_control import FollowController
 from control.follow_session import FollowSession
+from control.obstacle_avoidance import ObstacleAvoidancePlanner
 from drone.drone_adapter import DroneAdapter
 from drone.fake_adapter import FakeDroneAdapter
 from drone.safety import SafetyConfig, SafetyManager
@@ -26,6 +27,7 @@ from swarm.real_swarm import create_real_swarm_nodes
 from swarm.swarm_manager import SwarmBatchResult, SwarmManager
 from vision.camera import CameraStream
 from vision.detector_factory import create_detector
+from vision.obstacle_detect import ObstacleDetector
 from vision.target_detect import TargetDetector
 
 
@@ -67,6 +69,11 @@ def _load_config_without_yaml(path: Path) -> dict:
         if raw.startswith("vision:"):
             vision, index = _parse_flat_block(lines, index + 1)
             config["vision"] = vision
+            continue
+
+        if raw.startswith("obstacle:"):
+            obstacle, index = _parse_flat_block(lines, index + 1)
+            config["obstacle"] = obstacle
             continue
 
         if ":" in raw and not raw.startswith(" "):
@@ -206,6 +213,20 @@ def fake_aruco_message() -> str:
     )
 
 
+def build_obstacle_modules(
+    config: dict,
+    safety_manager: SafetyManager,
+) -> tuple[Optional[ObstacleDetector], Optional[ObstacleAvoidancePlanner]]:
+    """Create obstacle modules only when enabled in config.yaml."""
+    obstacle_config = config.get("obstacle", {})
+    if not isinstance(obstacle_config, dict) or not bool(obstacle_config.get("enabled", False)):
+        return None, None
+    return (
+        ObstacleDetector.from_config(config),
+        ObstacleAvoidancePlanner.from_config(safety_manager=safety_manager, config=config),
+    )
+
+
 def create_drone_adapter(
     use_fake: bool,
     verbose_fake_rc: bool = True,
@@ -238,11 +259,14 @@ def build_system(use_fake: bool = False) -> ConsoleController:
         safety_manager=safety_manager,
         config=config,
     )
+    obstacle_detector, obstacle_planner = build_obstacle_modules(config, safety_manager)
     tools = ConsoleTools(
         drone=create_drone_adapter(use_fake, verbose_fake_rc=False, config=config),
         safety_manager=safety_manager,
         detector=detector,
         follow_controller=follow_controller,
+        obstacle_detector=obstacle_detector,
+        obstacle_planner=obstacle_planner,
         config=config,
         mode_label="FAKE" if use_fake else "REAL",
         frame_width=int(config.get("camera_width", 640)),
@@ -309,6 +333,7 @@ def run_camera(use_fake: bool = False) -> int:
     drone = create_drone_adapter(use_fake, config=config)
     camera = None
     detector = create_detector(config)
+    obstacle_detector, _obstacle_planner = build_obstacle_modules(config, SafetyManager.from_dict(config))
 
     if use_fake and selected_detector_type(config) == "aruco":
         print(fake_aruco_message())
@@ -333,6 +358,9 @@ def run_camera(use_fake: bool = False) -> int:
 
             result = detector.detect(frame)
             debug_frame = detector.draw_debug(frame, result)
+            if obstacle_detector is not None:
+                obstacle_result = obstacle_detector.detect(frame, result)
+                debug_frame = obstacle_detector.draw_debug(debug_frame, obstacle_result)
             cv2.imshow("DroneUmbrella Camera", debug_frame)
             last_mask = getattr(detector, "last_mask", None)
             if last_mask is not None:
@@ -482,6 +510,7 @@ def run_follow(use_fake: bool = False) -> int:
     drone = create_drone_adapter(use_fake, config=config)
     detector = create_detector(config)
     controller = FollowController.from_config(safety_manager=safety, config=config)
+    obstacle_detector, obstacle_planner = build_obstacle_modules(config, safety)
 
     if use_fake and selected_detector_type(config) == "aruco":
         print(fake_aruco_message())
@@ -514,6 +543,8 @@ def run_follow(use_fake: bool = False) -> int:
             window_name="DroneUmbrella Follow",
             state_label="FOLLOW",
             allow_pause=False,
+            obstacle_detector=obstacle_detector,
+            obstacle_planner=obstacle_planner,
         )
         session.run()
         return 0
@@ -542,6 +573,7 @@ def run_follow_dry_run(use_fake: bool = False) -> int:
     camera = None
     detector = create_detector(config)
     controller = FollowController.from_config(safety_manager=safety, config=config)
+    obstacle_detector, obstacle_planner = build_obstacle_modules(config, safety)
     control_interval = read_control_interval(config)
 
     if use_fake and selected_detector_type(config) == "aruco":
@@ -569,6 +601,12 @@ def run_follow_dry_run(use_fake: bool = False) -> int:
             frame_height, frame_width = frame.shape[:2]
             target_result = detector.detect(frame)
             command = controller.compute_command(target_result, frame_width, frame_height)
+            obstacle_result = None
+            avoidance_decision = None
+            if obstacle_detector is not None and obstacle_planner is not None and target_result.get("found"):
+                obstacle_result = obstacle_detector.detect(frame, target_result)
+                avoidance_decision = obstacle_planner.plan(command, obstacle_result)
+                command = avoidance_decision.command
             debug = controller.last_debug
             left_right, forward_backward, up_down, yaw = command.as_tuple()
             print(
@@ -584,6 +622,7 @@ def run_follow_dry_run(use_fake: bool = False) -> int:
                 f"target_area={debug.target_area:.1f}, "
                 f"area_ratio={debug.area_ratio:.4f}, "
                 f"target_state={debug.target_state}, "
+                f"obstacle_state={(avoidance_decision.state if avoidance_decision else 'DISABLED')}, "
                 f"yaw={yaw}, "
                 f"left_right={left_right}, "
                 f"forward_back={forward_backward}, "
@@ -591,11 +630,20 @@ def run_follow_dry_run(use_fake: bool = False) -> int:
             )
 
             debug_frame = detector.draw_debug(frame, target_result)
-            cv2.rectangle(debug_frame, (12, 84), (620, 214), (0, 0, 0), -1)
+            if obstacle_detector is not None:
+                debug_frame = obstacle_detector.draw_debug(debug_frame, obstacle_result)
+            cv2.rectangle(debug_frame, (12, 84), (620, 238), (0, 0, 0), -1)
+            obstacle_line = "obstacle=DISABLED"
+            if obstacle_result is not None and avoidance_decision is not None:
+                obstacle_line = (
+                    f"obstacle={avoidance_decision.state} side={obstacle_result.side} "
+                    f"area={obstacle_result.area_ratio:.3f} {avoidance_decision.reason}"
+                )
             dry_run_lines = (
                 f"dry-run rc: lr={left_right} fb={forward_backward} ud={up_down} yaw={yaw}",
                 f"x_err={debug.horizontal_error} x_ratio={debug.horizontal_error_ratio:.2f}",
                 f"y_err={debug.vertical_error} y_ratio={debug.vertical_error_ratio:.2f} area_ratio={debug.area_ratio:.3f}",
+                obstacle_line,
                 f"target={debug.target_state} no takeoff, no move_rc, q to quit",
             )
             for index, line in enumerate(dry_run_lines):

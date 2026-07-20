@@ -52,6 +52,28 @@ class RecordingFollowController(FollowController):
         super().reset()
 
 
+class RecordingObstacleDetector:
+    def __init__(self) -> None:
+        self.reset_calls = 0
+
+    def reset(self) -> None:
+        self.reset_calls += 1
+
+    def detect(self, frame, target_result):
+        return None
+
+    def draw_debug(self, frame, result):
+        return frame
+
+
+class RecordingObstaclePlanner:
+    def __init__(self) -> None:
+        self.reset_calls = 0
+
+    def reset(self) -> None:
+        self.reset_calls += 1
+
+
 class FollowSessionDetectorResetTestCase(unittest.TestCase):
     def build_session(self, detector):
         safety = SafetyManager(SafetyConfig(30, 20, 150, 60, 35, 3, 8))
@@ -89,6 +111,25 @@ class FollowSessionDetectorResetTestCase(unittest.TestCase):
         with patch("control.follow_session.sleep", return_value=None):
             session.run()
         self.assertEqual(controller.reset_calls, 1)
+
+    def test_obstacle_modules_reset_once_before_a_new_session(self) -> None:
+        safety = SafetyManager(SafetyConfig(30, 20, 150, 60, 35, 3, 8))
+        obstacle_detector = RecordingObstacleDetector()
+        obstacle_planner = RecordingObstaclePlanner()
+        session = ThreeFrameSession(
+            drone=FakeDroneAdapter(verbose_rc=False),
+            safety_manager=safety,
+            detector=NoResetDetector(),
+            follow_controller=FollowController(safety_manager=safety),
+            config={"display_console_camera": False},
+            mode_label="FAKE",
+            obstacle_detector=obstacle_detector,
+            obstacle_planner=obstacle_planner,
+        )
+        with patch("control.follow_session.sleep", return_value=None):
+            session.run()
+        self.assertEqual(obstacle_detector.reset_calls, 1)
+        self.assertEqual(obstacle_planner.reset_calls, 1)
 
 
 if __name__ == "__main__":
