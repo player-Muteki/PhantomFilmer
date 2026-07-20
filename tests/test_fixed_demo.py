@@ -51,7 +51,7 @@ class RecordingManeuver:
     def run(self, send_command, should_abort, on_progress) -> bool:
         self.events.append("maneuver")
         self.assert_not_aborted = not should_abort()
-        send_command(RCCommand(forward_backward=12))
+        send_command(RCCommand(forward_backward=24))
         send_command(RCCommand())
         return True
 
@@ -60,7 +60,7 @@ class AbortingManeuver:
     """Maneuver stub used to verify an abort lands without entering follow."""
 
     def run(self, send_command, should_abort, on_progress) -> bool:
-        send_command(RCCommand(left_right=-8))
+        send_command(RCCommand(left_right=-16))
         return False
 
 
@@ -102,7 +102,7 @@ class FixedDemoManeuverTestCase(unittest.TestCase):
     def test_route_matches_the_agreed_speed_and_timing(self) -> None:
         self.assertEqual(
             [step.command.as_tuple() for step in FIXED_DEMO_STEPS],
-            [(0, 12, 0, 0), (-8, 0, 0, 0), (0, 12, 0, 0), (8, 0, 0, 0)],
+            [(0, 24, 0, 0), (-16, 0, 0, 0), (0, 12, 0, 0), (16, 0, 0, 0)],
         )
         self.assertEqual(
             [step.duration_seconds for step in FIXED_DEMO_STEPS],
@@ -125,12 +125,12 @@ class FixedDemoManeuverTestCase(unittest.TestCase):
         completed = maneuver.run(commands.append, lambda: False)
 
         self.assertTrue(completed)
-        self.assertGreater(commands.count(RCCommand(forward_backward=12)), 2)
-        self.assertIn(RCCommand(left_right=-8), commands)
-        self.assertIn(RCCommand(left_right=8), commands)
+        self.assertGreater(commands.count(RCCommand(forward_backward=24)), 2)
+        self.assertIn(RCCommand(left_right=-16), commands)
+        self.assertIn(RCCommand(left_right=16), commands)
         self.assertEqual(commands[-1], RCCommand())
-        first_left = commands.index(RCCommand(left_right=-8))
-        first_right = commands.index(RCCommand(left_right=8))
+        first_left = commands.index(RCCommand(left_right=-16))
+        first_right = commands.index(RCCommand(left_right=16))
         self.assertEqual(commands[first_left - 1], RCCommand())
         self.assertEqual(commands[first_right - 1], RCCommand())
 
@@ -147,7 +147,7 @@ class FixedDemoManeuverTestCase(unittest.TestCase):
 
         self.assertFalse(completed)
         self.assertEqual(commands[-1], RCCommand())
-        self.assertNotIn(RCCommand(left_right=8), commands)
+        self.assertNotIn(RCCommand(left_right=16), commands)
 
 
 class FixedDemoIntegrationTestCase(unittest.TestCase):
