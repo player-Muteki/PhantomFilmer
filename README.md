@@ -1,259 +1,145 @@
 # DroneUmbrella
 
-基于 RoboMaster TT / Tello Talent 的无人机移动打伞系统 Python 原型项目。
+基于 RoboMaster TT / Tello Talent 的无人机移动打伞系统 Python 原型。
 
-## 项目目标
+## 依赖
 
-本项目面向中国大学生物联网竞赛，目标是完成一个“低空移动遮雨无人机系统”的缩比验证原型。初赛阶段先使用 RoboMaster TT / Tello Talent 小型无人机进行功能验证，重点实现安全起降、视觉目标检测、跟随控制、基础状态展示和后续多机协同仿真接口。
-
-## 硬件平台
-
-- RoboMaster TT / Tello Talent 小型无人机
-- 电脑或开发板作为地面控制端
-- 无人机自带摄像头
-- 后续可扩展：轻量化伞面结构、定位标签、外部传感器、地面基站
-
-## 软件平台
-
-- Python 3.9+
-- Tello SDK / RoboMaster TT SDK
-- `djitellopy` 用于无人机通信控制
-- OpenCV 用于摄像头图像处理与目标检测
-- NumPy 用于数值计算
-- PyYAML 用于读取配置文件
-- Matplotlib 用于仿真与结果可视化
+- `djitellopy` — 无人机通信控制
+- `opencv-python` — 摄像头图像处理与目标检测
+- `numpy` — 数值计算
+- `pyyaml` — 配置文件读取
+- `matplotlib` — 四机编队仿真可视化
 
 ## 适配器架构
 
-项目通过 `DroneAdapter` 统一抽象无人机连接、起飞、降落、视频流、状态读取和 RC 控制接口。当前 `TelloDroneAdapter` 是 RoboMaster TT / Tello Talent 的具体实现，`FakeDroneAdapter` 用于无真机仿真验证。
+`DroneAdapter` 是统一抽象基类，定义 `connect/takeoff/land/stop/move_rc/get_battery/get_height/stream_on/stream_off/get_frame` 接口。其他模块只依赖此接口，不直接导入硬件 SDK。
 
-后续如果更换为其他支持编程接口的大型无人机，应新增对应的适配器实现 `DroneAdapter`，而不是让视觉、控制、控制台或安全模块直接依赖新的硬件 SDK。当前项目还没有实现真实大型无人机适配器，也不声称已经支持大型无人机真机控制。
+- **TelloDroneAdapter** — RoboMaster TT / Tello Talent 真机实现，唯一直接导入 `djitellopy` 的模块。
+- **FakeDroneAdapter** — 模拟实现，生成动态 OpenCV 测试画面（红色目标左右/上下移动、大小周期变化、间歇丢失），无真机时使用 `--fake` 启用。
 
-## 运行方式
+如需接入其他型号无人机，新增 `DroneAdapter` 子类即可。
 
-1. 进入项目目录：
-
-   ```bash
-   cd ~/Desktop/物联网竞赛/DroneUmbrella
-   ```
-
-2. 创建并启用虚拟环境，安装依赖：
-
-   ```bash
-   python3 -m venv .venv
-   source .venv/bin/activate
-   pip install -r requirements.txt
-   ```
-
-3. 运行主程序骨架：
-
-   ```bash
-   python3 main.py
-   ```
-
-4. 查看无人机状态：
-
-   ```bash
-   python3 main.py --mode status
-   ```
-
-5. 打开摄像头识别调试画面：
-
-   ```bash
-   python3 main.py --mode camera
-   ```
-
-6. 运行低速目标跟随模式：
-
-   ```bash
-   python3 main.py --mode follow
-   ```
-
-   follow 模式会连接 RoboMaster TT / Tello、开启视频流，并在用户输入 `YES` 确认后才进入起飞流程。起飞后会根据红色目标块位置进行低速跟随：水平偏差优先使用 `yaw` 原地转向，距离偏差使用目标面积比例控制前进或后退。按 `q` 退出并降落，按 `e` 立即发送零速度并降落。
-
-   普通 `follow` 模式和规则版 `console` 的跟随任务已经复用同一套 `FollowSession` 核心流程。两者外层入口不同，但每帧的画面读取、红色目标识别、跟随控制、安全限速、目标丢失处理、RC 输出和窗口清理逻辑保持一致。
-
-   跟随调试画面会显示 `FPS`、`CTRL_HZ`、水平误差、面积比例和当前 RC 指令。当前单机人物跟随模式不主动使用左右平移，也不加入高度跟随或 yaw 以外的姿态控制扩展。
-
-7. 运行导入测试：
-
-   ```bash
-   PYTHONPATH=. python3 tests/test_imports.py
-   ```
-
-## 规则版控制台
-
-当前控制台已支持两层命令解析：
-
-1. **本地规则解析**：优先识别固定命令和一组常见自然语言表达。
-2. **在线大模型解析**：当本地规则无法确定意图，且 `llm_enabled: true` 时，再调用 OpenAI 兼容接口做动作分类。
-
-无论本地规则还是在线模型，最终都只能映射为白名单动作：`GET_STATUS`、`START_FOLLOW`、`STOP_TASK`、`EMERGENCY_STOP`、`EXIT`、`UNKNOWN`。控制台只负责理解高层任务和调度任务，不直接接触底层飞控 SDK。
-
-控制台只能调用 `ConsoleTools` 提供的安全工具。起飞前会经过 `SafetyManager` 电量检查，跟随控制量会经过 `SafetyManager.limit_rc_command` 限速。大模型也只能复用这些任务级工具，不能直接调用 `djitellopy`、`tello.send_rc_control` 或绕过安全层。
-
-启动真机规则版控制台：
+## 运行
 
 ```bash
-python3 main.py --mode console
+pip install -r requirements.txt
+python3 main.py --mode <mode> [--fake]
 ```
 
-无真机时可以运行：
+### 模式列表
+
+| 模式 | 说明 | 支持 --fake |
+|------|------|-------------|
+| `demo`（默认） | 显示系统描述 | 是 |
+| `status` | 连接无人机，读取电量与高度 | 是 |
+| `camera` | 开启视频流与目标检测画面（红色或 ArUco，取决于 `detector_type`） | 是 |
+| `camera-debug` | 同时显示 BGR 原图、BGR/RGB 互换、红色掩膜三个窗口，不发送 move_rc | 是 |
+| `follow` | 起飞 → 目标跟随（低速、yaw 优先），窗口按键 `q` 停止降落、`e` 急停 | 是 |
+| `follow-dry-run` | 只计算理论控制量并显示在画面上，不起飞、不发送 move_rc | 是 |
+| `follow-test` | 单元测试 FollowController 方向逻辑，不需无人机和摄像头 | 否 |
+| `fixed-demo` | 固定航线（左移 3s → 前进 2s → 右移 3s）→ 自动进入目标跟随 | 是 |
+| `console` | 自然语言控制台 REPL，支持本地规则+LLM 回退 | 是 |
+| `basic-flight-test` | 连接 → 读取电量 → 用户确认 → 起飞 → 悬停 5s → 降落 | 否 |
+| `safety-test` | 单元测试 SafetyManager 电量/限速/高度/目标丢失逻辑 | 否 |
+| `swarm-sim` | 虚拟结构法编队仿真：四机分布在目标中心矩形四角，输出坐标并保存二维示意图。`drone_i=target+(±d,±d,h)` | 否 |
+| `swarm-status` | 多机状态读取，不起飞、不开视频 | 是 |
+| `swarm-connect-test` | 多机连接 + 零 RC + 急停 | 是 |
+| `swarm-basic-test` | 多机连接 → 顺序起飞 → 清零 → 顺序降落 → 急停 | 是 |
+| `swarm-hover-test` | 多机顺序起飞 → 同步悬停 → 顺序降落 | 是 |
+| `swarm-rc-test` | 多机顺序起飞 → 低速短时 RC 移动 → 清零 → 降落 | 是 |
+
+### follow 窗口按键
+
+- `p` — 暂停/继续（仅 console 模式支持）
+- `q` — 停止跟随 + 降落
+- `e` — 急停：立即清零控制量 + 降落
+
+## 检测器
+
+`config.yaml` 中 `vision.detector_type` 决定检测器类型：
+
+- **`red`**（默认）— 红色目标检测，使用 HSV 颜色阈值 + RGB 主色过滤
+- **`aruco`** — ArUco 二维码检测（默认 DICT_4X4_50, ID 23），支持坐标/面积平滑和临时丢失容忍
 
 ```bash
-python3 main.py --mode console --fake
+# 打印 ArUco 标记
+python3 vision/generate_marker.py
 ```
 
-如需启用在线大模型分类，在 `config.yaml` 中设置：
+两种检测器的输出接口相同（`found`、`center`、`area`、`bbox`），下游控制器无需改动。
 
+## 控制逻辑
+
+`FollowController` 将目标检测结果转换为安全 RC 指令：
+
+1. **水平**：优先 yaw 转向，不使用左右平移。误差在死区内不输出，死区外按比例计算偏航速度并施加最小速度约束。
+2. **前后**：根据目标面积比例控制前进/后退。面积小于阈值则前进，大于阈值则后退，在中间范围悬停。
+3. **上下**：目标在画面中偏上则上升，偏下则下降。
+4. **对准减速**：存在偏航或上下修正时，前后速度固定为较低值，避免姿态未稳定时冲撞。
+5. **目标锁定**：目标在画面中心且面积适中稳定持续 15 帧后进入 LOCKED 状态，四轴全部归零停止移动；目标移出退出范围后解除锁定。
+6. **目标丢失**：丢失后先悬停等待，超过 `target_lost_hover_seconds` 继续悬停，超过 `target_lost_land_seconds` 自动降落。
+
+所有 RC 指令经过 `SafetyManager.limit_rc_command` 限速（`max_rc_speed`）。
+
+## 安全
+
+`SafetyManager` 负责单机安全检查：
+- 起飞前电量低于 `min_battery_takeoff` 禁止起飞
+- 飞行中电量低于 `low_battery_land` 建议降落
+- `limit_rc_command` 每通道钳位到 `[-max_rc_speed, max_rc_speed]`
+- `check_height` 确保高度在 `[min_height_cm, max_height_cm]`
+
+## 控制台
+
+```bash
+python3 main.py --mode console      # 真机
+python3 main.py --mode console --fake  # 模拟
+```
+
+自然语言控制台采用两层命令解析：
+
+1. **本地规则**：优先匹配固定命令和自然语言关键词。
+2. **在线 LLM 回退**：本地无法确定且 `llm_enabled: true` 且有 `LLM_API_KEY` 时，调用 OpenAI 兼容 API 做动作分类。
+
+所有解析结果映射为白名单动作：`GET_STATUS`、`START_FOLLOW`、`STOP_TASK`、`EMERGENCY_STOP`、`EXIT`、`UNKNOWN`。
+
+控制台只能通过 `ConsoleTools` 调用任务级工具，`ConsoleTools` 内部经过 `SafetyManager` 安全检查。大模型不直接操控飞控。
+
+启用 LLM 分类需设置：
 ```yaml
 llm_enabled: true
-llm_base_url: "https://api.openai.com/v1/chat/completions"
-llm_model: "gpt-4o-mini"
-llm_timeout_seconds: 8
+llm_base_url: "https://api.deepseek.com/chat/completions"
+llm_model: "deepseek-chat"
 ```
+并设置环境变量 `LLM_API_KEY`。未设置密钥时控制台自动退回到仅使用本地规则。
 
-并在运行前设置环境变量：
+支持的自然语言输入：
+
+- `状态` / `还有多少电` — 显示电量、高度、当前模式
+- `开始任务` / `帮我开始跟随目标` — 检查电量 → 用户确认 → 起飞 → 跟随
+- `停止任务` / `先停一下` — 停止跟随并降落
+- `急停` / `紧急停止` — 清零控制输出
+- `退出` / `退出系统` — 安全结束并退出
+
+含糊、询问式表达（含"吗"、"？"等）返回 `UNKNOWN`，不执行任何动作。
+
+## Fake 模式
+
+无真机时通过 `--fake` 启用 `FakeDroneAdapter`：
+
+- 返回模拟电量（80%）和高度
+- 生成包含动态红色目标的 OpenCV 测试画面
+- 目标会左右/上下移动、大小周期变化、间歇丢失
+- 画面仍然经过 `TargetDetector.detect`、`FollowController`、`SafetyManager` 和 `FakeDroneAdapter.move_rc`，不是直接伪造识别结果
+
+Fake 模式无法验证 ArUco 识别（Fake 画面只生成红色目标）。使用 ArUco 时需使用真实摄像头。
+
+## 仪表盘
+
+`ui/dashboard.py` — 占位骨架，供未来遥测显示使用。
+
+## 测试
 
 ```bash
-export LLM_API_KEY="你的接口密钥"
+python3 -m pytest tests/
 ```
-
-如果 `llm_enabled: true` 但没有设置 `LLM_API_KEY`，控制台启动时会给出提示，并自动退回到仅使用本地规则解析。
-
-支持的输入包括固定命令和常见自然语言表达：
-
-- `状态` / `看看现在无人机状态` / `还有多少电`：显示电量、高度和当前模式。
-- `开始任务` / `帮我开始跟随目标` / `启动无人机跟随`：检查电量，等待用户确认，然后起飞并打开 `DroneUmbrella Console Follow` 窗口进行低速跟随；跟随运行时请使用窗口按键 `p`、`q`、`e` 控制暂停、停止和急停。
-- `停止任务` / `先停一下` / `停止当前任务`：在未进入跟随窗口时停止当前任务并降落。
-- `急停` / `立即急停` / `紧急停止`：在未进入跟随窗口时清零当前控制输出；跟随窗口运行中请直接按 `e` 急停。
-- `退出` / `退出系统`：安全结束当前任务并退出控制台。
-
-含糊、询问式或不确定的动作表达会返回 `UNKNOWN`，不会触发起飞、停止、急停或退出。
-
-如果本地规则和在线模型都无法安全确定意图，系统会返回 `UNKNOWN`，不会执行危险动作。
-
-控制台跟随窗口显示实时画面、目标框、目标中心、画面中心、误差线、控制台状态、REAL/FAKE 模式、电量、高度和当前 RC 控制量。窗口按键：
-
-- `p`：暂停或继续跟随。暂停时继续显示画面和识别结果，但 RC 输出固定为 `0,0,0,0`。
-- `q`：停止跟随、清零控制量、降落、关闭视频流和窗口，然后返回 `Console>` 命令界面。
-- `e`：急停，立即清零控制量并降落，控制台状态切换为 `EMERGENCY_STOP`。
-
-后续接入大模型 API 时，大模型只用于把自然语言转换为上述任务命令和编排任务，底层实时飞控仍由确定性的控制器和安全工具负责。
-
-## 无真机验证方法
-
-当前没有 RoboMaster TT / Tello 真机时，可以使用 `--fake` 进入模拟无人机模式。带 `--fake` 时程序不会连接真机，而是使用 `FakeDroneAdapter` 返回模拟电量、高度和动态 OpenCV 测试画面。不带 `--fake` 时仍然连接 RoboMaster TT / Tello 真机，真机控制逻辑保持不变。
-
-Fake 画面会生成真实 NumPy/OpenCV 图像：红色目标会左右、上下移动，大小会周期变化，并会短时间模拟目标丢失。画面仍然经过 `TargetDetector.detect(frame)`、`FollowController`、`SafetyManager` 和 `FakeDroneAdapter.move_rc()`，不是直接伪造识别结果。
-
-示例命令：
-
-```bash
-python3 main.py --mode status --fake
-python3 main.py --mode camera --fake
-python3 main.py --mode follow --fake
-python3 main.py --mode console --fake
-```
-
-模拟模式适合验证状态读取、红色目标识别和跟随控制理论逻辑；真实飞行前仍必须重新做安全检查。
-
-Fake 控制台手动验收建议：
-
-1. 运行 `python3 main.py --mode console --fake`。
-2. 输入 `状态`，确认显示模拟电量和高度。
-3. 输入 `开始任务`，再输入 `yes`。
-4. 确认出现 `DroneUmbrella Console Follow` 窗口。
-5. 确认红色目标会移动、大小变化，目标框和中心点正常。
-6. 确认 RC 数据随目标位置和面积变化。
-7. 按 `p` 暂停，确认画面继续刷新但 RC 为 0。
-8. 再按 `p` 恢复。
-9. 按 `q` 停止并返回控制台命令界面。
-10. 再次输入 `开始任务`，确认不会出现重复窗口。
-11. 按 `e` 测试急停状态。
-
-真机控制台安全验收建议：
-
-1. 连接 RoboMaster TT / Tello Wi-Fi。
-2. 运行 `python3 main.py --mode console`。
-3. 输入 `状态`，确认电量满足起飞阈值。
-4. 输入 `开始任务`，按提示完成用户确认。
-5. 起飞后确认电脑显示实时摄像头画面。
-6. 红色目标出现时确认检测框、误差线和 RC 数据正常。
-7. 按 `p` 暂停，确认无人机悬停。
-8. 按 `q` 停止并降落。
-9. 确认视频流和窗口关闭。
-
-## 四机协同打伞与真机协同底座
-
-初赛阶段的实物验证仍以安全为第一优先级。项目已经加入四机协同管理底座：`SwarmDroneNode` 负责单节点状态，`SwarmManager` 负责连接、状态、顺序起降、RC 分发、全体零 RC 和急停，`SwarmSafetyManager` 负责低电量、失联和速度限幅。真机推进顺序必须是 `Fake -> 单机 -> 两机 -> 四机`。
-
-仿真采用“虚拟结构法”：把行人目标中心记为 `target=(x, y, z)`，设 `d` 为四架无人机相对伞面中心的水平偏移，`h` 为相对目标中心的飞行高度。四架无人机目标位置为：
-
-```text
-drone_1 = target + (-d, +d, h)
-drone_2 = target + (+d, +d, h)
-drone_3 = target + (-d, -d, h)
-drone_4 = target + (+d, -d, h)
-```
-
-运行命令：
-
-```bash
-python3 main.py --mode swarm-sim
-```
-
-程序会在终端输出四架无人机的目标坐标，并用 matplotlib 生成二维示意图，显示行人目标、伞面中心、四架无人机位置和伞面矩形。
-
-Fake Swarm 验证：
-
-```bash
-python3 main.py --mode swarm-status --fake
-python3 main.py --mode swarm-connect-test --fake
-python3 main.py --mode swarm-basic-test --fake
-python3 main.py --mode swarm-hover-test --fake
-python3 main.py --mode swarm-rc-test --fake
-```
-
-真机 Swarm 状态读取不会起飞，也不会打开视频流：
-
-```bash
-python3 main.py --mode swarm-status
-python3 main.py --mode swarm-connect-test
-```
-
-真机飞行测试必须在四机编号、IP、电量和空域安全全部确认后运行，并会要求输入 `YES`：
-
-```bash
-python3 main.py --mode swarm-basic-test
-python3 main.py --mode swarm-hover-test
-python3 main.py --mode swarm-rc-test
-```
-
-四机网络方案见 `docs/swarm_network_plan.md`，真机测试流程见 `docs/swarm_real_test_plan.md`，测试记录见 `docs/swarm_test_record.md`。
-
-## 开发路线
-
-- 第 1 阶段：完成项目骨架、配置文件、模块边界和导入测试。
-- 第 2 阶段：接入 Tello / RoboMaster TT，完成连接、起飞、降落、电量读取和基础安全检查。
-- 第 3 阶段：接入摄像头视频流，完成颜色目标或标记目标检测。
-- 第 4 阶段：实现低速跟随控制，让无人机保持在目标上方或附近的安全位置。
-- 第 5 阶段：增加异常处理，例如低电量降落、目标丢失悬停、目标长时间丢失自动降落。
-- 第 6 阶段：开发简单仪表盘，显示电量、高度、目标状态和控制状态。
-- 第 7 阶段：开展多机编队与遮雨覆盖范围仿真，为后续实物扩展做准备。
-
-## 安全注意事项
-
-- 首次调试必须拆除桨叶或使用保护罩，确认控制逻辑无误后再带桨测试。
-- 室内飞行要选择空旷区域，远离人群、玻璃、灯具和易损物品。
-- 起飞前检查电量，默认低于 30% 不允许起飞。
-- 飞行中电量低于 20% 时应立即降落。
-- 控制速度和高度必须受配置文件限制，避免无人机快速冲撞。
-- follow 模式只允许低速跟随，所有 RC 输出都必须经过 `SafetyManager.limit_rc_command` 限速。
-- follow 模式的水平跟随优先使用偏航旋转，不再主要依靠左右平移追踪目标；目标水平偏差很大时会抑制前进速度，避免未对准时前冲。
-- follow 模式起飞前必须由用户手动输入 `YES` 确认，程序不能自动起飞。
-- 调试 follow 模式时先拆除桨叶或使用保护罩，确认红色目标识别和控制方向正确后再短时间带桨测试。
-- 跟随测试时目标移动要缓慢，禁止让无人机靠近人脸、头顶、玻璃、灯具和易损物品。
-- 目标丢失后先悬停观察，长时间丢失后自动降落。
-- follow 画面中按 `q` 退出并降落，按 `e` 立即发送零速度并降落。
-- 本项目初赛阶段只做缩比验证，不直接承载真实雨伞或靠近人体飞行。
