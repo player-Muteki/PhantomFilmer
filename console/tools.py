@@ -102,7 +102,7 @@ class ConsoleTools:
             config=self._config,
             mode_label=self._mode_label,
             window_name=str(
-                self._config.get("console_window_name", "DroneUmbrella Console Follow")
+                self._config.get("console_window_name", "PhantomFilmer Console Follow")
             ),
             state_label="CONSOLE",
             allow_pause=True,

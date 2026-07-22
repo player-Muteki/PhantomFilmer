@@ -1,1 +1,1 @@
-"""Console orchestration for the drone umbrella prototype."""
+"""Console orchestration for the PhantomFilmer prototype."""

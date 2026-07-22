@@ -1,6 +1,6 @@
-# DroneUmbrella
+# PhantomFilmer
 
-基于 RoboMaster TT / Tello Talent 的无人机移动打伞系统 Python 原型。
+基于 RoboMaster TT / Tello Talent 的无人机自动跟拍系统 Python 原型。
 
 ## 依赖
 

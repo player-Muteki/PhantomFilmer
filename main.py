@@ -1,4 +1,4 @@
-"""Project entry point for the DroneUmbrella prototype."""
+"""Project entry point for the PhantomFilmer prototype."""
 
 import argparse
 from pathlib import Path
@@ -334,10 +334,10 @@ def run_camera(use_fake: bool = False) -> int:
 
             result = detector.detect(frame)
             debug_frame = detector.draw_debug(frame, result)
-            cv2.imshow("DroneUmbrella Camera", debug_frame)
+            cv2.imshow("PhantomFilmer Camera", debug_frame)
             last_mask = getattr(detector, "last_mask", None)
             if last_mask is not None:
-                cv2.imshow("DroneUmbrella Red Mask", last_mask)
+                cv2.imshow("PhantomFilmer Red Mask", last_mask)
 
             key = cv2.waitKey(1) & 0xFF
             if key == ord("q"):
@@ -512,7 +512,7 @@ def run_follow(use_fake: bool = False) -> int:
             follow_controller=controller,
             config=config,
             mode_label="FAKE" if use_fake else "REAL",
-            window_name="DroneUmbrella Follow",
+            window_name="PhantomFilmer Follow",
             state_label="FOLLOW",
             allow_pause=False,
         )
@@ -565,7 +565,7 @@ def run_fixed_demo(use_fake: bool = False) -> int:
             follow_controller=controller,
             config=config,
             mode_label="FIXED-DEMO FAKE" if use_fake else "FIXED-DEMO REAL",
-            window_name="DroneUmbrella Fixed Demo",
+            window_name="PhantomFilmer Fixed Demo",
             state_label="FOLLOW",
             allow_pause=False,
             pre_follow_maneuver=FixedDemoManeuver(
@@ -666,7 +666,7 @@ def run_follow_dry_run(use_fake: bool = False) -> int:
                     (255, 255, 255),
                     2,
                 )
-            cv2.imshow("DroneUmbrella Follow Dry Run", debug_frame)
+            cv2.imshow("PhantomFilmer Follow Dry Run", debug_frame)
 
             key = cv2.waitKey(1) & 0xFF
             if key == ord("q"):
@@ -767,7 +767,7 @@ def run_safety_test() -> int:
 
 
 def run_swarm_sim() -> int:
-    """Run a four-drone virtual-structure umbrella simulation."""
+    """Run a four-drone virtual-structure formation simulation."""
     target = (0.0, 0.0, 0.0)
     d = 1.2
     h = 1.5
@@ -776,7 +776,7 @@ def run_swarm_sim() -> int:
     output_path = Path(__file__).with_name("docs") / "swarm_formation.png"
     simulator.save_2d_plot(output_path)
 
-    print("四机协同打伞仿真：虚拟结构法")
+    print("四机协同编队仿真：虚拟结构法")
     print(f"- 行人目标中心 target=(x={target[0]:.2f}, y={target[1]:.2f}, z={target[2]:.2f})")
     print(f"- 水平偏移 d={d:.2f} m，飞行高度 h={h:.2f} m")
     for name, point in points.items():
@@ -919,7 +919,7 @@ def confirm_real_swarm_action(action_label: str) -> bool:
 
 def parse_args() -> argparse.Namespace:
     """Parse command-line arguments."""
-    parser = argparse.ArgumentParser(description="DroneUmbrella prototype controller")
+    parser = argparse.ArgumentParser(description="PhantomFilmer prototype controller")
     parser.add_argument(
         "--mode",
         choices=(

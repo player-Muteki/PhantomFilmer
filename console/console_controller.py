@@ -1,4 +1,4 @@
-"""Natural-language Console for high-level DroneUmbrella task scheduling."""
+"""Natural-language Console for high-level PhantomFilmer task scheduling."""
 
 from typing import Optional
 

@@ -1,4 +1,4 @@
-"""OpenCV red target detection for umbrella-following experiments."""
+"""OpenCV red target detection for PhantomFilmer following experiments."""
 
 from typing import Any, Dict, Optional
 

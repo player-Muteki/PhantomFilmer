@@ -1,8 +1,8 @@
-# DroneUmbrella Swarm 测试记录
+# PhantomFilmer Swarm 测试记录
 
 ## 2026-07-13 本地开发记录
 
-- 已拉取 `https://github.com/player-Muteki/DroneUmbrella` 到本地任务目录。
+- 已拉取 `https://github.com/player-Muteki/PhantomFilmer` 到本地任务目录。
 - 已创建分支 `feature/chen-swarm-real`。
 - 系统 `python3` 基线测试失败原因：缺少 `numpy`，不是 swarm 逻辑错误。
 - 已补充真机 IP 节点工厂、Fake 运行中失联模拟、短时 RC 后自动清零、`swarm-hover-test` 和 `swarm-rc-test` 入口。

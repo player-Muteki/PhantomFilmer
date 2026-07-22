@@ -32,7 +32,7 @@ class ConsoleFollowSession(FollowSession):
             config=config,
             mode_label=mode_label,
             window_name=window_name
-            or str(config.get("console_window_name", "DroneUmbrella Console Follow")),
+            or str(config.get("console_window_name", "PhantomFilmer Console Follow")),
             state_label=state_label,
             allow_pause=allow_pause,
         )

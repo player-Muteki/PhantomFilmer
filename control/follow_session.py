@@ -47,7 +47,7 @@ class FollowSession:
         self.config = config
         self.mode_label = mode_label
         self.window_name = window_name or str(
-            config.get("console_window_name", "DroneUmbrella Follow")
+            config.get("console_window_name", "PhantomFilmer Follow")
         )
         self.state_label = state_label
         self.allow_pause = allow_pause

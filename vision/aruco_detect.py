@@ -1,4 +1,4 @@
-"""ArUco marker detection for drone umbrella target tracking.
+"""ArUco marker detection for PhantomFilmer target tracking.
 
 Provides an ArucoTargetDetector whose detect(frame) and draw_debug(frame, result)
 interfaces are fully compatible with the existing TargetDetector, so that

@@ -1,4 +1,4 @@
-"""Import tests for the DroneUmbrella project skeleton."""
+"""Import tests for the PhantomFilmer project skeleton."""
 
 import sys
 import unittest
