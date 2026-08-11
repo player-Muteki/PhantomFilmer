@@ -7,7 +7,6 @@ from typing import Optional
 from app.builder import (
     build_obstacle_modules,
     build_safety_manager,
-    build_swarm_manager,
     build_system,
     create_drone_adapter,
 )
@@ -18,8 +17,6 @@ from control.follow_session import FollowSession
 from control.motion_arbiter import MotionContext
 from drone.safety import SafetyManager
 from drone.tello_adapter import TelloDroneAdapter
-from swarm.formation_sim import FormationSimulator
-from swarm.swarm_manager import SwarmBatchResult
 from vision.camera import CameraStream
 from vision.detector_factory import create_detector
 from vision.target_detect import TargetDetector
@@ -256,7 +253,7 @@ def run_follow(
     drone = create_drone_adapter(use_fake, config=config)
     detector = create_detector(config)
     controller = FollowController.from_config(safety_manager=safety, config=config)
-    obstacle_detector, obstacle_planner, motion_arbiter = build_obstacle_modules(config, safety)
+    _, _, motion_arbiter = build_obstacle_modules(config, safety)
 
     try:
         print("正在连接模拟无人机..." if use_fake else "正在连接 RoboMaster TT / Tello...")
@@ -285,8 +282,6 @@ def run_follow(
             window_name="PhantomFilmer Follow",
             state_label="FOLLOW",
             allow_pause=False,
-            obstacle_detector=obstacle_detector,
-            obstacle_planner=obstacle_planner,
             motion_arbiter=motion_arbiter,
         )
         session.run()
@@ -312,7 +307,7 @@ def run_fixed_demo(
     drone = create_drone_adapter(use_fake, config=config)
     detector = create_detector(config)
     controller = FollowController.from_config(safety_manager=safety, config=config)
-    obstacle_detector, obstacle_planner, motion_arbiter = build_obstacle_modules(config, safety)
+    _, _, motion_arbiter = build_obstacle_modules(config, safety)
 
     try:
         print("正在连接模拟无人机..." if use_fake else "正在连接 RoboMaster TT / Tello...")
@@ -344,8 +339,6 @@ def run_fixed_demo(
             pre_follow_maneuver=FixedDemoManeuver(
                 control_interval=read_control_interval(config)
             ),
-            obstacle_detector=obstacle_detector,
-            obstacle_planner=obstacle_planner,
             motion_arbiter=motion_arbiter,
         )
         session.run()
@@ -379,7 +372,7 @@ def run_follow_dry_run(
     camera = None
     detector = create_detector(config)
     controller = FollowController.from_config(safety_manager=safety, config=config)
-    obstacle_detector, obstacle_planner, motion_arbiter = build_obstacle_modules(config, safety)
+    _, _, motion_arbiter = build_obstacle_modules(config, safety)
     control_interval = read_control_interval(config)
 
     try:
@@ -413,10 +406,6 @@ def run_follow_dry_run(
                 )
                 obstacle_result = avoidance_decision.observation
                 command = avoidance_decision.command
-            elif obstacle_detector is not None and obstacle_planner is not None and target_result.get("found"):
-                obstacle_result = obstacle_detector.detect(frame, target_result)
-                avoidance_decision = obstacle_planner.plan(command, obstacle_result)
-                command = avoidance_decision.command
             debug = controller.last_debug
             left_right, forward_backward, up_down, yaw = command.as_tuple()
             print(
@@ -440,8 +429,8 @@ def run_follow_dry_run(
             )
 
             debug_frame = detector.draw_debug(frame, target_result)
-            if obstacle_detector is not None:
-                debug_frame = obstacle_detector.draw_debug(debug_frame, obstacle_result)
+            if motion_arbiter is not None:
+                debug_frame = motion_arbiter.detector.draw_debug(debug_frame, obstacle_result)
             cv2.rectangle(debug_frame, (12, 84), (620, 238), (0, 0, 0), -1)
             obstacle_line = "obstacle=DISABLED"
             if obstacle_result is not None and avoidance_decision is not None:
@@ -566,135 +555,3 @@ def run_safety_test() -> int:
     print(f"  目标恢复：{safety.update_target_lost(True)}")
 
     return 0
-
-
-def run_swarm_sim() -> int:
-    """Run a four-drone virtual-structure formation simulation."""
-    target = (0.0, 0.0, 0.0)
-    d = 1.2
-    h = 1.5
-    simulator = FormationSimulator(target=target, d=d, h=h)
-    points = simulator.compute_umbrella_formation()
-    output_path = Path(__file__).resolve().parents[1] / "docs" / "swarm_formation.png"
-    simulator.save_2d_plot(output_path)
-
-    print("四机协同编队仿真：虚拟结构法")
-    print(f"- 行人目标中心 target=(x={target[0]:.2f}, y={target[1]:.2f}, z={target[2]:.2f})")
-    print(f"- 水平偏移 d={d:.2f} m，飞行高度 h={h:.2f} m")
-    for name, point in points.items():
-        print(f"- {name}: x={point.x:.2f}, y={point.y:.2f}, z={point.z:.2f}")
-    print(f"- 二维可视化已保存：{output_path}")
-    return 0
-
-
-def print_swarm_batch(result: SwarmBatchResult) -> None:
-    """Print compact per-node swarm results for manual checks."""
-    print(f"{result.action}: success={result.success}, elapsed_ms={result.elapsed_ms:.1f}")
-    for drone_id, item in result.results.items():
-        status = item.status
-        print(
-            f"- {drone_id}: "
-            f"success={item.success}, "
-            f"connected={status.connected}, "
-            f"airborne={status.airborne}, "
-            f"battery={status.battery}, "
-            f"height={status.height}, "
-            f"command={item.command}, "
-            f"error={item.error}"
-        )
-
-
-def run_swarm_status(use_fake: bool = False) -> int:
-    """Read swarm status without takeoff or video."""
-    manager = build_swarm_manager(load_config(), use_fake=use_fake)
-    print("Swarm 状态读取：不会起飞，不打开视频流。")
-    print_swarm_batch(manager.connect_all())
-    print_swarm_batch(manager.status_all())
-    return 0
-
-
-def run_swarm_connect_test(use_fake: bool = False) -> int:
-    """Connect swarm nodes and send zero RC only."""
-    if not use_fake and not confirm_real_swarm_action("连接四机并发送零 RC/急停清理"):
-        return 0
-    manager = build_swarm_manager(load_config(), use_fake=use_fake)
-    print_swarm_batch(manager.connect_all())
-    print_swarm_batch(manager.zero_rc_all())
-    print_swarm_batch(manager.emergency_stop_all())
-    return 0
-
-
-def run_swarm_basic_test(use_fake: bool = False) -> int:
-    """Run swarm connect, takeoff, zero RC, and landing sequence."""
-    if not use_fake and not confirm_real_swarm_action("四机顺序起飞、清零、顺序降落"):
-        return 0
-    manager = build_swarm_manager(load_config(), use_fake=use_fake)
-    print_swarm_batch(manager.connect_all())
-    print_swarm_batch(manager.takeoff_sequence())
-    print_swarm_batch(manager.zero_rc_all())
-    print_swarm_batch(manager.land_sequence())
-    print_swarm_batch(manager.emergency_stop_all())
-    return 0
-
-
-def run_swarm_hover_test(use_fake: bool = False) -> int:
-    """Run sequential takeoff, short synchronized hover, and landing."""
-    config = load_config()
-    if not use_fake and not confirm_real_swarm_action("四机顺序起飞、同步悬停、顺序降落"):
-        return 0
-    manager = build_swarm_manager(config, use_fake=use_fake)
-    swarm_config = config.get("swarm", {})
-    if not isinstance(swarm_config, dict):
-        swarm_config = {}
-    hover_seconds = float(swarm_config.get("hover_test_seconds", 10))
-    print_swarm_batch(manager.connect_all())
-    takeoff = manager.takeoff_sequence()
-    print_swarm_batch(takeoff)
-    if takeoff.success:
-        print(f"同步悬停 {hover_seconds:.1f} 秒。")
-        sleep(max(0.0, hover_seconds))
-        print_swarm_batch(manager.zero_rc_all())
-    print_swarm_batch(manager.land_sequence())
-    print_swarm_batch(manager.emergency_stop_all())
-    return 0
-
-
-def run_swarm_rc_test(use_fake: bool = False) -> int:
-    """Run one low-speed, short RC move and immediately zero all nodes."""
-    config = load_config()
-    if not use_fake and not confirm_real_swarm_action("四机顺序起飞、低速短时移动、立即清零并降落"):
-        return 0
-    swarm_config = config.get("swarm", {})
-    if not isinstance(swarm_config, dict):
-        swarm_config = {}
-    move_seconds = float(swarm_config.get("rc_test_seconds", 0.5))
-    command = (
-        int(swarm_config.get("rc_test_left_right", 0)),
-        int(swarm_config.get("rc_test_forward_backward", 8)),
-        int(swarm_config.get("rc_test_up_down", 0)),
-        int(swarm_config.get("rc_test_yaw", 0)),
-    )
-
-    manager = build_swarm_manager(config, use_fake=use_fake)
-    print_swarm_batch(manager.connect_all())
-    takeoff = manager.takeoff_sequence()
-    print_swarm_batch(takeoff)
-    if takeoff.success:
-        print(f"低速短时 RC 指令 {command}，持续 {move_seconds:.1f} 秒后立即清零。")
-        result = manager.send_rc_all(command, duration_s=move_seconds)
-        print_swarm_batch(result)
-        print_swarm_batch(manager.zero_rc_all())
-    print_swarm_batch(manager.land_sequence())
-    print_swarm_batch(manager.emergency_stop_all())
-    return 0
-
-
-def confirm_real_swarm_action(action_label: str) -> bool:
-    """Require explicit confirmation before any real swarm action with risk."""
-    print(f"即将执行真机 Swarm 操作：{action_label}。")
-    print("请确认空域安全、桨叶/保护罩状态正确、四机 IP 与编号已经核对。")
-    answer = input("输入 YES 继续，其他输入取消：").strip()
-    if answer != "YES":
-        print("已取消真机 Swarm 操作：未收到 YES 确认。")
-        return False
-    return True

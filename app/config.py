@@ -78,11 +78,6 @@ def _load_config_without_yaml(path: Path) -> dict:
             index += 1
             continue
 
-        if raw.startswith("swarm:"):
-            swarm, index = _parse_swarm_block(lines, index + 1)
-            config["swarm"] = swarm
-            continue
-
         if raw.startswith("vision:"):
             vision, index = _parse_flat_block(lines, index + 1)
             config["vision"] = vision
@@ -96,33 +91,23 @@ def _load_config_without_yaml(path: Path) -> dict:
         if ":" in raw and not raw.startswith(" "):
             key, value = raw.split(":", 1)
             config[key.strip()] = _parse_config_value(value.strip())
+            # 顶层键后若跟有缩进行，说明存在本回退解析器不支持的嵌套块：
+            # 显式报错而不是静默丢弃，避免配置在无 PyYAML 环境下被误解读。
+            probe = index + 1
+            while probe < len(lines):
+                probe_line = lines[probe]
+                if not probe_line.strip() or probe_line.lstrip().startswith("#"):
+                    probe += 1
+                    continue
+                if probe_line.startswith(" "):
+                    raise ValueError(
+                        f"config 回退解析器不支持顶层键 '{key.strip()}' 下的嵌套块"
+                        f"（第 {index + 1} 行）。请安装 PyYAML，"
+                        "或在该解析器中为对应块补充解析逻辑。"
+                    )
+                break
         index += 1
     return config
-
-
-def _parse_swarm_block(lines: list[str], start_index: int) -> tuple[dict, int]:
-    """Parse the flat swarm block and its drones list."""
-    swarm = {}
-    index = start_index
-    while index < len(lines):
-        raw = lines[index]
-        stripped = raw.strip()
-        if raw and not raw.startswith(" ") and stripped:
-            break
-        if not stripped or stripped.startswith("#"):
-            index += 1
-            continue
-
-        if stripped == "drones:":
-            drones, index = _parse_swarm_drones(lines, index + 1)
-            swarm["drones"] = drones
-            continue
-
-        if ":" in stripped:
-            key, value = stripped.split(":", 1)
-            swarm[key.strip()] = _parse_config_value(value.strip())
-        index += 1
-    return swarm, index
 
 
 def _parse_flat_block(lines: list[str], start_index: int) -> tuple[dict, int]:
@@ -142,38 +127,6 @@ def _parse_flat_block(lines: list[str], start_index: int) -> tuple[dict, int]:
             values[key.strip()] = _parse_config_value(value.strip())
         index += 1
     return values, index
-
-
-def _parse_swarm_drones(lines: list[str], start_index: int) -> tuple[list[dict], int]:
-    """Parse the drones list from config.yaml fallback loading."""
-    drones = []
-    current = None
-    index = start_index
-    while index < len(lines):
-        raw = lines[index]
-        stripped = raw.strip()
-        if raw and not raw.startswith(" ") and stripped:
-            break
-        if not stripped or stripped.startswith("#"):
-            index += 1
-            continue
-
-        if stripped.startswith("- "):
-            if current:
-                drones.append(current)
-            current = {}
-            item = stripped[2:]
-            if ":" in item:
-                key, value = item.split(":", 1)
-                current[key.strip()] = _parse_config_value(value.strip())
-        elif current is not None and ":" in stripped:
-            key, value = stripped.split(":", 1)
-            current[key.strip()] = _parse_config_value(value.strip())
-        index += 1
-
-    if current:
-        drones.append(current)
-    return drones, index
 
 
 def _parse_config_value(value: str) -> object:

@@ -50,6 +50,9 @@ class FollowSession:
         self.detector = detector
         self.follow_controller = follow_controller
         self.pre_follow_maneuver = pre_follow_maneuver
+        # 生产路径统一使用 motion_arbiter 作为唯一避障管线（包含检测器、规划器和
+        # 日志）。单独传入 obstacle_detector/obstacle_planner 只用于直接装配
+        # （如测试）时的回退路径；两者同时传入时 arbiter 优先。
         self.obstacle_detector = obstacle_detector
         self.obstacle_planner = obstacle_planner
         self.motion_arbiter = motion_arbiter
@@ -65,6 +68,7 @@ class FollowSession:
         self.display_enabled = bool(config.get("display_console_camera", True))
         self.frame_failure_limit = int(config.get("frame_failure_limit", 30))
         self.control_interval = self._read_control_interval(config)
+        self.min_control_hz = float(config.get("min_control_hz", 8.0))
 
         self.camera: Optional[CameraStream] = None
         self.session_state = "IDLE"
@@ -79,6 +83,7 @@ class FollowSession:
         self.last_avoidance_decision: Optional[AvoidanceDecision] = None
         self.fps = 0.0
         self.control_hz = 0.0
+        self._control_rate_warning_shown = False
 
     @property
     def console_state(self) -> str:
@@ -275,7 +280,12 @@ class FollowSession:
         target_result: Dict[str, object],
         frame: Any,
     ) -> RCCommand:
-        """Apply obstacle avoidance only during normal follow control."""
+        """Apply raw obstacle detection only on the no-arbiter fallback path.
+
+        生产装配（app.builder / app.modes）总是提供 motion_arbiter，此时不会走到
+        这里。此方法仅为直接传入 obstacle_detector/obstacle_planner 的装配保留，
+        与 arbiter 路径保持相同的"目标丢失时不输出避障指令"语义。
+        """
         if self.obstacle_detector is None or self.obstacle_planner is None:
             self.last_obstacle_result = None
             self.last_avoidance_decision = None
@@ -348,8 +358,11 @@ class FollowSession:
         import cv2
 
         debug_frame = self.detector.draw_debug(frame, target_result)
-        if self.obstacle_detector is not None:
-            debug_frame = self.obstacle_detector.draw_debug(debug_frame, self.last_obstacle_result)
+        obstacle_detector = self.obstacle_detector
+        if obstacle_detector is None and self.motion_arbiter is not None:
+            obstacle_detector = self.motion_arbiter.detector
+        if obstacle_detector is not None:
+            debug_frame = obstacle_detector.draw_debug(debug_frame, self.last_obstacle_result)
         frame_height, frame_width = debug_frame.shape[:2]
         frame_center = (frame_width // 2, frame_height // 2)
         vertical_dead_zone_px = int(frame_height * self.follow_controller.vertical_dead_zone_ratio / 2)
@@ -483,6 +496,7 @@ class FollowSession:
                     self._safe_zero_output()
                     break
             else:
+                # 仅当没有装配 motion_arbiter 时才使用原始检测器/规划器回退路径。
                 command = self.apply_obstacle_avoidance(command, target_result, frame)
 
             battery = self._read_battery()
@@ -530,6 +544,15 @@ class FollowSession:
                 frame_counter = 0
                 command_counter = 0
                 stats_started_at = now
+                if self.control_hz < self.min_control_hz:
+                    if not self._control_rate_warning_shown:
+                        print(
+                            f"控制率偏低：{self.control_hz:.1f} Hz < {self.min_control_hz:.1f} Hz，"
+                            "检测或显示处理可能过慢，请检查性能。"
+                        )
+                        self._control_rate_warning_shown = True
+                else:
+                    self._control_rate_warning_shown = False
 
             if self.display_enabled:
                 debug_frame = self.draw_debug_frame(frame, target_result, self.last_command, battery, height)

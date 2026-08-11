@@ -8,10 +8,8 @@ keep the historical ``main`` module API stable for tests and scripts.
 import argparse
 
 from app.builder import (
-    build_fake_swarm_manager,
     build_obstacle_modules,
     build_safety_manager,
-    build_swarm_manager,
     build_system,
     create_drone_adapter,
 )
@@ -27,8 +25,6 @@ from app.config import (
     selected_detector_type,
 )
 from app.modes import (
-    confirm_real_swarm_action,
-    print_swarm_batch,
     run_basic_flight_test,
     run_camera,
     run_camera_debug,
@@ -39,12 +35,6 @@ from app.modes import (
     run_follow_test,
     run_safety_test,
     run_status,
-    run_swarm_basic_test,
-    run_swarm_connect_test,
-    run_swarm_hover_test,
-    run_swarm_rc_test,
-    run_swarm_sim,
-    run_swarm_status,
 )
 
 
@@ -65,12 +55,6 @@ def parse_args() -> argparse.Namespace:
             "camera",
             "follow",
             "console",
-            "swarm-sim",
-            "swarm-status",
-            "swarm-connect-test",
-            "swarm-basic-test",
-            "swarm-hover-test",
-            "swarm-rc-test",
         ),
         default="demo",
         help="运行模式：fixed-demo 执行固定航线后进入目标跟随；其余模式保持原有用途。",
@@ -127,18 +111,6 @@ def main() -> int:
             use_fake=args.fake,
             obstacle_enabled=obstacle_enabled,
         )
-    if args.mode == "swarm-sim":
-        return run_swarm_sim()
-    if args.mode == "swarm-status":
-        return run_swarm_status(use_fake=args.fake)
-    if args.mode == "swarm-connect-test":
-        return run_swarm_connect_test(use_fake=args.fake)
-    if args.mode == "swarm-basic-test":
-        return run_swarm_basic_test(use_fake=args.fake)
-    if args.mode == "swarm-hover-test":
-        return run_swarm_hover_test(use_fake=args.fake)
-    if args.mode == "swarm-rc-test":
-        return run_swarm_rc_test(use_fake=args.fake)
 
     controller = build_system(use_fake=args.fake)
     controller.describe()

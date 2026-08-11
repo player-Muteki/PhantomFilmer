@@ -56,12 +56,6 @@ python3 -m venv .venv
 | `console` | 自然语言控制台，支持本地规则和 LLM 回退 | 是 |
 | `basic-flight-test` | 用户确认后起飞、悬停 5s、降落 | 否 |
 | `safety-test` | 测试电量、限速、高度和目标丢失逻辑 | 否 |
-| `swarm-sim` | 四机虚拟结构编队仿真 | 否 |
-| `swarm-status` | 多机状态读取，不起飞、不开视频 | 是 |
-| `swarm-connect-test` | 多机连接、零 RC、急停 | 是 |
-| `swarm-basic-test` | 多机连接、顺序起飞、清零、顺序降落 | 是 |
-| `swarm-hover-test` | 多机顺序起飞、同步悬停、顺序降落 | 是 |
-| `swarm-rc-test` | 多机低速短时移动、清零、降落 | 是 |
 
 ### follow 窗口按键
 

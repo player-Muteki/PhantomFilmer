@@ -1,10 +1,10 @@
 min_battery_takeoff: 30
 low_battery_land: 20
+# 高度安全范围：飞行高度超出 [min_height_cm, max_height_cm] 会触发自动降落，
+# 真机调参时按试飞场地重新标定。
 max_height_cm: 150
 min_height_cm: 60
 max_rc_speed: 35
-target_lost_hover_seconds: 3
-target_lost_land_seconds: 8
 camera_width: 640
 camera_height: 480
 vision:
@@ -55,6 +55,8 @@ target_lock_exit_area_ratio_max: 0.080
 target_lock_exit_horizontal_dead_zone_ratio: 0.12
 target_lock_exit_vertical_dead_zone_ratio: 0.15
 control_interval: 0.05
+# 控制率低于该值（Hz）时控制台会周期性告警，提示检测或显示处理过慢。
+min_control_hz: 8
 detector_min_area_ratio: 0.002
 detector_min_area: 500
 obstacle:
@@ -86,33 +88,3 @@ llm_enabled: true
 llm_base_url: "https://api.deepseek.com/chat/completions"
 llm_model: "deepseek-chat"
 llm_timeout_seconds: 8
-
-swarm:
-  command_interval_ms: 200
-  takeoff_interval_s: 1.0
-  require_formation_feedback: true
-  formation_feedback_timeout_s: 0.5
-  hover_test_seconds: 10
-  rc_test_seconds: 0.5
-  rc_test_left_right: 0
-  rc_test_forward_backward: 8
-  rc_test_up_down: 0
-  rc_test_yaw: 0
-  max_lr_speed: 10
-  max_fb_speed: 10
-  max_ud_speed: 10
-  max_yaw_speed: 10
-  minimum_takeoff_battery: 30
-  drones:
-    - id: drone_1
-      ip: 192.168.1.101
-      role: leader
-    - id: drone_2
-      ip: 192.168.1.102
-      role: follower
-    - id: drone_3
-      ip: 192.168.1.103
-      role: follower
-    - id: drone_4
-      ip: 192.168.1.104
-      role: follower

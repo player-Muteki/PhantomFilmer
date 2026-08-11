@@ -215,6 +215,8 @@ class FollowController:
             else:
                 target_state = "LOCKED"
 
+        # LOCKED 表示已进入锁定保持：此时不产生任何修正运动，飞机悬停原地
+        # 等待目标重新进入锁定范围（见下方 exit 判定）。
         if target_state == "LOCKED":
             up_down = 0
             yaw = 0
@@ -245,6 +247,8 @@ class FollowController:
                     else -self.forward_speed_while_aligning
                 )
 
+            # 本帧刚达成锁定（上面 is_stable 分支）时 target_state 已置为 LOCKED，
+            # 上面计算出的修正速度必须清零，与进入循环时已锁定的情况保持一致。
             if target_state == "LOCKED":
                 up_down = 0
                 yaw = 0

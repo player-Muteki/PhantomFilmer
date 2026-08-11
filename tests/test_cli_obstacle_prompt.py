@@ -104,7 +104,6 @@ class ObstacleCliDispatchTestCase(unittest.TestCase):
         cases = (
             ("status", "run_status"),
             ("camera", "run_camera"),
-            ("swarm-status", "run_swarm_status"),
         )
         for mode, runner_name in cases:
             with self.subTest(mode=mode), patch.object(

@@ -12,6 +12,3 @@ class ConsoleCommand(str, Enum):
     EMERGENCY_STOP = "EMERGENCY_STOP"
     EXIT = "EXIT"
     UNKNOWN = "UNKNOWN"
-
-
-ALLOWED_CONSOLE_COMMANDS = {command.value for command in ConsoleCommand}

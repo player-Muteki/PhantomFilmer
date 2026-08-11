@@ -61,14 +61,22 @@ class ConsoleController:
 
     def _show_status(self) -> None:
         """Print battery, height, and current mode."""
-        status = self.tools.get_status()
+        try:
+            status = self.tools.get_status()
+        except RuntimeError as exc:
+            print(f"状态读取失败：{exc}")
+            return
         print(f"电量：{status['battery']}%")
         print(f"高度：{status['height']} cm")
         print(f"当前模式：{status['mode']}")
 
     def _start_task(self) -> None:
         """Ask for confirmation before calling the safe start-task tool."""
-        allowed, message = self.tools.can_start_task()
+        try:
+            allowed, message = self.tools.can_start_task()
+        except RuntimeError as exc:
+            print(f"起飞检查失败：{exc}")
+            return
         print(message)
         if not allowed:
             return

@@ -19,9 +19,6 @@ from drone.drone_adapter import DroneAdapter
 from drone.fake_adapter import FakeDroneAdapter
 from drone.safety import SafetyConfig, SafetyManager
 from drone.tello_adapter import TelloDroneAdapter
-from swarm.fake_swarm import create_fake_swarm_nodes
-from swarm.real_swarm import create_real_swarm_nodes
-from swarm.swarm_manager import SwarmManager
 from vision.detector_factory import create_detector
 from vision.obstacle_detect import ObstacleDetector
 
@@ -94,7 +91,7 @@ def build_system(
         safety_manager=safety_manager,
         config=config,
     )
-    obstacle_detector, obstacle_planner, motion_arbiter = build_obstacle_modules(
+    _, _, motion_arbiter = build_obstacle_modules(
         config,
         safety_manager,
     )
@@ -103,8 +100,8 @@ def build_system(
         safety_manager=safety_manager,
         detector=detector,
         follow_controller=follow_controller,
-        obstacle_detector=obstacle_detector,
-        obstacle_planner=obstacle_planner,
+        # 生产装配统一使用 MotionArbiter 作为避障管线；原始检测器/规划器保留在
+        # ConsoleTools 参数中仅作直接装配（测试）时的回退，这里不重复传入。
         motion_arbiter=motion_arbiter,
         config=config,
         mode_label="FAKE" if use_fake else "REAL",
@@ -119,26 +116,3 @@ def build_system(
     )
     parser = CommandParser(llm_client=llm_client)
     return ConsoleController(tools=tools, parser=parser, llm_client=llm_client)
-
-
-def build_fake_swarm_manager(config: dict) -> SwarmManager:
-    """Create a fake four-node swarm manager from config.yaml."""
-    return build_swarm_manager(config, use_fake=True)
-
-
-def build_swarm_manager(config: dict, use_fake: bool = False) -> SwarmManager:
-    """Create a fake or real swarm manager from config.yaml."""
-    swarm_config = config.get("swarm", {})
-    if not isinstance(swarm_config, dict):
-        swarm_config = {}
-    drone_configs = swarm_config.get("drones")
-    configs = drone_configs if isinstance(drone_configs, list) else None
-    if use_fake:
-        nodes = create_fake_swarm_nodes(configs)
-    else:
-        nodes = create_real_swarm_nodes(configs)
-    return SwarmManager.from_config(
-        config,
-        nodes,
-        require_formation_feedback=False if use_fake else None,
-    )
