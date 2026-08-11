@@ -10,6 +10,7 @@ from typing import Sequence
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_ENROLLMENT_DIR = PROJECT_ROOT / "data" / "reid_target" / "现场注册"
+SUPPORTED_REFERENCE_SUFFIXES = {".jpg", ".jpeg", ".png", ".webp", ".tif", ".tiff"}
 
 
 @dataclass
@@ -44,20 +45,29 @@ class TargetLockTracker:
 
 
 def build_reid_runtime_config(
-    config: dict[str, object], reference_images: Sequence[Path]
+    config: dict[str, object],
+    reference_images: Sequence[Path] | None = None,
+    profile_name: str | None = None,
 ) -> dict[str, object]:
-    """Return an in-memory config that enables ReID with selected photos.
+    """Return an in-memory config that enables ReID with photos or a profile.
 
     The project YAML is never rewritten during a live demonstration, which
     avoids leaving a machine in an unsafe or surprising default mode.
     """
-    if not reference_images:
-        raise ValueError("至少需要一张目标人物参考照片。")
+    images = list(reference_images or [])
+    selected_profile = str(profile_name or "").strip()
+    if bool(images) == bool(selected_profile):
+        raise ValueError("必须且只能选择参考照片或一个人物档案。")
     runtime = dict(config)
     raw_vision = config.get("vision", {})
     vision = dict(raw_vision) if isinstance(raw_vision, dict) else {}
     vision["detector_type"] = "person_reid"
-    vision["reference_images"] = [str(path) for path in reference_images]
+    if selected_profile:
+        vision["reference_profile"] = selected_profile
+        vision.pop("reference_images", None)
+    else:
+        vision["reference_images"] = [str(path) for path in images]
+        vision.pop("reference_profile", None)
     runtime["vision"] = vision
     return runtime
 
@@ -77,6 +87,30 @@ def validate_reference_images(values: Sequence[str]) -> list[Path]:
             paths.append(resolved)
     if not paths:
         raise RuntimeError("未提供可用的目标人物照片。")
+    return paths
+
+
+def validate_reference_directory(value: str) -> list[Path]:
+    """Return supported image files directly inside one reference directory."""
+    raw = str(value).strip().strip("\"").strip("'")
+    directory = Path(raw).expanduser()
+    resolved = (
+        directory.resolve()
+        if directory.is_absolute()
+        else (Path.cwd() / directory).resolve()
+    )
+    if not resolved.is_dir():
+        raise RuntimeError(f"目标人物照片目录不存在：{resolved}")
+    paths = sorted(
+        path.resolve()
+        for path in resolved.iterdir()
+        if path.is_file() and path.suffix.lower() in SUPPORTED_REFERENCE_SUFFIXES
+    )
+    if not paths:
+        raise RuntimeError(
+            f"目标人物照片目录中没有可用图片：{resolved}。"
+            "请使用 JPG、PNG、WebP 或 TIFF。"
+        )
     return paths
 
 

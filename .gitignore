@@ -10,6 +10,7 @@ __pycache__/
 .ultralytics/
 weights/
 data/reid_target/
+data/reid_profiles/
 data/reid_test/
 data/datasets/
 logs/

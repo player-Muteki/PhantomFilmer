@@ -135,6 +135,9 @@ class ObstacleCliDispatchTestCase(unittest.TestCase):
             mode="reid-demo",
             fake=False,
             reference_image=["front.jpg", "side.jpg"],
+            reference_dir=None,
+            profile=None,
+            overwrite_profile=False,
             capture_reference=False,
             reference_camera=2,
             reference_count=4,
@@ -151,10 +154,40 @@ class ObstacleCliDispatchTestCase(unittest.TestCase):
             use_fake=False,
             obstacle_enabled=True,
             reference_images=["front.jpg", "side.jpg"],
+            profile_name=None,
             capture_reference=False,
             reference_camera=2,
             reference_count=4,
             lock_frames=12,
+        )
+
+    def test_reid_enroll_does_not_prompt_or_connect_drone(self) -> None:
+        args = argparse.Namespace(
+            mode="reid-enroll",
+            fake=False,
+            reference_image=None,
+            reference_dir="photos",
+            profile="person-a",
+            overwrite_profile=False,
+            capture_reference=False,
+            reference_camera=0,
+            reference_count=5,
+            lock_frames=None,
+        )
+        with patch.object(main, "parse_args", return_value=args), patch.object(
+            main, "prompt_obstacle_enabled"
+        ) as prompt, patch.object(main, "run_reid_enroll", return_value=0) as runner:
+            self.assertEqual(main.main(), 0)
+
+        prompt.assert_not_called()
+        runner.assert_called_once_with(
+            profile_name="person-a",
+            reference_images=None,
+            reference_directory="photos",
+            capture_reference=False,
+            reference_camera=0,
+            reference_count=5,
+            overwrite_profile=False,
         )
 
 

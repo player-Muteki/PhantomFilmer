@@ -5,7 +5,9 @@ detectors.  Heavy third-party models are loaded lazily so existing modes keep
 working when the optional ReID dependencies are not installed.
 """
 
+import os
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
@@ -19,6 +21,11 @@ class UltralyticsPersonDetector:
     """Return person bounding boxes from an Ultralytics detection model."""
 
     def __init__(self, model_path: str, confidence: float, device: str) -> None:
+        # RoboMaster TT / Tello Wi-Fi normally has no internet access.  Without
+        # this hint, Ultralytics performs an online-status DNS lookup while it
+        # is imported and macOS can wait about a minute for that lookup to time
+        # out.  setdefault keeps an explicit caller override available.
+        os.environ.setdefault("YOLO_OFFLINE", "1")
         try:
             from ultralytics import YOLO
         except ModuleNotFoundError as exc:
@@ -128,6 +135,13 @@ class PersonReIDDetector:
         vision = config.get("vision", {})
         cfg = vision if isinstance(vision, dict) else config
         reference_images = _parse_reference_images(cfg.get("reference_images", ""))
+        reference_features = None
+        profile_name = str(cfg.get("reference_profile", "")).strip()
+        if profile_name:
+            from vision.reid_profiles import load_reid_profile
+
+            reference_features, _manifest = load_reid_profile(profile_name, config)
+            reference_images = []
         return cls(
             reference_image_paths=reference_images,
             detector_model_path=str(
@@ -140,6 +154,7 @@ class PersonReIDDetector:
             similarity_threshold=_safe_float(cfg.get("reid_similarity_threshold"), 0.65),
             ambiguity_margin=_safe_float(cfg.get("reid_ambiguity_margin"), 0.05),
             temporary_lost_frames=_safe_int(cfg.get("reid_temporary_lost_frames"), 0),
+            reference_features=reference_features,
         )
 
     def detect(self, frame: Any) -> DetectionResult:
@@ -189,6 +204,13 @@ class PersonReIDDetector:
         """Load models and reference features before any flight can start."""
         self._ensure_ready()
 
+    @property
+    def reference_feature(self) -> np.ndarray:
+        """Return a copy of the prepared normalized reference embedding."""
+        if self._reference_feature is None:
+            raise RuntimeError("人物参考特征尚未准备。")
+        return self._reference_feature.copy()
+
     def draw_debug(self, frame: Any, result: DetectionResult) -> Any:
         if not _valid_frame(frame):
             return frame
@@ -226,20 +248,38 @@ class PersonReIDDetector:
         self._last_valid_result = None
 
     def _ensure_ready(self) -> None:
+        prepare_started = perf_counter()
+        initialized_component = False
         if self._person_detector is None:
+            step_started = perf_counter()
+            print("ReID 准备 1/3：正在加载 YOLO 行人检测模型...")
             self._person_detector = UltralyticsPersonDetector(
                 self.detector_model_path,
                 self.detection_confidence,
                 self.device,
             )
+            print(f"ReID 准备 1/3 完成：{perf_counter() - step_started:.2f} 秒")
+            initialized_component = True
         if self._feature_extractor is None:
+            step_started = perf_counter()
+            print("ReID 准备 2/3：正在加载 OSNet 特征模型...")
             self._feature_extractor = TorchreidFeatureExtractor(
                 self.reid_model_name,
                 self.reid_model_path,
                 self.device,
             )
+            print(f"ReID 准备 2/3 完成：{perf_counter() - step_started:.2f} 秒")
+            initialized_component = True
         if self._reference_feature is None:
+            step_started = perf_counter()
+            print("ReID 准备 3/3：正在从参考照片计算人物特征...")
             self._reference_feature = self._load_reference_feature()
+            print(f"ReID 准备 3/3 完成：{perf_counter() - step_started:.2f} 秒")
+            initialized_component = True
+        elif initialized_component:
+            print("ReID 准备 3/3：已直接加载人物档案特征，无需计算照片。")
+        if initialized_component:
+            print(f"ReID 模型准备完成：共 {perf_counter() - prepare_started:.2f} 秒")
 
     def _load_reference_feature(self) -> np.ndarray:
         if not self.reference_image_paths:

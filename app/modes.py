@@ -22,7 +22,9 @@ from vision.detector_factory import create_detector
 from vision.reid_enrollment import (
     build_reid_runtime_config,
     collect_reference_images,
+    validate_reference_directory,
 )
+from vision.reid_profiles import save_reid_profile
 from vision.target_detect import TargetDetector
 
 
@@ -301,32 +303,104 @@ def run_follow(
         drone.stop()
 
 
+def run_reid_enroll(
+    profile_name: Optional[str],
+    reference_images: Optional[Sequence[str]] = None,
+    reference_directory: Optional[str] = None,
+    capture_reference: bool = False,
+    reference_camera: int = 0,
+    reference_count: int = 3,
+    overwrite_profile: bool = False,
+) -> int:
+    """Create a persistent local ReID profile without connecting a drone."""
+    if not str(profile_name or "").strip():
+        print("reid-enroll 必须使用 --profile 指定人物档案名。")
+        return 1
+    try:
+        if reference_directory:
+            if reference_images or capture_reference:
+                raise RuntimeError(
+                    "--reference-dir 不能与 --reference-image 或 --capture-reference 同时使用。"
+                )
+            selected_images = validate_reference_directory(reference_directory)
+        else:
+            selected_images = collect_reference_images(
+                provided_values=reference_images,
+                capture_from_camera=capture_reference,
+                camera_index=reference_camera,
+                image_count=reference_count,
+            )
+
+        config = build_reid_runtime_config(load_config(), selected_images)
+        detector = create_detector(config)
+        print("正在加载 ReID 模型并从参考照片提取人物特征...")
+        prepare_detector = getattr(detector, "prepare", None)
+        if not callable(prepare_detector):
+            raise RuntimeError("当前检测器不支持人物档案注册。")
+        prepare_detector()
+        reference_feature = getattr(detector, "reference_feature", None)
+        if reference_feature is None:
+            raise RuntimeError("当前检测器未生成可保存的人物特征。")
+        manifest = save_reid_profile(
+            str(profile_name),
+            reference_feature,
+            config,
+            selected_images,
+            overwrite=overwrite_profile,
+        )
+    except (RuntimeError, ValueError) as exc:
+        print(str(exc))
+        return 1
+
+    print(f"人物档案注册成功：{manifest['profile_name']}")
+    print(f"- 参考照片：{manifest['photo_count']} 张")
+    print(f"- 特征维度：{manifest['embedding_dimension']}")
+    print("- 档案仅保存在本地 data/reid_profiles/，不会连接无人机。")
+    return 0
+
+
 def run_reid_demo(
     use_fake: bool = False,
     obstacle_enabled: Optional[bool] = None,
     reference_images: Optional[Sequence[str]] = None,
+    profile_name: Optional[str] = None,
     capture_reference: bool = False,
     reference_camera: int = 0,
     reference_count: int = 3,
     lock_frames: Optional[int] = None,
 ) -> int:
     """Enroll a person, lock them on the ground, then follow after confirmation."""
-    try:
-        selected_images = collect_reference_images(
-            provided_values=reference_images,
-            capture_from_camera=capture_reference,
-            camera_index=reference_camera,
-            image_count=reference_count,
-        )
-    except RuntimeError as exc:
-        print(str(exc))
-        return 1
+    selected_profile = str(profile_name or "").strip()
+    selected_images: Sequence[Path] = []
+    if selected_profile:
+        if reference_images or capture_reference:
+            print("--profile 不能与 --reference-image 或 --capture-reference 同时使用。")
+            return 1
+    else:
+        try:
+            selected_images = collect_reference_images(
+                provided_values=reference_images,
+                capture_from_camera=capture_reference,
+                camera_index=reference_camera,
+                image_count=reference_count,
+            )
+        except RuntimeError as exc:
+            print(str(exc))
+            return 1
 
     base_config = load_runtime_config(obstacle_enabled)
-    config = build_reid_runtime_config(base_config, selected_images)
+    config = build_reid_runtime_config(
+        base_config,
+        selected_images,
+        profile_name=selected_profile or None,
+    )
     safety = SafetyManager.from_dict(config)
     drone = create_drone_adapter(use_fake, config=config)
-    detector = create_detector(config)
+    try:
+        detector = create_detector(config)
+    except (RuntimeError, ValueError) as exc:
+        print(str(exc))
+        return 1
     controller = FollowController.from_config(safety_manager=safety, config=config)
     configured_lock_frames = int(config.get("reid_lock_stable_frames", 10))
     required_lock_frames = max(
@@ -349,7 +423,10 @@ def run_reid_demo(
         return answer == "YES"
 
     try:
-        print("正在连接无人机前加载 ReID 模型并检查参考照片...")
+        if selected_profile:
+            print("正在连接无人机前加载本地人物档案和实时 ReID 模型...")
+        else:
+            print("正在连接无人机前加载 ReID 模型并检查参考照片...")
         prepare_detector = getattr(detector, "prepare", None)
         if callable(prepare_detector):
             prepare_detector()
@@ -365,9 +442,12 @@ def run_reid_demo(
             print("电量低于安全起飞阈值，禁止起飞。")
             return 1
 
-        print("已录入参考照片：")
-        for path in selected_images:
-            print(f"- {path}")
+        if selected_profile:
+            print(f"已加载本地人物档案：{selected_profile}")
+        else:
+            print("已录入参考照片：")
+            for path in selected_images:
+                print(f"- {path}")
         print("接下来只会在地面开启无人机摄像头进行身份锁定。")
 
         _, _, motion_arbiter = build_obstacle_modules(config, safety)

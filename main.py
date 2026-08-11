@@ -34,6 +34,7 @@ from app.modes import (
     run_follow_dry_run,
     run_follow_test,
     run_reid_demo,
+    run_reid_enroll,
     run_safety_test,
     run_status,
 )
@@ -55,6 +56,7 @@ def parse_args() -> argparse.Namespace:
             "camera-debug",
             "camera",
             "follow",
+            "reid-enroll",
             "reid-demo",
             "console",
         ),
@@ -70,12 +72,27 @@ def parse_args() -> argparse.Namespace:
         "--reference-image",
         action="append",
         default=None,
-        help="reid-demo 目标人物照片路径，可重复传入多张。",
+        help="reid-enroll/reid-demo 目标人物照片路径，可重复传入多张。",
+    )
+    parser.add_argument(
+        "--reference-dir",
+        default=None,
+        help="reid-enroll 参考照片目录，自动读取其中支持的图片。",
+    )
+    parser.add_argument(
+        "--profile",
+        default=None,
+        help="reid-enroll 创建或 reid-demo 加载的本地人物档案名。",
+    )
+    parser.add_argument(
+        "--overwrite-profile",
+        action="store_true",
+        help="reid-enroll 显式覆盖同名本地人物档案。",
     )
     parser.add_argument(
         "--capture-reference",
         action="store_true",
-        help="reid-demo 使用电脑摄像头现场拍摄参考照片。",
+        help="reid-enroll/reid-demo 使用电脑摄像头现场拍摄参考照片。",
     )
     parser.add_argument(
         "--reference-camera",
@@ -137,11 +154,22 @@ def main() -> int:
             use_fake=args.fake,
             obstacle_enabled=obstacle_enabled,
         )
+    if args.mode == "reid-enroll":
+        return run_reid_enroll(
+            profile_name=args.profile,
+            reference_images=args.reference_image,
+            reference_directory=args.reference_dir,
+            capture_reference=args.capture_reference,
+            reference_camera=args.reference_camera,
+            reference_count=args.reference_count,
+            overwrite_profile=args.overwrite_profile,
+        )
     if args.mode == "reid-demo":
         return run_reid_demo(
             use_fake=args.fake,
             obstacle_enabled=obstacle_enabled,
             reference_images=args.reference_image,
+            profile_name=args.profile,
             capture_reference=args.capture_reference,
             reference_camera=args.reference_camera,
             reference_count=args.reference_count,

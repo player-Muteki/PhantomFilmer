@@ -49,6 +49,7 @@ python3 -m venv .venv
 | `camera` | 开启视频流与目标检测画面 | 是 |
 | `camera-debug` | 显示 BGR 原图、通道互换和红色掩膜，不发送 RC | 是 |
 | `follow` | 起飞并目标跟随，支持按次选择是否开启避障 | 是 |
+| `reid-enroll` | 从参考照片创建本地具名人物特征档案，不连接无人机 | 否 |
 | `reid-demo` | 现场录入人物，地面连续识别和人工确认后才起飞跟随 | 仅可验证失败保护 |
 | `follow-dry-run` | 只计算理论控制量和避障结果，不起飞、不发送 RC | 是 |
 | `follow-test` | 测试 FollowController 方向逻辑 | 否 |
@@ -111,7 +112,25 @@ MPLCONFIGDIR=.matplotlib YOLO_CONFIG_DIR=.ultralytics \
 ### 现场 ReID 演示
 
 `reid-demo` 不会修改 `config.yaml` 的默认 ArUco 设置。它只在本次运行内强制启用
-`person_reid`，并使用现场提供的照片。可以直接选择照片：
+`person_reid`。推荐先将一组照片注册成只保存在本地的具名档案：
+
+```bash
+.venv-reid/bin/python main.py --mode reid-enroll \
+  --profile person-a-current-outfit \
+  --reference-dir data/reid_target/现场注册/一组照片
+```
+
+注册会验证每张照片恰好包含一个人物，提取并平均 OSNet 特征，再写入已被 Git
+忽略的 `data/reid_profiles/<profile>/`。档案同时记录 YOLO、OSNet 权重哈希和特征
+格式；权重或预处理版本变化时会拒绝加载并要求重新注册。后续直接加载档案：
+
+```bash
+.venv-reid/bin/python main.py --mode reid-demo \
+  --profile person-a-current-outfit \
+  --lock-frames 15
+```
+
+也可以不保存档案，直接为单次运行选择照片：
 
 ```bash
 .venv-reid/bin/python main.py --mode reid-demo \
@@ -132,13 +151,16 @@ MPLCONFIGDIR=.matplotlib YOLO_CONFIG_DIR=.ultralytics \
 
 程序随后按以下顺序执行：
 
-1. 连接无人机前加载 YOLO、OSNet 和参考照片；照片中不是恰好一个完整人物时中止。
+1. 连接无人机前加载 YOLO、OSNet 和已校验的人物档案（或现场参考照片）。
 2. 无人机保持在地面并打开摄像头，默认要求目标连续匹配 10 帧。
 3. 预测位置、身份模糊或低于阈值的结果都不计入锁定帧数。
 4. 锁定后现场人员必须核对预览画面并在终端输入大写 `YES`；程序会再做一帧实时身份检查，通过后才会起飞。
 5. 起飞后复用普通跟随、目标丢失降落、安全限速和已选择的避障管线。
 
 比赛前详细演练清单见 [`docs/reid_demo_runbook.md`](docs/reid_demo_runbook.md)。
+
+人物档案包含可关联个人外观的特征数据。不要使用真实姓名作为档案名，不要提交或
+上传 `data/reid_profiles/`，比赛结束后按本人意愿删除。换人或明显换衣后应建立新档案。
 
 ## 控制逻辑
 

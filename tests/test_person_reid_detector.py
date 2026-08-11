@@ -1,5 +1,7 @@
 """Dependency-free tests for the person ReID detector policy and contract."""
 
+import os
+import sys
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -8,7 +10,7 @@ from unittest.mock import patch
 
 import numpy as np
 
-from vision.person_reid_detect import PersonReIDDetector
+from vision.person_reid_detect import PersonReIDDetector, UltralyticsPersonDetector
 
 
 class FakePersonDetector:
@@ -29,6 +31,11 @@ class FakeFeatureExtractor:
         return self.features[: len(images)]
 
 
+class FakeYOLO:
+    def __init__(self, model_path):
+        self.model_path = model_path
+
+
 def build_detector(detections, features, **kwargs):
     return PersonReIDDetector(
         reference_image_paths=[],
@@ -44,6 +51,22 @@ def build_detector(detections, features, **kwargs):
 class PersonReIDDetectorTestCase(unittest.TestCase):
     def setUp(self):
         self.frame = np.zeros((100, 120, 3), dtype=np.uint8)
+
+    def test_yolo_defaults_to_offline_mode(self):
+        fake_ultralytics = SimpleNamespace(YOLO=FakeYOLO)
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("YOLO_OFFLINE", None)
+            with patch.dict(sys.modules, {"ultralytics": fake_ultralytics}):
+                detector = UltralyticsPersonDetector("local.pt", 0.5, "cpu")
+            self.assertEqual(os.environ["YOLO_OFFLINE"], "1")
+            self.assertEqual(detector.model.model_path, "local.pt")
+
+    def test_yolo_offline_default_respects_explicit_override(self):
+        fake_ultralytics = SimpleNamespace(YOLO=FakeYOLO)
+        with patch.dict(os.environ, {"YOLO_OFFLINE": "0"}, clear=False):
+            with patch.dict(sys.modules, {"ultralytics": fake_ultralytics}):
+                UltralyticsPersonDetector("local.pt", 0.5, "cpu")
+            self.assertEqual(os.environ["YOLO_OFFLINE"], "0")
 
     def test_selects_person_with_best_reference_similarity(self):
         detector = build_detector(
@@ -134,6 +157,19 @@ class PersonReIDDetectorTestCase(unittest.TestCase):
         self.assertEqual(detector.reference_image_paths, ["front.jpg", "side.jpg"])
         self.assertEqual(detector.similarity_threshold, 0.72)
         self.assertEqual(detector.ambiguity_margin, 0.08)
+
+    def test_from_config_loads_persistent_reference_profile(self):
+        with patch(
+            "vision.reid_profiles.load_reid_profile",
+            return_value=(np.array([1.0, 0.0], dtype=np.float32), {"profile_name": "person-a"}),
+        ) as load_profile:
+            detector = PersonReIDDetector.from_config(
+                {"vision": {"reference_profile": "person-a"}}
+            )
+
+        load_profile.assert_called_once()
+        self.assertEqual(detector.reference_image_paths, [])
+        self.assertTrue(np.allclose(detector.reference_feature, [1.0, 0.0]))
 
     def test_reference_photo_is_cropped_to_detected_person(self) -> None:
         with TemporaryDirectory() as temp_dir:

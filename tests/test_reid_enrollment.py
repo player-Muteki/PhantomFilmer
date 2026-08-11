@@ -14,6 +14,7 @@ from vision.reid_enrollment import (
     TargetLockTracker,
     build_reid_runtime_config,
     collect_reference_images,
+    validate_reference_directory,
     validate_reference_images,
 )
 
@@ -128,6 +129,18 @@ def test_validate_reference_images_supports_repeated_and_comma_values(
 def test_validate_reference_images_rejects_missing_file(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError, match="不存在"):
         validate_reference_images([str(tmp_path / "missing.jpg")])
+
+
+def test_validate_reference_directory_selects_supported_images(tmp_path: Path) -> None:
+    (tmp_path / "front.JPG").write_bytes(b"front")
+    (tmp_path / "side.png").write_bytes(b"side")
+    (tmp_path / "ignored.HEIC").write_bytes(b"heic")
+    (tmp_path / "notes.txt").write_text("notes")
+
+    assert validate_reference_directory(str(tmp_path)) == [
+        (tmp_path / "front.JPG").resolve(),
+        (tmp_path / "side.png").resolve(),
+    ]
 
 
 def test_collection_rejects_mixed_path_and_camera_modes(tmp_path: Path) -> None:
