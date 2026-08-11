@@ -179,6 +179,37 @@ class FixedDemoManeuverTestCase(unittest.TestCase):
         self.assertGreater(clock.now, 1.2)
         self.assertGreater(len(commands), 10)
 
+    def test_avoidance_ticks_do_not_consume_route_time(self) -> None:
+        clock = FakeClock()
+        commands = []
+        avoid_ticks = 10
+
+        def is_avoiding() -> bool:
+            nonlocal avoid_ticks
+            if avoid_ticks > 0:
+                avoid_ticks -= 1
+                return True
+            return False
+
+        def send(command) -> None:
+            commands.append(command)
+            clock.now += 0.02  # 模拟读帧 + 避障决策的管线耗时
+
+        maneuver = FixedDemoManeuver(
+            steps=(FixedDemoStep("one", RCCommand(forward_backward=10), 1.0, 0.0),),
+            control_interval=0.1,
+            clock=clock,
+            sleep_fn=clock.sleep,
+        )
+        completed = maneuver.run(send, lambda: False, is_avoiding=is_avoiding)
+
+        self.assertTrue(completed)
+        # route 的 1.0s 必须完整保留，不得被避障期间的管线耗时消耗：
+        # 避障 10 次 ×（0.02 管线 + 0.1 控制间隔）= 1.2s 额外开销，
+        # 另加 3 次零命令发送（段间清零、settle 段首帧、收尾）各 0.02s。
+        # 修复前每帧避障管线耗时会被计入累计时间，总时长约 2.08s（少 0.2s）。
+        self.assertAlmostEqual(clock.now, 1.0 + 10 * (0.02 + 0.1) + 3 * 0.02, places=1)
+
 
 class FixedDemoIntegrationTestCase(unittest.TestCase):
     def test_session_runs_maneuver_then_resets_and_starts_follow(self) -> None:

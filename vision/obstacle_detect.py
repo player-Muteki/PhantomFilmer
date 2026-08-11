@@ -112,8 +112,6 @@ class ObstacleDetector:
         caution_area_ratio: float = 0.08,
         blocked_area_ratio: float = 0.18,
         temporal_window_frames: int = 5,
-        detect_confirm_frames: int = 3,
-        clear_confirm_frames: int = 5,
         sector_count: int = 5,
     ) -> None:
         self.risk_zone_width_ratio = self._clamp_float(risk_zone_width_ratio, 0.05, 1.0, 0.55)
@@ -125,8 +123,6 @@ class ObstacleDetector:
         self.caution_area_ratio = self._clamp_float(caution_area_ratio, 0.0, 1.0, 0.08)
         self.blocked_area_ratio = self._clamp_float(blocked_area_ratio, self.caution_area_ratio, 1.0, 0.18)
         self.temporal_window_frames = self._positive_int(temporal_window_frames, 5)
-        self.detect_confirm_frames = self._positive_int(detect_confirm_frames, 3)
-        self.clear_confirm_frames = self._positive_int(clear_confirm_frames, 5)
         self.sector_count = max(3, self._positive_int(sector_count, 5))
         self.last_result = ObstacleResult()
         self.last_mask = None
@@ -150,8 +146,8 @@ class ObstacleDetector:
             caution_area_ratio=cls._config_float(obstacle, "caution_area_ratio", 0.08),
             blocked_area_ratio=cls._config_float(obstacle, "blocked_area_ratio", 0.18),
             temporal_window_frames=cls._config_int(obstacle, "temporal_window_frames", 5),
-            detect_confirm_frames=cls._config_int(obstacle, "detect_confirm_frames", 3),
-            clear_confirm_frames=cls._config_int(obstacle, "clear_confirm_frames", 5),
+            # 时间确认（detect/clear confirm frames）由 planner 基于
+            # consecutive_found_frames 执行，detector 不读取这两个配置项。
             sector_count=cls._config_int(obstacle, "sector_count", 5),
         )
 

@@ -84,6 +84,47 @@ class ObstacleDetectorTestCase(unittest.TestCase):
         debug = detector.draw_debug(frame, result)
         self.assertEqual(debug.shape, frame.shape)
 
+    def test_free_space_sectors_reflect_obstacle_position(self) -> None:
+        frame = self.frame()
+        frame[60:160, 185:240] = 255  # 右侧障碍
+        result = self.build_detector().detect(frame, {"found": False, "bbox": None})
+        self.assertEqual(result.side, "right")
+        left_score = result.free_space["far_left"] + result.free_space["left"]
+        right_score = result.free_space["right"] + result.free_space["far_right"]
+        self.assertEqual(result.free_space["far_left"], 1.0)
+        self.assertLess(result.free_space["far_right"], 1.0)
+        self.assertGreater(left_score, right_score)
+
+    def test_consecutive_found_and_clear_frames_are_counted(self) -> None:
+        detector = self.build_detector()
+        frame = self.frame()
+        frame[60:160, 110:210] = 255
+        first = detector.detect(frame, {"found": False, "bbox": None})
+        second = detector.detect(frame, {"found": False, "bbox": None})
+        self.assertTrue(first.found)
+        self.assertEqual(first.consecutive_found_frames, 1)
+        self.assertEqual(second.consecutive_found_frames, 2)
+        self.assertEqual(second.consecutive_clear_frames, 0)
+
+        clear_first = detector.detect(self.frame(), {"found": False, "bbox": None})
+        clear_second = detector.detect(self.frame(), {"found": False, "bbox": None})
+        self.assertFalse(clear_first.found)
+        self.assertEqual(clear_first.consecutive_clear_frames, 1)
+        self.assertEqual(clear_first.consecutive_found_frames, 0)
+        self.assertEqual(clear_second.consecutive_clear_frames, 2)
+
+    def test_ttc_and_motion_require_growth_between_frames(self) -> None:
+        detector = self.build_detector()
+        small = self.frame()
+        small[90:110, 140:160] = 255
+        big = self.frame()
+        big[70:130, 100:160] = 255
+        first = detector.detect(small, {"found": False, "bbox": None})
+        second = detector.detect(big, {"found": False, "bbox": None})
+        self.assertIsNone(first.ttc_seconds)
+        self.assertIsNotNone(second.ttc_seconds)
+        self.assertGreater(second.motion_score, 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()

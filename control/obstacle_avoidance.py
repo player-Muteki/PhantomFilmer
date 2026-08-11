@@ -250,8 +250,17 @@ class ObstacleAvoidancePlanner:
             left_values = [value for key, value in result.free_space.items() if key in {"far_left", "left"}]
             right_values = [value for key, value in result.free_space.items() if key in {"right", "far_right"}]
             if not left_values and not right_values:
-                left_values = [value for key, value in result.free_space.items() if key.endswith("0")]
-                right_values = [value for key, value in result.free_space.items() if key.endswith("4")]
+                # 通用命名（sector_0..sector_{N-1}）按数值索引对称分半：
+                # 左半、右半各取一半扇区，奇数时中间扇区不参与两侧评分。
+                indexed = sorted(
+                    (int("".join(ch for ch in key if ch.isdigit())), value)
+                    for key, value in result.free_space.items()
+                    if any(ch.isdigit() for ch in key)
+                )
+                if indexed:
+                    count = len(indexed)
+                    left_values = [value for index, value in indexed if index < count // 2]
+                    right_values = [value for index, value in indexed if index >= count - count // 2]
             left_score = sum(left_values) / len(left_values) if left_values else 0.0
             right_score = sum(right_values) / len(right_values) if right_values else 0.0
             if right_score > left_score:

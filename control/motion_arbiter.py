@@ -248,7 +248,8 @@ class _JsonlEventWriter:
                     output.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
                     output.write("\n")
                     output.flush()
-        except OSError:
+        except (OSError, TypeError):
+            # 写盘失败或 payload 不可序列化时丢弃剩余事件，绝不让日志影响控制循环。
             while True:
                 try:
                     payload = self._queue.get_nowait()

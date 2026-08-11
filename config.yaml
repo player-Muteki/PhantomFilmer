@@ -76,14 +76,12 @@ obstacle:
   detect_confirm_frames: 3
   clear_confirm_frames: 5
   sector_count: 5
-  planner_horizon_seconds: 0.4
   scan_yaw_speed: 8
   min_free_space_score: 0.22
   timeout_action: land
   log_enabled: true
   log_dir: logs/avoidance
   log_every_n_frames: 2
-  save_debug_frames: false
 lost_target_hover_seconds: 3
 lost_target_land_seconds: 8
 llm_enabled: true

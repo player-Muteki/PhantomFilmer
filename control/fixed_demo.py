@@ -110,6 +110,7 @@ class FixedDemoManeuver:
         """Refresh one command until its deadline or an abort request."""
         accumulated_elapsed = 0.0
         segment_started_at = self._clock()
+        avoiding = False
         while True:
             if should_abort():
                 return False
@@ -125,11 +126,18 @@ class FixedDemoManeuver:
             if on_progress is not None and not on_progress(progress):
                 return False
             if is_avoiding is not None and is_avoiding():
-                accumulated_elapsed += self._clock() - segment_started_at
+                if not avoiding:
+                    # 冻结 route 计时：仅把已流逝时间一次性转存，避障期间不再累加，
+                    # 避免把 send_command（读帧+避障决策）的管线耗时悄悄计入路段时间。
+                    accumulated_elapsed += self._clock() - segment_started_at
+                    avoiding = True
                 segment_started_at = self._clock()
                 self._sleep(self.control_interval)
-                segment_started_at = self._clock()
                 continue
+            if avoiding:
+                # 避障结束，从当前时刻重新起算剩余路段时间。
+                avoiding = False
+                segment_started_at = self._clock()
 
             elapsed = accumulated_elapsed + (self._clock() - segment_started_at)
             if elapsed >= duration:
