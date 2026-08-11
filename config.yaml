@@ -16,6 +16,18 @@ vision:
   smoothing_alpha: 0.30
   temporary_lost_frames: 0
   min_marker_area: 300
+  # 人物 ReID 模式：改为 person_reid 后才会加载以下模型。
+  # 多张参考图用英文逗号分隔，路径相对于项目根目录。
+  reference_images: "data/reid_target/front.jpg,data/reid_target/side.jpg"
+  person_detector_model: "weights/yolov8n.pt"
+  person_detection_confidence: 0.45
+  reid_model_name: "osnet_x0_25"
+  reid_model_path: "weights/osnet_x0_25_msmt17.pth"
+  reid_device: "cpu"
+  reid_similarity_threshold: 0.65
+  reid_ambiguity_margin: 0.05
+  # 真机初测保持为 0：未确认身份时立即视为丢失并悬停。
+  reid_temporary_lost_frames: 0
 display_console_camera: true
 console_window_name: "DroneUmbrella Console Follow"
 fake_camera_enabled: true

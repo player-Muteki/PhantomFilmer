@@ -86,6 +86,7 @@ class FollowSession:
         """Start stream, take off, show the follow window, and clean up safely."""
         try:
             self._reset_tracking_state()
+            self._prepare_detector()
             self._start_camera()
             self.drone.takeoff()
             sleep(2)
@@ -122,6 +123,12 @@ class FollowSession:
             airborne=self.airborne,
             streaming=self.streaming,
         )
+
+    def _prepare_detector(self) -> None:
+        """Preload optional detector models while the drone is still grounded."""
+        prepare_method = getattr(self.detector, "prepare", None)
+        if callable(prepare_method):
+            prepare_method()
 
     def process_detection(
         self,

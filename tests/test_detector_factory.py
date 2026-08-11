@@ -6,6 +6,7 @@ from unittest.mock import patch
 import main
 from vision.aruco_detect import ArucoTargetDetector
 from vision.detector_factory import create_detector
+from vision.person_reid_detect import PersonReIDDetector
 from vision.target_detect import TargetDetector
 
 
@@ -17,6 +18,10 @@ class DetectorFactoryTestCase(unittest.TestCase):
     def test_aruco_config_creates_aruco_detector(self) -> None:
         detector = create_detector({"vision": {"detector_type": "aruco"}})
         self.assertIsInstance(detector, ArucoTargetDetector)
+
+    def test_person_reid_config_creates_detector_without_loading_models(self) -> None:
+        detector = create_detector({"vision": {"detector_type": "person_reid"}})
+        self.assertIsInstance(detector, PersonReIDDetector)
 
     def test_missing_vision_config_defaults_to_red(self) -> None:
         self.assertIsInstance(create_detector({}), TargetDetector)

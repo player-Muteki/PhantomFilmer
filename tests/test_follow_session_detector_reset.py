@@ -33,6 +33,11 @@ class NoResetDetector:
         return frame
 
 
+class FailingPrepareDetector(NoResetDetector):
+    def prepare(self) -> None:
+        raise RuntimeError("model preflight failed")
+
+
 class ThreeFrameSession(FollowSession):
     def _start_camera(self) -> None:
         self.streaming = True
@@ -96,6 +101,14 @@ class FollowSessionDetectorResetTestCase(unittest.TestCase):
     def test_detector_without_reset_remains_supported(self) -> None:
         with patch("control.follow_session.sleep", return_value=None):
             self.build_session(NoResetDetector()).run()
+
+    def test_detector_prepare_failure_happens_before_takeoff(self) -> None:
+        session = self.build_session(FailingPrepareDetector())
+        with self.assertRaisesRegex(RuntimeError, "model preflight failed"):
+            session.run()
+        self.assertEqual(session.drone.height_cm, 0)
+        self.assertFalse(session.airborne)
+        self.assertFalse(session.streaming)
 
     def test_controller_reset_is_called_once_before_a_new_session(self) -> None:
         safety = SafetyManager(SafetyConfig(30, 20, 150, 60, 35, 3, 8))

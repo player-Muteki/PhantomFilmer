@@ -1,0 +1,70 @@
+{
+  "test_date": "2026-08-11",
+  "reference_images": 3,
+  "positive_frames": 83,
+  "negative_identities": 50,
+  "negative_frames": 4482,
+  "auc": 0.991581,
+  "positive_scores": {
+    "min": 0.558284,
+    "p10": 0.596519,
+    "median": 0.64368,
+    "mean": 0.642333,
+    "p90": 0.686334,
+    "max": 0.713618
+  },
+  "negative_scores": {
+    "min": 0.377425,
+    "p10": 0.45896,
+    "median": 0.513205,
+    "mean": 0.512495,
+    "p90": 0.563812,
+    "max": 0.65809
+  },
+  "thresholds": {
+    "0.65": {
+      "tp": 37,
+      "fn": 46,
+      "fp": 2,
+      "tn": 4480,
+      "recall": 0.445783,
+      "false_positive_rate": 0.000446,
+      "specificity": 0.999554,
+      "balanced_accuracy": 0.722668
+    },
+    "0.60": {
+      "tp": 71,
+      "fn": 12,
+      "fp": 88,
+      "tn": 4394,
+      "recall": 0.855422,
+      "false_positive_rate": 0.019634,
+      "specificity": 0.980366,
+      "balanced_accuracy": 0.917894
+    },
+    "0.55": {
+      "tp": 83,
+      "fn": 0,
+      "fp": 765,
+      "tn": 3717,
+      "recall": 1.0,
+      "false_positive_rate": 0.170683,
+      "specificity": 0.829317,
+      "balanced_accuracy": 0.914659
+    }
+  },
+  "end_to_end_performance": {
+    "input_shape": "320x640",
+    "candidate_count": 1,
+    "device": "cpu",
+    "iterations": 30,
+    "mean_ms": 21.698,
+    "median_ms": 21.695,
+    "p95_ms": 21.876,
+    "mean_fps": 46.09
+  },
+  "related_automated_tests": {
+    "passed": 20,
+    "failed": 0
+  }
+}

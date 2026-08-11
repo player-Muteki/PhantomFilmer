@@ -242,6 +242,47 @@ python3 main.py --mode swarm-rc-test
 - 第 6 阶段：开发简单仪表盘，显示电量、高度、目标状态和控制状态。
 - 第 7 阶段：开展多机编队与遮雨覆盖范围仿真，为后续实物扩展做准备。
 
+## 人物 ReID 目标跟随（实验模式）
+
+项目提供 `PersonReIDDetector`：先用 YOLO 检测画面中的行人，再用
+Torchreid/OSNet 将候选人与预先登记的目标照片做余弦相似度匹配。它只替换
+视觉检测器，现有跟随控制、安全限速、目标丢失悬停和自动降落逻辑保持不变。
+
+建议先创建独立环境。Torchreid 官方安装脚本需要先准备 NumPy、SciPy 和
+TensorBoard 等依赖，仓库提供了已验证的分步安装脚本：
+
+```bash
+bash scripts/setup_reid_env.sh python3
+```
+
+模型权重、人物照片和公开数据集不提交到 Git。准备以下本地文件：
+
+```text
+weights/yolov8n.pt
+weights/osnet_x0_25_msmt17.pth
+data/reid_target/front.jpg
+data/reid_target/side.jpg
+data/reid_target/back.jpg
+```
+
+配置项见 `config.reid.offline-snippet.yaml`。仓库默认配置不会自动启用 ReID；
+首次验证只能使用不发送飞控指令的模式：
+
+```bash
+python main.py --mode follow-dry-run
+```
+
+离线 PRID 评估可以运行：
+
+```bash
+MPLCONFIGDIR=.matplotlib YOLO_CONFIG_DIR=.ultralytics \
+  .venv-reid/bin/python tools/reid_offline_eval.py
+```
+
+已有离线结果与限制见 `docs/reid_test/`。ReID 只做外观匹配，不识别真实姓名；
+俯视、遮挡、换衣、逆光和低分辨率都会降低可靠性。完成真实目标视频测试以前，
+不得启用真机 ReID 起飞跟随，ArUco 模式必须保留为安全降级方案。
+
 ## 安全注意事项
 
 - 首次调试必须拆除桨叶或使用保护罩，确认控制逻辑无误后再带桨测试。
