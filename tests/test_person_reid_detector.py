@@ -1,6 +1,10 @@
 """Dependency-free tests for the person ReID detector policy and contract."""
 
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from types import SimpleNamespace
+from unittest.mock import patch
 
 import numpy as np
 
@@ -18,8 +22,10 @@ class FakePersonDetector:
 class FakeFeatureExtractor:
     def __init__(self, features):
         self.features = np.asarray(features, dtype=np.float32)
+        self.last_images = []
 
     def extract(self, images):
+        self.last_images = list(images)
         return self.features[: len(images)]
 
 
@@ -128,6 +134,65 @@ class PersonReIDDetectorTestCase(unittest.TestCase):
         self.assertEqual(detector.reference_image_paths, ["front.jpg", "side.jpg"])
         self.assertEqual(detector.similarity_threshold, 0.72)
         self.assertEqual(detector.ambiguity_margin, 0.08)
+
+    def test_reference_photo_is_cropped_to_detected_person(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            photo = Path(temp_dir) / "person.jpg"
+            photo.write_bytes(b"fake image")
+            extractor = FakeFeatureExtractor([[1.0, 0.0]])
+            detector = PersonReIDDetector(
+                reference_image_paths=[str(photo)],
+                person_detector=FakePersonDetector(
+                    [{"bbox_xyxy": (30, 10, 110, 90)}]
+                ),
+                feature_extractor=extractor,
+            )
+
+            fake_cv2 = SimpleNamespace(
+                imread=lambda path: np.zeros((100, 120, 3), dtype=np.uint8)
+            )
+            with patch.dict("sys.modules", {"cv2": fake_cv2}):
+                detector.prepare()
+            self.assertEqual(extractor.last_images[0].shape, (80, 80, 3))
+
+    def test_reference_photo_with_multiple_people_is_rejected(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            photo = Path(temp_dir) / "crowd.jpg"
+            photo.write_bytes(b"fake image")
+            detector = PersonReIDDetector(
+                reference_image_paths=[str(photo)],
+                person_detector=FakePersonDetector(
+                    [
+                        {"bbox_xyxy": (0, 0, 20, 20)},
+                        {"bbox_xyxy": (30, 10, 110, 90)},
+                    ]
+                ),
+                feature_extractor=FakeFeatureExtractor([[1.0, 0.0]]),
+            )
+            fake_cv2 = SimpleNamespace(
+                imread=lambda path: np.zeros((100, 120, 3), dtype=np.uint8)
+            )
+            with patch.dict("sys.modules", {"cv2": fake_cv2}), self.assertRaisesRegex(
+                RuntimeError, "检测到多个人"
+            ):
+                detector.prepare()
+
+    def test_reference_photo_without_person_is_rejected(self) -> None:
+        with TemporaryDirectory() as temp_dir:
+            photo = Path(temp_dir) / "empty.jpg"
+            photo.write_bytes(b"fake image")
+            detector = PersonReIDDetector(
+                reference_image_paths=[str(photo)],
+                person_detector=FakePersonDetector([]),
+                feature_extractor=FakeFeatureExtractor([[1.0, 0.0]]),
+            )
+            fake_cv2 = SimpleNamespace(
+                imread=lambda path: np.zeros((100, 120, 3), dtype=np.uint8)
+            )
+            with patch.dict("sys.modules", {"cv2": fake_cv2}), self.assertRaisesRegex(
+                RuntimeError, "未检测到完整人物"
+            ):
+                detector.prepare()
 
 
 if __name__ == "__main__":

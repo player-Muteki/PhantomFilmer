@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 from threading import Event, Lock
 from time import monotonic, sleep
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 
 from control.fixed_demo import FixedDemoManeuver, FixedDemoProgress
 from control.follow_control import FollowController, RCCommand
@@ -14,6 +14,7 @@ from drone.safety import SafetyManager
 from vision.camera import CameraStream
 from vision.detector_protocol import DetectorProtocol
 from vision.obstacle_detect import ObstacleDetector, ObstacleResult
+from vision.reid_enrollment import TargetLockTracker
 
 
 @dataclass
@@ -44,6 +45,9 @@ class FollowSession:
         obstacle_detector: Optional[ObstacleDetector] = None,
         obstacle_planner: Optional[ObstacleAvoidancePlanner] = None,
         motion_arbiter: Optional[MotionArbiter] = None,
+        initial_target_lock_frames: int = 0,
+        initial_target_lock_timeout_seconds: float = 30.0,
+        pre_takeoff_confirmation: Optional[Callable[[Dict[str, object]], bool]] = None,
     ) -> None:
         self.drone = drone
         self.safety_manager = safety_manager
@@ -56,6 +60,11 @@ class FollowSession:
         self.obstacle_detector = obstacle_detector
         self.obstacle_planner = obstacle_planner
         self.motion_arbiter = motion_arbiter
+        self.initial_target_lock_frames = max(0, int(initial_target_lock_frames))
+        self.initial_target_lock_timeout_seconds = max(
+            1.0, float(initial_target_lock_timeout_seconds)
+        )
+        self.pre_takeoff_confirmation = pre_takeoff_confirmation
         self.config = config
         self.mode_label = mode_label
         self.window_name = window_name or str(
@@ -108,6 +117,56 @@ class FollowSession:
                         streaming=self.streaming,
                     )
                 self._start_camera()
+
+            locked_result: Dict[str, object] = {}
+            if self.initial_target_lock_frames > 0:
+                locked_result = self._wait_for_initial_target_lock()
+                if not locked_result:
+                    if self.session_state != "STOPPED":
+                        self.session_state = "TARGET_LOCK_FAILED"
+                    return FollowSessionResult(
+                        state=self.session_state,
+                        airborne=self.airborne,
+                        streaming=self.streaming,
+                    )
+                if (
+                    self.pre_takeoff_confirmation is not None
+                    and not self.pre_takeoff_confirmation(locked_result)
+                ):
+                    print("已取消起飞：现场人员未确认目标身份。")
+                    self.session_state = "TAKEOFF_CANCELLED"
+                    return FollowSessionResult(
+                        state=self.session_state,
+                        airborne=self.airborne,
+                        streaming=self.streaming,
+                    )
+                if (
+                    self.pre_takeoff_confirmation is not None
+                    and not self._verify_fresh_target_before_takeoff()
+                ):
+                    print(
+                        "人工确认后目标已离开或身份变得模糊，"
+                        "未起飞。"
+                    )
+                    self.session_state = "TARGET_LOCK_FAILED"
+                    return FollowSessionResult(
+                        state=self.session_state,
+                        airborne=self.airborne,
+                        streaming=self.streaming,
+                    )
+
+            with self._lifecycle_lock:
+                if self.stop_event.is_set():
+                    self.session_state = "STOPPED"
+                    return FollowSessionResult(
+                        state=self.session_state,
+                        airborne=self.airborne,
+                        streaming=self.streaming,
+                    )
+                if locked_result:
+                    authorize_takeoff = getattr(self.drone, "authorize_next_takeoff", None)
+                    if callable(authorize_takeoff):
+                        authorize_takeoff()
                 self.drone.takeoff()
                 self.airborne = True
             sleep(2)
@@ -168,6 +227,95 @@ class FollowSession:
             airborne=self.airborne,
             streaming=self.streaming,
         )
+
+    def _wait_for_initial_target_lock(self) -> Dict[str, object]:
+        """Keep the aircraft grounded until fresh ReID matches are stable."""
+        tracker = TargetLockTracker(self.initial_target_lock_frames)
+        started_at = monotonic()
+        frame_failures = 0
+        self.session_state = "GROUND_TARGET_LOCK"
+        print(
+            "无人机保持在地面，正在从摄像头画面识别目标人物。"
+            f"需要连续确认 {tracker.required_frames} 帧。"
+        )
+        while not self.stop_event.is_set():
+            if monotonic() - started_at >= self.initial_target_lock_timeout_seconds:
+                print(
+                    "地面识别超时，未起飞。"
+                    "请调整人物位置、光线或参考照片。"
+                )
+                return {}
+
+            frame = self._read_frame()
+            if frame is None:
+                frame_failures += 1
+                if frame_failures >= self.frame_failure_limit:
+                    print("地面识别时连续无法读取视频帧，未起飞。")
+                    return {}
+                sleep(self.control_interval)
+                continue
+
+            frame_failures = 0
+            try:
+                result = self.detector.detect(frame)
+            except Exception as exc:
+                print(f"地面 ReID 检测失败，未起飞：{exc}")
+                return {}
+
+            locked = tracker.observe(result)
+            if self.display_enabled:
+                import cv2
+
+                preview = self.detector.draw_debug(frame, result)
+                similarity = result.get("similarity")
+                similarity_text = (
+                    "N/A" if similarity is None else f"{float(similarity):.3f}"
+                )
+                cv2.putText(
+                    preview,
+                    f"GROUND LOCK {tracker.progress} similarity={similarity_text}",
+                    (20, max(64, preview.shape[0] - 48)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.65,
+                    (0, 255, 255),
+                    2,
+                )
+                cv2.putText(
+                    preview,
+                    "Q cancel | aircraft remains grounded",
+                    (20, max(88, preview.shape[0] - 20)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.55,
+                    (255, 255, 255),
+                    1,
+                )
+                cv2.imshow(self.window_name, preview)
+                if cv2.waitKey(1) & 0xFF == ord("q"):
+                    print("已取消地面目标识别，未起飞。")
+                    self.session_state = "STOPPED"
+                    return {}
+
+            if locked:
+                print(
+                    "目标人物已稳定锁定："
+                    f"similarity={float(result.get('similarity') or 0.0):.3f}。"
+                )
+                return result
+            sleep(self.control_interval)
+        self.session_state = "STOPPED"
+        return {}
+
+    def _verify_fresh_target_before_takeoff(self) -> bool:
+        """Reject stale authorization if the target moved during confirmation."""
+        frame = self._read_frame()
+        if frame is None:
+            return False
+        try:
+            result = self.detector.detect(frame)
+        except Exception as exc:
+            print(f"起飞前最终 ReID 检查失败：{exc}")
+            return False
+        return TargetLockTracker(required_frames=1).observe(result)
 
     def _pre_follow_should_abort(self) -> bool:
         """Stop a predefined maneuver after an external or emergency request."""

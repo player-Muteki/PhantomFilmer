@@ -2,7 +2,7 @@
 
 from pathlib import Path
 from time import sleep
-from typing import Optional
+from typing import Optional, Sequence
 
 from app.builder import (
     build_obstacle_modules,
@@ -19,6 +19,10 @@ from drone.safety import SafetyManager
 from drone.tello_adapter import TelloDroneAdapter
 from vision.camera import CameraStream
 from vision.detector_factory import create_detector
+from vision.reid_enrollment import (
+    build_reid_runtime_config,
+    collect_reference_images,
+)
 from vision.target_detect import TargetDetector
 
 
@@ -292,6 +296,106 @@ def run_follow(
         return 1
     except KeyboardInterrupt:
         print("已手动中断，准备降落并退出。")
+        return 0
+    finally:
+        drone.stop()
+
+
+def run_reid_demo(
+    use_fake: bool = False,
+    obstacle_enabled: Optional[bool] = None,
+    reference_images: Optional[Sequence[str]] = None,
+    capture_reference: bool = False,
+    reference_camera: int = 0,
+    reference_count: int = 3,
+    lock_frames: Optional[int] = None,
+) -> int:
+    """Enroll a person, lock them on the ground, then follow after confirmation."""
+    try:
+        selected_images = collect_reference_images(
+            provided_values=reference_images,
+            capture_from_camera=capture_reference,
+            camera_index=reference_camera,
+            image_count=reference_count,
+        )
+    except RuntimeError as exc:
+        print(str(exc))
+        return 1
+
+    base_config = load_runtime_config(obstacle_enabled)
+    config = build_reid_runtime_config(base_config, selected_images)
+    safety = SafetyManager.from_dict(config)
+    drone = create_drone_adapter(use_fake, config=config)
+    detector = create_detector(config)
+    controller = FollowController.from_config(safety_manager=safety, config=config)
+    configured_lock_frames = int(config.get("reid_lock_stable_frames", 10))
+    required_lock_frames = max(
+        1, configured_lock_frames if lock_frames is None else int(lock_frames)
+    )
+    lock_timeout = max(1.0, float(config.get("reid_lock_timeout_seconds", 30.0)))
+
+    def confirm_takeoff(result: dict[str, object]) -> bool:
+        similarity = float(result.get("similarity") or 0.0)
+        print(
+            f"地面 ReID 已锁定目标（相似度 {similarity:.3f}）。"
+            "请从预览画面人工核对人物身份。"
+        )
+        try:
+            answer = input(
+                "确认是现场录入的人员后，输入 YES 起飞跟随："
+            ).strip()
+        except (EOFError, KeyboardInterrupt):
+            return False
+        return answer == "YES"
+
+    try:
+        print("正在连接无人机前加载 ReID 模型并检查参考照片...")
+        prepare_detector = getattr(detector, "prepare", None)
+        if callable(prepare_detector):
+            prepare_detector()
+        print(
+            "正在连接模拟无人机..."
+            if use_fake
+            else "正在连接 RoboMaster TT / Tello..."
+        )
+        drone.connect()
+        battery = drone.get_battery()
+        print(f"当前电量：{battery}%")
+        if not safety.can_takeoff(battery):
+            print("电量低于安全起飞阈值，禁止起飞。")
+            return 1
+
+        print("已录入参考照片：")
+        for path in selected_images:
+            print(f"- {path}")
+        print("接下来只会在地面开启无人机摄像头进行身份锁定。")
+
+        _, _, motion_arbiter = build_obstacle_modules(config, safety)
+
+        session = FollowSession(
+            drone=drone,
+            safety_manager=safety,
+            detector=detector,
+            follow_controller=controller,
+            config=config,
+            mode_label="REID-DEMO FAKE" if use_fake else "REID-DEMO REAL",
+            window_name="PhantomFilmer ReID Demo",
+            state_label="REID",
+            allow_pause=False,
+            motion_arbiter=motion_arbiter,
+            initial_target_lock_frames=required_lock_frames,
+            initial_target_lock_timeout_seconds=lock_timeout,
+            pre_takeoff_confirmation=confirm_takeoff,
+        )
+        session.run()
+        return 0
+    except RuntimeError as exc:
+        print(str(exc))
+        if not use_fake:
+            print("请检查无人机 Wi-Fi、ReID 依赖、模型权重和参考照片。")
+        return 1
+    except KeyboardInterrupt:
+        print("已手动中断 ReID 演示。")
         return 0
     finally:
         drone.stop()

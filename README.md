@@ -49,6 +49,7 @@ python3 -m venv .venv
 | `camera` | 开启视频流与目标检测画面 | 是 |
 | `camera-debug` | 显示 BGR 原图、通道互换和红色掩膜，不发送 RC | 是 |
 | `follow` | 起飞并目标跟随，支持按次选择是否开启避障 | 是 |
+| `reid-demo` | 现场录入人物，地面连续识别和人工确认后才起飞跟随 | 仅可验证失败保护 |
 | `follow-dry-run` | 只计算理论控制量和避障结果，不起飞、不发送 RC | 是 |
 | `follow-test` | 测试 FollowController 方向逻辑 | 否 |
 | `fixed-demo` | 固定航线（左移 3s -> 前进 2s -> 右移 3s）后自动跟随，同样经过避障仲裁 | 是 |
@@ -106,6 +107,38 @@ MPLCONFIGDIR=.matplotlib YOLO_CONFIG_DIR=.ultralytics \
 ```
 
 已有离线结果见 `docs/reid_test/`。ReID 只进行外观匹配，不识别真实姓名；俯视、遮挡、换衣、逆光和低分辨率都会降低可靠性。完成真实目标视频测试以前，不得启用真机 ReID 起飞跟随，ArUco 模式必须保留为安全降级方案。
+
+### 现场 ReID 演示
+
+`reid-demo` 不会修改 `config.yaml` 的默认 ArUco 设置。它只在本次运行内强制启用
+`person_reid`，并使用现场提供的照片。可以直接选择照片：
+
+```bash
+.venv-reid/bin/python main.py --mode reid-demo \
+  --reference-image /path/to/front.jpg \
+  --reference-image /path/to/side.jpg
+```
+
+也可以用电脑摄像头现场连拍：
+
+```bash
+.venv-reid/bin/python main.py --mode reid-demo \
+  --capture-reference --reference-count 3
+```
+
+未传任何照片参数时，程序会询问输入照片路径或选择 `CAMERA`。拍摄时请让目标
+人物全身入镜，按空格键拍摄不同角度。照片保存到已被 Git 忽略的
+`data/reid_target/现场注册/`。
+
+程序随后按以下顺序执行：
+
+1. 连接无人机前加载 YOLO、OSNet 和参考照片；照片中不是恰好一个完整人物时中止。
+2. 无人机保持在地面并打开摄像头，默认要求目标连续匹配 10 帧。
+3. 预测位置、身份模糊或低于阈值的结果都不计入锁定帧数。
+4. 锁定后现场人员必须核对预览画面并在终端输入大写 `YES`；程序会再做一帧实时身份检查，通过后才会起飞。
+5. 起飞后复用普通跟随、目标丢失降落、安全限速和已选择的避障管线。
+
+比赛前详细演练清单见 [`docs/reid_demo_runbook.md`](docs/reid_demo_runbook.md)。
 
 ## 控制逻辑
 

@@ -33,6 +33,7 @@ from app.modes import (
     run_follow,
     run_follow_dry_run,
     run_follow_test,
+    run_reid_demo,
     run_safety_test,
     run_status,
 )
@@ -54,6 +55,7 @@ def parse_args() -> argparse.Namespace:
             "camera-debug",
             "camera",
             "follow",
+            "reid-demo",
             "console",
         ),
         default="demo",
@@ -63,6 +65,35 @@ def parse_args() -> argparse.Namespace:
         "--fake",
         action="store_true",
         help="使用模拟无人机，不连接 RoboMaster TT / Tello 真机。",
+    )
+    parser.add_argument(
+        "--reference-image",
+        action="append",
+        default=None,
+        help="reid-demo 目标人物照片路径，可重复传入多张。",
+    )
+    parser.add_argument(
+        "--capture-reference",
+        action="store_true",
+        help="reid-demo 使用电脑摄像头现场拍摄参考照片。",
+    )
+    parser.add_argument(
+        "--reference-camera",
+        type=int,
+        default=0,
+        help="电脑摄像头索引，默认为 0。",
+    )
+    parser.add_argument(
+        "--reference-count",
+        type=int,
+        default=3,
+        help="现场连拍参考照片数，默认为 3。",
+    )
+    parser.add_argument(
+        "--lock-frames",
+        type=int,
+        default=None,
+        help="起飞前需要连续识别成功的帧数。",
     )
     return parser.parse_args()
 
@@ -105,6 +136,16 @@ def main() -> int:
         return run_follow(
             use_fake=args.fake,
             obstacle_enabled=obstacle_enabled,
+        )
+    if args.mode == "reid-demo":
+        return run_reid_demo(
+            use_fake=args.fake,
+            obstacle_enabled=obstacle_enabled,
+            reference_images=args.reference_image,
+            capture_reference=args.capture_reference,
+            reference_camera=args.reference_camera,
+            reference_count=args.reference_count,
+            lock_frames=args.lock_frames,
         )
     if args.mode == "console":
         return run_console(

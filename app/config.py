@@ -5,7 +5,7 @@ from typing import Optional
 
 
 CONFIG_PATH = Path(__file__).resolve().parents[1] / "config.yaml"
-FOLLOW_MODES = {"follow", "follow-dry-run", "console", "fixed-demo"}
+FOLLOW_MODES = {"follow", "follow-dry-run", "console", "fixed-demo", "reid-demo"}
 
 
 def load_config(path: Path = CONFIG_PATH) -> dict:

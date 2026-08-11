@@ -258,7 +258,22 @@ class PersonReIDDetector:
             if image is None:
                 missing.append(str(path))
             else:
-                images.append(image[:, :, ::-1].copy())
+                detections = self._person_detector.detect_people(image)
+                candidates = self._prepare_candidates(image, detections)
+                if not candidates:
+                    raise RuntimeError(
+                        f"参考照片中未检测到完整人物：{path}。"
+                        "请使用人物全身清晰、光线充足的照片。"
+                    )
+                if len(candidates) != 1:
+                    raise RuntimeError(
+                        f"参考照片中检测到多个人：{path}。"
+                        "请重新拍摄只包含目标人物的照片。"
+                    )
+                # Embed the detected person crop rather than the whole photo so
+                # the enrollment representation matches runtime person crops.
+                _, crop = candidates[0]
+                images.append(crop[:, :, ::-1].copy())
         if missing:
             raise RuntimeError("目标人物参考图不存在或无法读取：" + ", ".join(missing))
         return self._average_normalized(self._feature_extractor.extract(images))

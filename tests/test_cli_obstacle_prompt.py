@@ -130,6 +130,33 @@ class ObstacleCliDispatchTestCase(unittest.TestCase):
         run_dry_run.assert_not_called()
         run_console.assert_not_called()
 
+    def test_reid_demo_forwards_enrollment_and_lock_options(self) -> None:
+        args = argparse.Namespace(
+            mode="reid-demo",
+            fake=False,
+            reference_image=["front.jpg", "side.jpg"],
+            capture_reference=False,
+            reference_camera=2,
+            reference_count=4,
+            lock_frames=12,
+        )
+        with patch.object(main, "parse_args", return_value=args), patch.object(
+            main, "load_config", return_value={"obstacle": {"enabled": False}}
+        ), patch.object(
+            main, "prompt_obstacle_enabled", return_value=True
+        ), patch.object(main, "run_reid_demo", return_value=0) as runner:
+            self.assertEqual(main.main(), 0)
+
+        runner.assert_called_once_with(
+            use_fake=False,
+            obstacle_enabled=True,
+            reference_images=["front.jpg", "side.jpg"],
+            capture_reference=False,
+            reference_camera=2,
+            reference_count=4,
+            lock_frames=12,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
