@@ -104,12 +104,3 @@ class FormationSimulator:
         figure.savefig(output_path, dpi=160)
         plt.close(figure)
         return output_path
-
-    def set_line_formation(self, count: int, spacing: float):
-        """Compatibility helper retained for earlier skeleton tests."""
-        start = -spacing * (count - 1) / 2
-        self.points = {
-            f"drone_{index + 1}": DronePoint(start + index * spacing, 0.0, self.h)
-            for index in range(count)
-        }
-        return list(self.points.values())

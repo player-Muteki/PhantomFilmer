@@ -24,6 +24,7 @@ from swarm.fake_swarm import create_fake_swarm_nodes
 from swarm.formation_sim import FormationSimulator
 from swarm.swarm_manager import SwarmBatchResult, SwarmManager
 from vision.camera import CameraStream
+from vision.detector_factory import create_detector
 from vision.target_detect import TargetDetector
 
 
@@ -116,7 +117,7 @@ def build_system(use_fake: bool = False) -> AgentController:
     """Create the natural-language Agent with safety-wrapped tools."""
     config = load_config()
     safety_manager = SafetyManager(SafetyConfig.from_dict(config))
-    detector = TargetDetector.from_config(config)
+    detector = create_detector(config)
     follow_controller = FollowController.from_config(
         safety_manager=safety_manager,
         config=config,
@@ -183,13 +184,13 @@ def run_camera(use_fake: bool = False) -> int:
     try:
         import cv2
     except ModuleNotFoundError:
-        print("缺少 opencv-python 依赖：请先安装 requirements.txt。")
+        print("缺少 opencv-contrib-python 依赖：请先安装 requirements.txt。")
         return 1
 
     config = load_config()
     drone = create_drone_adapter(use_fake, config=config)
     camera = None
-    detector = TargetDetector.from_config(config)
+    detector = create_detector(config)
 
     try:
         print("正在连接模拟无人机..." if use_fake else "正在连接 RoboMaster TT / Tello...")
@@ -211,8 +212,9 @@ def run_camera(use_fake: bool = False) -> int:
             result = detector.detect(frame)
             debug_frame = detector.draw_debug(frame, result)
             cv2.imshow("DroneUmbrella Camera", debug_frame)
-            if detector.last_mask is not None:
-                cv2.imshow("DroneUmbrella Red Mask", detector.last_mask)
+            last_mask = getattr(detector, "last_mask", None)
+            if last_mask is not None:
+                cv2.imshow("DroneUmbrella Red Mask", last_mask)
 
             key = cv2.waitKey(1) & 0xFF
             if key == ord("q"):
@@ -242,7 +244,7 @@ def run_camera_debug(use_fake: bool = False) -> int:
     try:
         import cv2
     except ModuleNotFoundError:
-        print("缺少 opencv-python 依赖：请先安装 requirements.txt。")
+        print("缺少 opencv-contrib-python 依赖：请先安装 requirements.txt。")
         return 1
 
     config = load_config()
@@ -356,7 +358,7 @@ def run_follow(use_fake: bool = False) -> int:
     config = load_config()
     safety = SafetyManager.from_dict(config)
     drone = create_drone_adapter(use_fake, config=config)
-    detector = TargetDetector.from_config(config)
+    detector = create_detector(config)
     controller = FollowController.from_config(safety_manager=safety, config=config)
 
     try:
@@ -405,14 +407,14 @@ def run_follow_dry_run(use_fake: bool = False) -> int:
     try:
         import cv2
     except ModuleNotFoundError:
-        print("缺少 opencv-python 依赖：请先安装 requirements.txt。")
+        print("缺少 opencv-contrib-python 依赖：请先安装 requirements.txt。")
         return 1
 
     config = load_config()
     safety = SafetyManager.from_dict(config)
     drone = create_drone_adapter(use_fake, config=config)
     camera = None
-    detector = TargetDetector.from_config(config)
+    detector = create_detector(config)
     controller = FollowController.from_config(safety_manager=safety, config=config)
     control_interval = read_control_interval(config)
 

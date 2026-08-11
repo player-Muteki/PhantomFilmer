@@ -97,7 +97,7 @@ class FakeDroneAdapter(DroneAdapter):
         try:
             import cv2
         except ModuleNotFoundError as exc:
-            raise RuntimeError("缺少 opencv-python 依赖：请先安装 requirements.txt。") from exc
+            raise RuntimeError("缺少 opencv-contrib-python 依赖：请先安装 requirements.txt。") from exc
 
         self.frame_index += 1
         frame = np.zeros((self.camera_height, self.camera_width, 3), dtype=np.uint8)

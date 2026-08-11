@@ -17,7 +17,6 @@ class ImportTestCase(unittest.TestCase):
         import agent.agent_controller
         import agent.command_parser
         import agent.commands
-        import agent.follow_session
         import agent.llm_client
         import agent.tools
         import control.follow_session
@@ -33,7 +32,6 @@ class ImportTestCase(unittest.TestCase):
         import swarm.swarm_manager
         import swarm.swarm_node
         import swarm.swarm_safety
-        import ui.dashboard
         import vision.camera
         import vision.target_detect
         import vision.aruco_detect
@@ -43,7 +41,6 @@ class ImportTestCase(unittest.TestCase):
         self.assertIsNotNone(agent.agent_controller)
         self.assertIsNotNone(agent.command_parser)
         self.assertIsNotNone(agent.commands)
-        self.assertIsNotNone(agent.follow_session)
         self.assertIsNotNone(agent.llm_client)
         self.assertIsNotNone(agent.tools)
         self.assertIsNotNone(control.follow_session)
@@ -58,7 +55,6 @@ class ImportTestCase(unittest.TestCase):
         self.assertIsNotNone(swarm.swarm_manager)
         self.assertIsNotNone(swarm.swarm_node)
         self.assertIsNotNone(swarm.swarm_safety)
-        self.assertIsNotNone(ui.dashboard)
         self.assertIsNotNone(vision.camera)
         self.assertIsNotNone(vision.target_detect)
         self.assertIsNotNone(vision.aruco_detect)
@@ -80,6 +76,20 @@ class ImportTestCase(unittest.TestCase):
         self.assertTrue(safety.can_takeoff(30))
         self.assertFalse(safety.can_takeoff(29))
         self.assertEqual(safety.limit_rc_command(-100, -30, 0, 88), (-25, -25, 0, 25))
+
+    def test_detector_factory_supports_configured_detectors(self) -> None:
+        from vision.aruco_detect import ArucoTargetDetector
+        from vision.detector_factory import create_detector
+        from vision.target_detect import TargetDetector
+
+        self.assertIsInstance(create_detector({}), TargetDetector)
+        self.assertIsInstance(
+            create_detector({"vision": {"detector_type": "aruco"}}),
+            ArucoTargetDetector,
+        )
+
+        with self.assertRaises(ValueError):
+            create_detector({"vision": {"detector_type": "unsupported"}})
 
 
 if __name__ == "__main__":

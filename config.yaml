@@ -7,10 +7,15 @@ target_lost_hover_seconds: 3
 target_lost_land_seconds: 8
 camera_width: 640
 camera_height: 480
-target_color: red
+vision:
+  detector_type: red
+  aruco_dictionary: DICT_4X4_50
+  target_marker_id: 23
+  smoothing_alpha: 0.30
+  temporary_lost_frames: 3
+  min_marker_area: 300
 display_agent_camera: true
 agent_window_name: "DroneUmbrella Agent Follow"
-fake_camera_enabled: true
 fake_target_speed: 3
 fake_target_lost_interval_seconds: 12
 fake_target_lost_duration_seconds: 2
@@ -39,7 +44,6 @@ llm_model: "deepseek-chat"
 llm_timeout_seconds: 8
 
 swarm:
-  enabled: false
   command_interval_ms: 200
   takeoff_interval_s: 1.0
   max_lr_speed: 10
@@ -47,8 +51,6 @@ swarm:
   max_ud_speed: 10
   max_yaw_speed: 10
   minimum_takeoff_battery: 30
-  leader_id: drone_1
-  video_drone_id: drone_1
   drones:
     - id: drone_1
       ip: 192.168.1.101

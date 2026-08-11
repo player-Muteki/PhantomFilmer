@@ -7,7 +7,7 @@ from control.follow_control import FollowController
 from control.follow_session import FollowSession
 from drone.drone_adapter import DroneAdapter
 from drone.safety import SafetyManager
-from vision.target_detect import TargetDetector
+from vision.detector_factory import VisionDetector
 
 
 class AgentTools:
@@ -22,7 +22,7 @@ class AgentTools:
         self,
         drone: DroneAdapter,
         safety_manager: SafetyManager,
-        detector: TargetDetector,
+        detector: VisionDetector,
         follow_controller: FollowController,
         config: Optional[dict] = None,
         mode_label: str = "REAL",
@@ -124,20 +124,6 @@ class AgentTools:
         """Return whether a visual follow session is currently active."""
         return self._active_session is not None
 
-    def start_task_after_confirmation(self) -> bool:
-        """Compatibility wrapper for starting the visual follow task."""
-        return self.start_follow_task()
-
-    def _legacy_follow_task_error_cleanup(self) -> None:
-        """Keep cleanup code available for older call paths."""
-        try:
-            self._safe_zero_output()
-            if self.airborne:
-                self._safe_land()
-            self._stop_stream()
-        except RuntimeError:
-            raise
-
     def stop_task(self) -> None:
         """Stop following and land safely."""
         active_session = self._active_session
@@ -215,10 +201,6 @@ class AgentTools:
             self._drone.stream_off()
         finally:
             self.streaming = False
-
-    def _is_following(self) -> bool:
-        """Return whether a follow session is active."""
-        return self._active_session is not None
 
     def _require_connection(self) -> None:
         """Reject task tools until the adapter is connected."""

@@ -98,12 +98,12 @@ class ArucoTargetDetector:
         Returns standard fields (found, center, target_center_x/y, area, bbox)
         plus extra fields (marker_id, corners, detector_type).
         """
-        cv2 = _import_cv2()
-
         # --- frame validation ---
         err = self._validate_frame(frame)
         if err:
             return err
+
+        cv2 = _import_cv2()
 
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if frame.ndim == 3 else frame
 
@@ -161,9 +161,10 @@ class ArucoTargetDetector:
 
     def draw_debug(self, frame: Any, result: DetectionResult) -> Any:
         """Draw debug overlay (quadrilateral, centre, ID, area, status)."""
-        cv2 = _import_cv2()
         if not self._is_valid_draw_frame(frame):
             return frame
+
+        cv2 = _import_cv2()
 
         debug = frame.copy()
         h, w = debug.shape[:2]
@@ -345,5 +346,5 @@ def _import_cv2():
     try:
         import cv2  # noqa: F811
     except ModuleNotFoundError as exc:
-        raise RuntimeError("缺少 opencv-python 依赖：请先安装 requirements.txt。") from exc
+        raise RuntimeError("缺少 opencv-contrib-python 依赖：请先安装 requirements.txt。") from exc
     return cv2

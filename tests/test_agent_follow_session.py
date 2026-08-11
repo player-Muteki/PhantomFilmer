@@ -18,7 +18,6 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 import agent.tools as agent_tools_module
-from agent.follow_session import AgentFollowSession
 from agent.tools import AgentTools
 from control.follow_control import FollowController, RCCommand
 from control.follow_session import FollowSession
@@ -43,9 +42,9 @@ def build_safety() -> SafetyManager:
     )
 
 
-def build_session(drone: FakeDroneAdapter, safety: SafetyManager) -> AgentFollowSession:
+def build_session(drone: FakeDroneAdapter, safety: SafetyManager) -> FollowSession:
     """Create a no-GUI Agent follow session for unit tests."""
-    return AgentFollowSession(
+    return FollowSession(
         drone=drone,
         safety_manager=safety,
         detector=TargetDetector(),
@@ -57,6 +56,8 @@ def build_session(drone: FakeDroneAdapter, safety: SafetyManager) -> AgentFollow
             "frame_failure_limit": 3,
         },
         mode_label="FAKE",
+        state_label="AGENT",
+        allow_pause=True,
     )
 
 
@@ -80,7 +81,7 @@ class ImmediateSession:
         return type("Result", (), {"state": "STOPPED", "airborne": False, "streaming": False})()
 
 
-@unittest.skipIf(cv2 is None, "opencv-python is required for fake camera and visual detection tests")
+@unittest.skipIf(cv2 is None, "opencv-contrib-python is required for fake camera and visual detection tests")
 class FakeAdapterTestCase(unittest.TestCase):
     """Verify the fake camera behaves like a real image source."""
 
@@ -338,7 +339,6 @@ class AgentFollowSessionTestCase(unittest.TestCase):
 
         self.assertIn("FollowSession", follow_source)
         self.assertIn("FollowSession", agent_source)
-        self.assertTrue(issubclass(AgentFollowSession, FollowSession))
 
     def test_agent_start_follow_task_runs_session_on_caller_thread(self) -> None:
         drone = FakeDroneAdapter(verbose_rc=False)
@@ -376,7 +376,7 @@ class AgentFollowSessionTestCase(unittest.TestCase):
         session.send_command(RCCommand(12, 12, 0, 0))
 
         self.assertEqual(drone.last_rc_command, (0, 0, 0, 0))
-        self.assertEqual(session.agent_state, "PAUSED")
+        self.assertEqual(session.session_state, "PAUSED")
 
     def test_emergency_stop_blocks_nonzero_rc(self) -> None:
         drone = FakeDroneAdapter(verbose_rc=False)
@@ -388,7 +388,7 @@ class AgentFollowSessionTestCase(unittest.TestCase):
 
         self.assertEqual(action, "emergency")
         self.assertEqual(drone.last_rc_command, (0, 0, 0, 0))
-        self.assertEqual(session.agent_state, "EMERGENCY_STOP")
+        self.assertEqual(session.session_state, "EMERGENCY_STOP")
 
     def test_long_target_loss_enters_landing_state(self) -> None:
         drone = FakeDroneAdapter(verbose_rc=False)
@@ -404,7 +404,7 @@ class AgentFollowSessionTestCase(unittest.TestCase):
 
         self.assertEqual(action, "land")
         self.assertEqual(command.as_tuple(), (0, 0, 0, 0))
-        self.assertEqual(session.agent_state, "TARGET_LOST_LANDING")
+        self.assertEqual(session.session_state, "TARGET_LOST_LANDING")
 
     def test_frame_failure_stops_with_zero_rc(self) -> None:
         drone = FakeDroneAdapter(verbose_rc=False)
@@ -423,7 +423,7 @@ class AgentFollowSessionTestCase(unittest.TestCase):
 
         session._loop()
 
-        self.assertEqual(session.agent_state, "FRAME_LOST_LANDING")
+        self.assertEqual(session.session_state, "FRAME_LOST_LANDING")
         self.assertEqual(drone.last_rc_command, (0, 0, 0, 0))
 
     def test_exception_cleanup_sends_zero_and_lands(self) -> None:

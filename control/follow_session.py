@@ -9,7 +9,7 @@ from control.follow_control import FollowController, RCCommand
 from drone.drone_adapter import DroneAdapter
 from drone.safety import SafetyManager
 from vision.camera import CameraStream
-from vision.target_detect import TargetDetector
+from vision.detector_factory import VisionDetector
 
 
 @dataclass
@@ -28,7 +28,7 @@ class FollowSession:
         self,
         drone: DroneAdapter,
         safety_manager: SafetyManager,
-        detector: TargetDetector,
+        detector: VisionDetector,
         follow_controller: FollowController,
         config: Dict[str, object],
         mode_label: str,
@@ -64,15 +64,6 @@ class FollowSession:
         self.last_height: Optional[int] = None
         self.fps = 0.0
         self.control_hz = 0.0
-
-    @property
-    def agent_state(self) -> str:
-        """Compatibility property used by earlier Agent tests."""
-        return self.session_state
-
-    @agent_state.setter
-    def agent_state(self, value: str) -> None:
-        self.session_state = value
 
     def run(self) -> FollowSessionResult:
         """Start stream, take off, show the follow window, and clean up safely."""

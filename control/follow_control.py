@@ -15,11 +15,6 @@ class RCCommand:
     up_down: int = 0
     yaw: int = 0
 
-    @property
-    def forward_back(self) -> int:
-        """Compatibility name used by early skeleton code."""
-        return self.forward_backward
-
     def as_tuple(self) -> Tuple[int, int, int, int]:
         """Return the command in DroneAdapter.move_rc order."""
         return (self.left_right, self.forward_backward, self.up_down, self.yaw)

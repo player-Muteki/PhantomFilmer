@@ -102,19 +102,3 @@ class SafetyManager:
         """Clamp one RC speed value."""
         limit = self.config.max_rc_speed
         return max(-limit, min(limit, int(value)))
-
-    # 下面几个方法保留旧接口名称，避免早期代码暂时失效。
-    def should_land_for_battery(self, battery_percent: int) -> bool:
-        """Compatibility wrapper for old battery landing checks."""
-        return self.should_land(battery_percent)
-
-    def clamp_speed(self, value: int) -> int:
-        """Compatibility wrapper for clamping one speed channel."""
-        return self._limit_speed(value)
-
-    def is_height_safe(self, height_cm: int) -> bool:
-        """Compatibility wrapper for old height checks."""
-        return self.check_height(height_cm)
-
-
-SafetyMonitor = SafetyManager

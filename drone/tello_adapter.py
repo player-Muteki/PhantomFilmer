@@ -124,7 +124,7 @@ class TelloDroneAdapter(DroneAdapter):
         try:
             import cv2
         except ModuleNotFoundError as exc:
-            raise RuntimeError("缺少 opencv-python 依赖：请先安装 requirements.txt。") from exc
+            raise RuntimeError("缺少 opencv-contrib-python 依赖：请先安装 requirements.txt。") from exc
         try:
             frame_reader = self._tello.get_frame_read()
             frame = frame_reader.frame
@@ -144,6 +144,3 @@ class TelloDroneAdapter(DroneAdapter):
         """Raise a Chinese error if no aircraft connection is available."""
         if not self.connected or self._tello is None:
             raise RuntimeError("无人机尚未连接：请先连接 RoboMaster TT / Tello 的 Wi-Fi。")
-
-
-TelloAdapter = TelloDroneAdapter

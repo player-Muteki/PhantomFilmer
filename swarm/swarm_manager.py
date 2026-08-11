@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass, field
 from time import monotonic, sleep
-from typing import Callable, Dict, Iterable, List, Optional, Tuple, Union
+from typing import Callable, Dict, Iterable, List, Optional, Union
 
 from control.follow_control import RCCommand
 
