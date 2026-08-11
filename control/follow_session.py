@@ -7,6 +7,7 @@ from typing import Any, Dict, Optional, Tuple
 
 from control.fixed_demo import FixedDemoManeuver, FixedDemoProgress
 from control.follow_control import FollowController, RCCommand
+from control.motion_arbiter import MotionArbiter, MotionContext
 from control.obstacle_avoidance import AvoidanceDecision, ObstacleAvoidancePlanner
 from drone.drone_adapter import DroneAdapter
 from drone.safety import SafetyManager
@@ -42,6 +43,7 @@ class FollowSession:
         pre_follow_maneuver: Optional[FixedDemoManeuver] = None,
         obstacle_detector: Optional[ObstacleDetector] = None,
         obstacle_planner: Optional[ObstacleAvoidancePlanner] = None,
+        motion_arbiter: Optional[MotionArbiter] = None,
     ) -> None:
         self.drone = drone
         self.safety_manager = safety_manager
@@ -50,6 +52,7 @@ class FollowSession:
         self.pre_follow_maneuver = pre_follow_maneuver
         self.obstacle_detector = obstacle_detector
         self.obstacle_planner = obstacle_planner
+        self.motion_arbiter = motion_arbiter
         self.config = config
         self.mode_label = mode_label
         self.window_name = window_name or str(
@@ -120,9 +123,10 @@ class FollowSession:
                 print("固定演示航线已启动；航线完成后自动进入目标跟随。")
                 print("窗口按键：q 停止并降落，e 急停并降落。")
                 completed = self.pre_follow_maneuver.run(
-                    send_command=self.send_command,
+                    send_command=self.send_motion_command,
                     should_abort=self._pre_follow_should_abort,
                     on_progress=self._show_pre_follow_progress,
+                    is_avoiding=self._fixed_demo_is_avoiding,
                 )
                 if not completed:
                     if self.emergency_stop:
@@ -150,6 +154,8 @@ class FollowSession:
             if self.airborne:
                 self._safe_land()
             self._stop_camera()
+            if self.motion_arbiter is not None:
+                self.motion_arbiter.close()
             self._destroy_window()
 
         return FollowSessionResult(
@@ -161,6 +167,12 @@ class FollowSession:
     def _pre_follow_should_abort(self) -> bool:
         """Stop a predefined maneuver after an external or emergency request."""
         return self.stop_event.is_set() or self.emergency_stop
+
+    def _fixed_demo_is_avoiding(self) -> bool:
+        """Hold the route timer while obstacle avoidance is overriding it."""
+        if self.last_obstacle_result is None:
+            return False
+        return bool(self.last_obstacle_result.found)
 
     def _show_pre_follow_progress(self, progress: FixedDemoProgress) -> bool:
         """Display the raw camera during the route and keep q/e responsive."""
@@ -235,6 +247,24 @@ class FollowSession:
         limited = self.safety_manager.limit_rc_command(*command.as_tuple())
         self.last_command = RCCommand(*limited)
         self.drone.move_rc(*self.last_command.as_tuple())
+
+    def send_motion_command(self, command: RCCommand) -> None:
+        """Apply the shared obstacle arbiter before sending an autonomous command."""
+        if self.motion_arbiter is None:
+            self.send_command(command)
+            return
+        frame = self._read_frame()
+        if frame is None:
+            self.send_command(self.follow_controller.hover())
+            return
+        decision = self.motion_arbiter.decide(
+            desired_command=command,
+            frame=frame,
+            context=MotionContext(mode=self.mode_label, target_result={"found": False}),
+        )
+        self.last_obstacle_result = decision.observation
+        self.last_avoidance_decision = decision
+        self.send_command(decision.command)
 
     def apply_obstacle_avoidance(
         self,
@@ -421,7 +451,21 @@ class FollowSession:
             frame_height, frame_width = frame.shape[:2]
             target_result = self.detector.detect(frame)
             command, lost_action = self.process_detection(target_result, frame_width, frame_height)
-            command = self.apply_obstacle_avoidance(command, target_result, frame)
+            if self.motion_arbiter is not None:
+                decision = self.motion_arbiter.decide(
+                    desired_command=command,
+                    frame=frame,
+                    context=MotionContext(mode=self.mode_label, target_result=target_result),
+                )
+                self.last_obstacle_result = decision.observation
+                self.last_avoidance_decision = decision
+                command = decision.command
+                if decision.requires_landing:
+                    self.session_state = "OBSTACLE_FAILSAFE_LANDING"
+                    self._safe_zero_output()
+                    break
+            else:
+                command = self.apply_obstacle_avoidance(command, target_result, frame)
 
             battery = self._read_battery()
             height = self._read_height()
@@ -503,11 +547,15 @@ class FollowSession:
         if callable(reset_method):
             reset_method()
         self.follow_controller.reset()
-        obstacle_reset_method = getattr(self.obstacle_detector, "reset", None)
-        if callable(obstacle_reset_method):
-            obstacle_reset_method()
-        if self.obstacle_planner is not None:
-            self.obstacle_planner.reset()
+        if self.motion_arbiter is not None:
+            if not self.motion_arbiter.is_active:
+                self.motion_arbiter.reset(self.mode_label)
+        else:
+            obstacle_reset_method = getattr(self.obstacle_detector, "reset", None)
+            if callable(obstacle_reset_method):
+                obstacle_reset_method()
+            if self.obstacle_planner is not None:
+                self.obstacle_planner.reset()
         self.last_obstacle_result = None
         self.last_avoidance_decision = None
 

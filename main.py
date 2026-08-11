@@ -17,6 +17,7 @@ from console.tools import ConsoleTools
 from control.fixed_demo import FixedDemoManeuver
 from control.follow_control import FollowController
 from control.follow_session import FollowSession
+from control.motion_arbiter import MotionArbiter, MotionContext
 from control.obstacle_avoidance import ObstacleAvoidancePlanner
 from drone.drone_adapter import DroneAdapter
 from drone.fake_adapter import FakeDroneAdapter
@@ -33,7 +34,7 @@ from vision.target_detect import TargetDetector
 
 
 CONFIG_PATH = Path(__file__).with_name("config.yaml")
-FOLLOW_MODES = {"follow", "follow-dry-run", "console"}
+FOLLOW_MODES = {"follow", "follow-dry-run", "console", "fixed-demo"}
 
 
 def load_config(path: Path = CONFIG_PATH) -> dict:
@@ -253,15 +254,21 @@ def selected_detector_type(config: dict) -> str:
 def build_obstacle_modules(
     config: dict,
     safety_manager: SafetyManager,
-) -> tuple[Optional[ObstacleDetector], Optional[ObstacleAvoidancePlanner]]:
+) -> tuple[
+    Optional[ObstacleDetector],
+    Optional[ObstacleAvoidancePlanner],
+    Optional[MotionArbiter],
+]:
     """Create obstacle modules only when enabled in config.yaml."""
     obstacle_config = config.get("obstacle", {})
     if not isinstance(obstacle_config, dict) or not bool(obstacle_config.get("enabled", False)):
-        return None, None
-    return (
-        ObstacleDetector.from_config(config),
-        ObstacleAvoidancePlanner.from_config(safety_manager=safety_manager, config=config),
+        return None, None, None
+    detector = ObstacleDetector.from_config(config)
+    planner = ObstacleAvoidancePlanner.from_config(
+        safety_manager=safety_manager,
+        config=config,
     )
+    return detector, planner, MotionArbiter(detector=detector, planner=planner, config=config)
 
 
 def create_drone_adapter(
@@ -307,7 +314,10 @@ def build_system(
         safety_manager=safety_manager,
         config=config,
     )
-    obstacle_detector, obstacle_planner = build_obstacle_modules(config, safety_manager)
+    obstacle_detector, obstacle_planner, motion_arbiter = build_obstacle_modules(
+        config,
+        safety_manager,
+    )
     tools = ConsoleTools(
         drone=create_drone_adapter(use_fake, verbose_fake_rc=False, config=config),
         safety_manager=safety_manager,
@@ -315,6 +325,7 @@ def build_system(
         follow_controller=follow_controller,
         obstacle_detector=obstacle_detector,
         obstacle_planner=obstacle_planner,
+        motion_arbiter=motion_arbiter,
         config=config,
         mode_label="FAKE" if use_fake else "REAL",
         frame_width=int(config.get("camera_width", 640)),
@@ -561,7 +572,7 @@ def run_follow(
     drone = create_drone_adapter(use_fake, config=config)
     detector = create_detector(config)
     controller = FollowController.from_config(safety_manager=safety, config=config)
-    obstacle_detector, obstacle_planner = build_obstacle_modules(config, safety)
+    obstacle_detector, obstacle_planner, motion_arbiter = build_obstacle_modules(config, safety)
 
     try:
         print("正在连接模拟无人机..." if use_fake else "正在连接 RoboMaster TT / Tello...")
@@ -592,6 +603,7 @@ def run_follow(
             allow_pause=False,
             obstacle_detector=obstacle_detector,
             obstacle_planner=obstacle_planner,
+            motion_arbiter=motion_arbiter,
         )
         session.run()
         return 0
@@ -606,13 +618,17 @@ def run_follow(
         drone.stop()
 
 
-def run_fixed_demo(use_fake: bool = False) -> int:
+def run_fixed_demo(
+    use_fake: bool = False,
+    obstacle_enabled: Optional[bool] = None,
+) -> int:
     """Run the fixed low-speed route, then hand control to normal following."""
-    config = load_config()
+    config = load_runtime_config(obstacle_enabled)
     safety = SafetyManager.from_dict(config)
     drone = create_drone_adapter(use_fake, config=config)
     detector = create_detector(config)
     controller = FollowController.from_config(safety_manager=safety, config=config)
+    obstacle_detector, obstacle_planner, motion_arbiter = build_obstacle_modules(config, safety)
 
     try:
         print("正在连接模拟无人机..." if use_fake else "正在连接 RoboMaster TT / Tello...")
@@ -644,6 +660,9 @@ def run_fixed_demo(use_fake: bool = False) -> int:
             pre_follow_maneuver=FixedDemoManeuver(
                 control_interval=read_control_interval(config)
             ),
+            obstacle_detector=obstacle_detector,
+            obstacle_planner=obstacle_planner,
+            motion_arbiter=motion_arbiter,
         )
         session.run()
         return 0
@@ -676,7 +695,7 @@ def run_follow_dry_run(
     camera = None
     detector = create_detector(config)
     controller = FollowController.from_config(safety_manager=safety, config=config)
-    obstacle_detector, obstacle_planner = build_obstacle_modules(config, safety)
+    obstacle_detector, obstacle_planner, motion_arbiter = build_obstacle_modules(config, safety)
     control_interval = read_control_interval(config)
 
     try:
@@ -702,7 +721,15 @@ def run_follow_dry_run(
             command = controller.compute_command(target_result, frame_width, frame_height)
             obstacle_result = None
             avoidance_decision = None
-            if obstacle_detector is not None and obstacle_planner is not None and target_result.get("found"):
+            if motion_arbiter is not None:
+                avoidance_decision = motion_arbiter.decide(
+                    desired_command=command,
+                    frame=frame,
+                    context=MotionContext(mode="DRY_RUN", target_result=target_result),
+                )
+                obstacle_result = avoidance_decision.observation
+                command = avoidance_decision.command
+            elif obstacle_detector is not None and obstacle_planner is not None and target_result.get("found"):
                 obstacle_result = obstacle_detector.detect(frame, target_result)
                 avoidance_decision = obstacle_planner.plan(command, obstacle_result)
                 command = avoidance_decision.command
@@ -778,6 +805,8 @@ def run_follow_dry_run(
                 camera.stop()
             except RuntimeError as exc:
                 print(str(exc))
+        if motion_arbiter is not None:
+            motion_arbiter.close()
         drone.stop()
         cv2.destroyAllWindows()
 
@@ -1069,7 +1098,10 @@ def main() -> int:
             obstacle_enabled=obstacle_enabled,
         )
     if args.mode == "fixed-demo":
-        return run_fixed_demo(use_fake=args.fake)
+        return run_fixed_demo(
+            use_fake=args.fake,
+            obstacle_enabled=obstacle_enabled,
+        )
     if args.mode == "basic-flight-test":
         return run_basic_flight_test()
     if args.mode == "camera-debug":

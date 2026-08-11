@@ -68,10 +68,22 @@ obstacle:
   caution_area_ratio: 0.08
   blocked_area_ratio: 0.18
   avoidance_yaw_speed: 18
-  avoidance_lateral_speed: 0
+  avoidance_lateral_speed: 12
   max_avoidance_seconds: 5.0
   recovery_clear_frames: 10
   forward_speed_in_caution_ratio: 0.35
+  temporal_window_frames: 5
+  detect_confirm_frames: 3
+  clear_confirm_frames: 5
+  sector_count: 5
+  planner_horizon_seconds: 0.4
+  scan_yaw_speed: 8
+  min_free_space_score: 0.22
+  timeout_action: land
+  log_enabled: true
+  log_dir: logs/avoidance
+  log_every_n_frames: 2
+  save_debug_frames: false
 lost_target_hover_seconds: 3
 lost_target_land_seconds: 8
 llm_enabled: true

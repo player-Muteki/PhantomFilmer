@@ -12,3 +12,4 @@ weights/
 data/reid_target/
 data/reid_test/
 data/datasets/
+logs/

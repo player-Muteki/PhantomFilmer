@@ -40,7 +40,7 @@ python3 -m venv .venv
 | `follow` | 起飞并目标跟随，支持按次选择是否开启避障 | 是 |
 | `follow-dry-run` | 只计算理论控制量和避障结果，不起飞、不发送 RC | 是 |
 | `follow-test` | 测试 FollowController 方向逻辑 | 否 |
-| `fixed-demo` | 固定航线（左移 3s -> 前进 2s -> 右移 3s）后自动跟随 | 是 |
+| `fixed-demo` | 固定航线（左移 3s -> 前进 2s -> 右移 3s）后自动跟随，同样经过避障仲裁 | 是 |
 | `console` | 自然语言控制台，支持本地规则和 LLM 回退 | 是 |
 | `basic-flight-test` | 用户确认后起飞、悬停 5s、降落 | 否 |
 | `safety-test` | 测试电量、限速、高度和目标丢失逻辑 | 否 |
@@ -117,9 +117,11 @@ MPLCONFIGDIR=.matplotlib YOLO_CONFIG_DIR=.ultralytics \
 
 ## 障碍避让
 
-`follow`、`follow-dry-run` 和 `console` 启动时会询问本次是否开启视觉避障，默认值来自 `config.yaml` 的 `obstacle.enabled`。避障检测器会排除目标区域，并在风险区域出现障碍时限制前进或输出绕行动作；最终命令仍经过 `SafetyManager`。
+`follow`、`follow-dry-run`、`console` 和 `fixed-demo` 启动时会询问本次是否开启视觉避障，默认值来自 `config.yaml` 的 `obstacle.enabled`。避障检测器会排除目标区域，并将画面划分为多个水平自由空间扇区；规划器根据障碍物位置、连续确认帧和可用自由空间输出绕行、刹车、扫描或 fail-safe 动作。所有自动运动路径都经过同一个 `MotionArbiter`，最终命令仍经过 `SafetyManager`。
 
-该功能基于单目画面的轮廓和面积启发式判断，不提供真实深度测量。真机使用前必须先在 `follow-dry-run` 中标定，并保留人工急停和净空检查。
+在线避障决策完全不依赖远程大模型，只使用确定性算法，避免网络延迟、超时和不可复现指令。每次观测和决策会异步写入 `logs/avoidance/*.jsonl`，格式可离线交给 LLM 或分析工具阅读，但不会被用于实时飞控。
+
+该功能基于单目画面的轮廓、面积、连续帧趋势和自由空间启发式判断，不提供真实深度测量。真机使用前必须先在 `follow-dry-run` 中验证，并保留人工急停和净空检查。
 
 ## 安全
 

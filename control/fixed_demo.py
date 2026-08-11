@@ -55,6 +55,7 @@ class FixedDemoManeuver:
         send_command: Callable[[RCCommand], None],
         should_abort: Callable[[], bool],
         on_progress: Optional[Callable[[FixedDemoProgress], bool]] = None,
+        is_avoiding: Optional[Callable[[], bool]] = None,
     ) -> bool:
         """Run all segments, returning False when the caller requests an abort."""
         zero = RCCommand()
@@ -73,6 +74,7 @@ class FixedDemoManeuver:
                     send_command=send_command,
                     should_abort=should_abort,
                     on_progress=on_progress,
+                    is_avoiding=is_avoiding,
                 ):
                     return False
 
@@ -86,6 +88,7 @@ class FixedDemoManeuver:
                     send_command=send_command,
                     should_abort=should_abort,
                     on_progress=on_progress,
+                    is_avoiding=is_avoiding,
                 ):
                     return False
             return True
@@ -102,28 +105,36 @@ class FixedDemoManeuver:
         send_command: Callable[[RCCommand], None],
         should_abort: Callable[[], bool],
         on_progress: Optional[Callable[[FixedDemoProgress], bool]],
+        is_avoiding: Optional[Callable[[], bool]],
     ) -> bool:
         """Refresh one command until its deadline or an abort request."""
-        started_at = self._clock()
+        accumulated_elapsed = 0.0
+        segment_started_at = self._clock()
         while True:
             if should_abort():
                 return False
-
-            elapsed = self._clock() - started_at
-            if elapsed >= duration:
-                return True
 
             send_command(command)
             progress = FixedDemoProgress(
                 step_index=step_index,
                 step_count=len(self.steps),
                 step=step,
-                elapsed_seconds=elapsed,
+                elapsed_seconds=accumulated_elapsed + (self._clock() - segment_started_at),
                 settling=settling,
             )
             if on_progress is not None and not on_progress(progress):
                 return False
+            if is_avoiding is not None and is_avoiding():
+                accumulated_elapsed += self._clock() - segment_started_at
+                segment_started_at = self._clock()
+                self._sleep(self.control_interval)
+                segment_started_at = self._clock()
+                continue
 
-            remaining = duration - (self._clock() - started_at)
+            elapsed = accumulated_elapsed + (self._clock() - segment_started_at)
+            if elapsed >= duration:
+                return True
+
+            remaining = duration - elapsed
             if remaining > 0:
                 self._sleep(min(self.control_interval, remaining))

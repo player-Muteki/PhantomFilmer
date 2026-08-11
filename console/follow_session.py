@@ -4,6 +4,7 @@ from typing import Dict, Optional
 
 from control.follow_control import FollowController
 from control.follow_session import FollowSession, FollowSessionResult
+from control.motion_arbiter import MotionArbiter
 from drone.drone_adapter import DroneAdapter
 from drone.safety import SafetyManager
 from vision.detector_protocol import DetectorProtocol
@@ -23,6 +24,7 @@ class ConsoleFollowSession(FollowSession):
         window_name: Optional[str] = None,
         state_label: str = "CONSOLE",
         allow_pause: bool = True,
+        motion_arbiter: Optional[MotionArbiter] = None,
     ) -> None:
         super().__init__(
             drone=drone,
@@ -35,6 +37,7 @@ class ConsoleFollowSession(FollowSession):
             or str(config.get("console_window_name", "PhantomFilmer Console Follow")),
             state_label=state_label,
             allow_pause=allow_pause,
+            motion_arbiter=motion_arbiter,
         )
 
 

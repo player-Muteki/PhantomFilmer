@@ -12,7 +12,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 import main
-from control.fixed_demo import FIXED_DEMO_STEPS, FixedDemoManeuver
+from control.fixed_demo import FIXED_DEMO_STEPS, FixedDemoManeuver, FixedDemoStep
 from control.follow_control import FollowController, RCCommand
 from control.follow_session import FollowSession
 from drone.fake_adapter import FakeDroneAdapter
@@ -48,7 +48,7 @@ class RecordingManeuver:
     def __init__(self, events: list[str]) -> None:
         self.events = events
 
-    def run(self, send_command, should_abort, on_progress) -> bool:
+    def run(self, send_command, should_abort, on_progress=None, is_avoiding=None) -> bool:
         self.events.append("maneuver")
         self.assert_not_aborted = not should_abort()
         send_command(RCCommand(forward_backward=24))
@@ -59,7 +59,7 @@ class RecordingManeuver:
 class AbortingManeuver:
     """Maneuver stub used to verify an abort lands without entering follow."""
 
-    def run(self, send_command, should_abort, on_progress) -> bool:
+    def run(self, send_command, should_abort, on_progress=None, is_avoiding=None) -> bool:
         send_command(RCCommand(left_right=-16))
         return False
 
@@ -150,6 +150,35 @@ class FixedDemoManeuverTestCase(unittest.TestCase):
         self.assertEqual(commands[-1], RCCommand())
         self.assertNotIn(RCCommand(left_right=16), commands)
 
+    def test_obstacle_avoidance_pauses_route_timer(self) -> None:
+        clock = FakeClock()
+        commands = []
+        avoid_ticks = 3
+
+        def is_avoiding() -> bool:
+            nonlocal avoid_ticks
+            if avoid_ticks > 0:
+                avoid_ticks -= 1
+                return True
+            return False
+
+        maneuver = FixedDemoManeuver(
+            steps=(FixedDemoStep("one", RCCommand(forward_backward=10), 1.0, 0.0),),
+            control_interval=0.1,
+            clock=clock,
+            sleep_fn=clock.sleep,
+        )
+        completed = maneuver.run(
+            commands.append,
+            lambda: False,
+            is_avoiding=is_avoiding,
+        )
+
+        self.assertTrue(completed)
+        self.assertEqual(avoid_ticks, 0)
+        self.assertGreater(clock.now, 1.2)
+        self.assertGreater(len(commands), 10)
+
 
 class FixedDemoIntegrationTestCase(unittest.TestCase):
     def test_session_runs_maneuver_then_resets_and_starts_follow(self) -> None:
@@ -221,11 +250,11 @@ class FixedDemoIntegrationTestCase(unittest.TestCase):
         args = SimpleNamespace(mode="fixed-demo", fake=False)
         with patch.object(main, "parse_args", return_value=args), patch.object(
             main, "run_fixed_demo", return_value=0
-        ) as runner:
+        ) as runner, patch.object(main, "prompt_obstacle_enabled", return_value=False):
             result = main.main()
 
         self.assertEqual(result, 0)
-        runner.assert_called_once_with(use_fake=False)
+        runner.assert_called_once_with(use_fake=False, obstacle_enabled=False)
 
 
 if __name__ == "__main__":
