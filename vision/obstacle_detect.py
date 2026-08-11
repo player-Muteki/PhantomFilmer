@@ -170,17 +170,18 @@ class ObstacleDetector:
         cv2 = _import_cv2()
         frame_height, frame_width = frame.shape[:2]
         frame_area = max(1, frame_width * frame_height)
-        risk_zone = self._risk_zone(frame_width, frame_height)
-        risk_area = max(1, risk_zone[2] * risk_zone[3])
-        risk_mask = np.zeros((frame_height, frame_width), dtype=np.uint8)
-        x, y, width, height = risk_zone
-        risk_mask[y:y + height, x:x + width] = 255
-        self._erase_target_region(risk_mask, target_result)
+        # 先裁剪到风险区再做 CV，避免对整帧做模糊/Canny/形态学，节省约 2-3x 计算量。
+        zone_x, zone_y, zone_width, zone_height = self._risk_zone(frame_width, frame_height)
+        risk_zone = (zone_x, zone_y, zone_width, zone_height)
+        risk_area = max(1, zone_width * zone_height)
+        zone = frame[zone_y:zone_y + zone_height, zone_x:zone_x + zone_width]
+        zone_mask = np.full((zone_height, zone_width), 255, dtype=np.uint8)
+        self._erase_target_region(zone_mask, target_result, zone_x, zone_y, zone_width, zone_height)
 
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if frame.ndim == 3 else frame
+        gray = cv2.cvtColor(zone, cv2.COLOR_BGR2GRAY) if zone.ndim == 3 else zone
         blurred = cv2.GaussianBlur(gray, (5, 5), 0)
         edges = cv2.Canny(blurred, 50, 150)
-        edges = cv2.bitwise_and(edges, risk_mask)
+        edges = cv2.bitwise_and(edges, zone_mask)
         kernel_size = 3 if self.temporal_window_frames < 4 else 5
         kernel = np.ones((kernel_size, kernel_size), np.uint8)
         mask = cv2.dilate(edges, kernel, iterations=1)
@@ -193,13 +194,14 @@ class ObstacleDetector:
             area = float(cv2.contourArea(contour))
             if area < self.minimum_obstacle_area:
                 continue
-            bbox = cv2.boundingRect(contour)
+            bx, by, bw, bh = cv2.boundingRect(contour)
+            # 轮廓来自裁剪后的风险区，坐标映射回全帧，与下游（free_space/日志/调试）保持一致。
+            bbox = (bx + zone_x, by + zone_y, bw, bh)
             overlap = self._intersect_boxes(bbox, risk_zone)
             overlap_area = self._box_area(overlap)
             if overlap_area <= 0:
                 continue
-            bx, by, bw, bh = bbox
-            center = (bx + bw // 2, by + bh // 2)
+            center = (bbox[0] + bw // 2, bbox[1] + bh // 2)
             area_ratio = area / frame_area
             coverage = overlap_area / risk_area
             confidence = self._confidence(area_ratio, coverage)
@@ -299,20 +301,34 @@ class ObstacleDetector:
         y = max(0, min(frame_height - zone_height, y_center - zone_height // 2))
         return (x, y, zone_width, zone_height)
 
-    def _erase_target_region(self, mask: Any, target_result: Dict[str, object]) -> None:
+    def _erase_target_region(
+        self,
+        mask: Any,
+        target_result: Dict[str, object],
+        zone_x: int = 0,
+        zone_y: int = 0,
+        zone_width: Optional[int] = None,
+        zone_height: Optional[int] = None,
+    ) -> None:
+        """将跟随目标区域从风险掩膜中擦除（掩膜为风险区局部坐标）。"""
         cv2 = _import_cv2()
+        if zone_width is None or zone_height is None:
+            zone_width, zone_height = mask.shape[1], mask.shape[0]
         bbox = target_result.get("bbox") if isinstance(target_result, dict) else None
         if bbox is not None:
             x, y, width, height = bbox  # type: ignore[misc]
             pad = max(8, int(max(width, height) * 0.18))
-            x1 = max(0, int(x) - pad)
-            y1 = max(0, int(y) - pad)
-            x2 = min(mask.shape[1], int(x + width) + pad)
-            y2 = min(mask.shape[0], int(y + height) + pad)
-            mask[y1:y2, x1:x2] = 0
+            x1 = max(0, int(x) - pad - zone_x)
+            y1 = max(0, int(y) - pad - zone_y)
+            x2 = min(zone_width, int(x + width) + pad - zone_x)
+            y2 = min(zone_height, int(y + height) + pad - zone_y)
+            if x2 > x1 and y2 > y1:
+                mask[y1:y2, x1:x2] = 0
         corners = target_result.get("corners") if isinstance(target_result, dict) else None
         if corners is not None:
             points = np.array(corners, dtype=np.int32).reshape((-1, 1, 2))
+            points[:, :, 0] -= zone_x
+            points[:, :, 1] -= zone_y
             cv2.fillPoly(mask, [points], 0)
 
     def _free_space(self, candidates: List[ObstacleCandidate], risk_zone: Box, frame_width: int) -> Dict[str, float]:

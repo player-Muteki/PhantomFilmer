@@ -95,6 +95,23 @@ class ObstacleDetectorTestCase(unittest.TestCase):
         self.assertLess(result.free_space["far_right"], 1.0)
         self.assertGreater(left_score, right_score)
 
+    def test_bbox_and_center_are_full_frame_coordinates(self) -> None:
+        detector = self.build_detector()
+        frame = self.frame()
+        frame[60:160, 110:210] = 255  # 白色块完全位于风险区内
+        result = detector.detect(frame, {"found": False, "bbox": None})
+        self.assertTrue(result.found)
+        zone_x, zone_y, _, _ = detector._risk_zone(300, 200)
+        bbox = result.bbox
+        self.assertIsNotNone(bbox)
+        # 裁剪区局部坐标需映射回全帧：块位于 (110, 60)，若未映射会落在 ~(50, 20)。
+        self.assertGreaterEqual(bbox[0], zone_x)  # type: ignore[index]
+        self.assertGreaterEqual(bbox[1], zone_y)  # type: ignore[index]
+        self.assertGreaterEqual(bbox[0], 100)  # type: ignore[index]
+        self.assertGreaterEqual(bbox[1], 50)  # type: ignore[index]
+        self.assertEqual(result.center[0], bbox[0] + bbox[2] // 2)  # type: ignore[index]
+        self.assertEqual(result.center[1], bbox[1] + bbox[3] // 2)  # type: ignore[index]
+
     def test_consecutive_found_and_clear_frames_are_counted(self) -> None:
         detector = self.build_detector()
         frame = self.frame()

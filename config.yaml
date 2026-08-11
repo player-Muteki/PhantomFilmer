@@ -82,6 +82,8 @@ obstacle:
   log_enabled: true
   log_dir: logs/avoidance
   log_every_n_frames: 2
+  # 每 N 帧重新跑一次避障检测（配合风险区裁剪，减少 CV 开销），中间帧复用上次观测。
+  detect_every_n_frames: 2
 lost_target_hover_seconds: 3
 lost_target_land_seconds: 8
 llm_enabled: true

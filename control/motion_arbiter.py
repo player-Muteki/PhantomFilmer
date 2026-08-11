@@ -40,6 +40,9 @@ class MotionArbiter:
         self._log_enabled = bool(self._obstacle_config.get("log_enabled", False))
         self._log_dir = Path(str(self._obstacle_config.get("log_dir", "logs/avoidance")))
         self._log_every_n_frames = max(1, self._config_int("log_every_n_frames", 2))
+        # 每 N 帧才重新跑一次检测器，中间帧复用上次观测，只保留规划/仲裁开销。
+        self._detect_every_n_frames = max(1, self._config_int("detect_every_n_frames", 1))
+        self._detect_counter = 1
         self._writer: Optional[_JsonlEventWriter] = None
         self.session_id = ""
         self.mode = "unknown"
@@ -58,6 +61,7 @@ class MotionArbiter:
         self.last_observation = None
         self.last_decision = None
         self.last_latency_ms = 0.0
+        self._detect_counter = 1
         self._active = True
         if self._log_enabled:
             self._writer = _JsonlEventWriter(self._session_log_path())
@@ -73,7 +77,12 @@ class MotionArbiter:
             self.reset(context.mode)
         started_at = monotonic()
         try:
-            observation = self.detector.detect(frame, context.target_result)
+            self._detect_counter += 1
+            if self.last_observation is None or self._detect_counter % self._detect_every_n_frames == 0:
+                observation = self.detector.detect(frame, context.target_result)
+                self.last_latency_ms = (monotonic() - started_at) * 1000.0
+            else:
+                observation = self.last_observation
             decision = self.planner.plan(desired_command, observation)
         except Exception as exc:
             observation = ObstacleResult(
@@ -90,7 +99,6 @@ class MotionArbiter:
                 plan_id="error",
                 observation=observation,
             )
-        self.last_latency_ms = (monotonic() - started_at) * 1000.0
         self.last_observation = observation
         self.last_decision = decision
         self._record(desired_command, context, observation, decision)

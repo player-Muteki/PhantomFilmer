@@ -68,6 +68,37 @@ class MotionArbiterTestCase(unittest.TestCase):
         self.assertEqual(decision.command.forward_backward, 0)
         self.assertGreater(decision.confidence, 0.0)
 
+    def test_sub_sampling_reuses_last_observation_between_detections(self) -> None:
+        safety = build_safety()
+        detector = StubDetector(ObstacleResult(found=False))
+        arbiter = MotionArbiter(
+            detector=detector,
+            planner=ObstacleAvoidancePlanner(safety_manager=safety),
+            config={"obstacle": {"detect_every_n_frames": 2}},
+        )
+        context = MotionContext(mode="test", target_result={"found": True})
+        first = arbiter.decide(RCCommand(0, 20, 0, 0), frame=object(), context=context)
+        second = arbiter.decide(RCCommand(0, 20, 0, 0), frame=object(), context=context)
+        arbiter.decide(RCCommand(0, 20, 0, 0), frame=object(), context=context)
+        arbiter.decide(RCCommand(0, 20, 0, 0), frame=object(), context=context)
+        arbiter.decide(RCCommand(0, 20, 0, 0), frame=object(), context=context)
+
+        # 5 次决策、每 2 帧检测一次 → 检测器只跑 3 次；复用的帧返回最近一次检测结果。
+        self.assertEqual(detector.detect_calls, 3)
+        self.assertIs(first.observation, second.observation)
+
+    def test_default_keeps_detecting_every_frame(self) -> None:
+        safety = build_safety()
+        detector = StubDetector(ObstacleResult(found=False))
+        arbiter = MotionArbiter(
+            detector=detector,
+            planner=ObstacleAvoidancePlanner(safety_manager=safety),
+        )
+        context = MotionContext(mode="test", target_result={"found": True})
+        for _ in range(3):
+            arbiter.decide(RCCommand(0, 20, 0, 0), frame=object(), context=context)
+        self.assertEqual(detector.detect_calls, 3)
+
     def test_pipeline_error_returns_zero_command(self) -> None:
         safety = build_safety()
         arbiter = MotionArbiter(
