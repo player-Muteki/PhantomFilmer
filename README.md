@@ -8,7 +8,6 @@
 - `opencv-contrib-python` - 摄像头图像处理、目标检测与 ArUco 支持
 - `numpy` - 数值计算
 - `pyyaml` - 配置文件读取
-- `matplotlib` - 四机编队仿真可视化
 
 ## 适配器架构
 
@@ -162,10 +161,6 @@ MPLCONFIGDIR=.matplotlib YOLO_CONFIG_DIR=.ultralytics \
 - 画面仍经过检测器、控制器、安全层和模拟 RC 输出链路
 
 Fake ArUco 可验证软件链路，但无法复现光照、运动模糊和无线视频延迟。`person_reid` 仍需要真实参考图、模型权重和可检测的人物画面。
-
-## 编队反馈保护
-
-真机 `send_rc_all` 默认要求外部位置跟踪器为所有节点提供新鲜的编队修正。反馈过期或缺少任意节点时，非零编队指令会被清零并拒绝。Fake Swarm 为软件测试可跳过该门禁。
 
 ## 测试
 
