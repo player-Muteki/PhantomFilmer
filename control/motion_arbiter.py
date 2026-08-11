@@ -1,7 +1,7 @@
 """Unified obstacle observation, local planning, and decision logging."""
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from queue import Full, Queue
@@ -43,6 +43,7 @@ class MotionArbiter:
         # 每 N 帧才重新跑一次检测器，中间帧复用上次观测，只保留规划/仲裁开销。
         self._detect_every_n_frames = max(1, self._config_int("detect_every_n_frames", 1))
         self._detect_counter = 1
+        self._detector_ran = False
         self._writer: Optional[_JsonlEventWriter] = None
         self.session_id = ""
         self.mode = "unknown"
@@ -62,6 +63,7 @@ class MotionArbiter:
         self.last_decision = None
         self.last_latency_ms = 0.0
         self._detect_counter = 1
+        self._detector_ran = False
         self._active = True
         if self._log_enabled:
             self._writer = _JsonlEventWriter(self._session_log_path())
@@ -79,11 +81,21 @@ class MotionArbiter:
         try:
             self._detect_counter += 1
             if self.last_observation is None or self._detect_counter % self._detect_every_n_frames == 0:
+                self._detector_ran = True
                 observation = self.detector.detect(frame, context.target_result)
                 self.last_latency_ms = (monotonic() - started_at) * 1000.0
             else:
+                self._detector_ran = False
                 observation = self.last_observation
+                if observation is not None and observation.found:
+                    # 跳过帧复用上次观测时，按实际帧数推进"连续确认"计数，
+                    # 否则 detect_confirm_frames 变成按检测次数计数、确认明显变慢。
+                    observation = replace(
+                        observation,
+                        consecutive_found_frames=observation.consecutive_found_frames + 1,
+                    )
             decision = self.planner.plan(desired_command, observation)
+            self.last_observation = observation
         except Exception as exc:
             observation = ObstacleResult(
                 state="UNKNOWN",
@@ -99,10 +111,16 @@ class MotionArbiter:
                 plan_id="error",
                 observation=observation,
             )
-        self.last_observation = observation
+            # 失败时不缓存错误观测：跳过帧若复用它，会把它当作"未发现障碍"，
+            # 把每帧的 FAILSAFE 稀释成全速跟随。置空让下一帧强制重测。
+            self.last_observation = None
         self.last_decision = decision
         self._record(desired_command, context, observation, decision)
         return decision
+
+    def invalidate_observation(self) -> None:
+        """Force the next decide() to run a fresh detection (e.g. after a pause)."""
+        self.last_observation = None
 
     def close(self) -> None:
         """Flush the optional event writer without affecting flight output."""
@@ -147,6 +165,7 @@ class MotionArbiter:
             "session_id": self.session_id,
             "mode": context.mode,
             "latency_ms": round(self.last_latency_ms, 3),
+            "detector_ran": bool(self._detector_ran),
             "target": self._target_payload(context.target_result, frame_width, frame_height),
             "observation": observation.to_observation(frame_width, frame_height),
             "desired_command": self._command_payload(desired_command),

@@ -41,17 +41,15 @@ maximum_yaw_speed: 35
 # ArUco 前后距离分区：0.030–0.080 悬停，区外全速调整。
 target_area_ratio_min: 0.030
 target_area_ratio_max: 0.080
-forward_kp: 1300
-minimum_forward_speed: 12
 maximum_forward_speed: 35
 forward_speed_while_aligning: 16
-large_horizontal_error_ratio: 0.28
-forward_speed_while_turning_ratio: 0.25
 vertical_dead_zone_ratio: 0.10
 vertical_speed: 20
 target_lock_stable_frames: 15
-target_lock_exit_area_ratio_min: 0.030
-target_lock_exit_area_ratio_max: 0.080
+# 锁定退出面积带比进入带（0.030–0.080）更宽：0.025–0.085 形成面积滞回，
+# 避免面积在中带边界附近波动时反复锁定/解锁。
+target_lock_exit_area_ratio_min: 0.025
+target_lock_exit_area_ratio_max: 0.085
 target_lock_exit_horizontal_dead_zone_ratio: 0.12
 target_lock_exit_vertical_dead_zone_ratio: 0.15
 control_interval: 0.05

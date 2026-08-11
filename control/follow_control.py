@@ -53,12 +53,8 @@ class FollowController:
         maximum_yaw_speed: int = 25,
         target_area_ratio_min: float = 0.015,
         target_area_ratio_max: float = 0.060,
-        forward_kp: float = 500.0,
-        minimum_forward_speed: int = 10,
         maximum_forward_speed: int = 20,
         forward_speed_while_aligning: int = 20,
-        large_horizontal_error_ratio: float = 0.28,
-        forward_speed_while_turning_ratio: float = 0.25,
         vertical_dead_zone_ratio: float = 0.10,
         vertical_speed: int = 8,
         target_lock_stable_frames: int = 15,
@@ -76,17 +72,9 @@ class FollowController:
         self.target_area_ratio_max = self._clamp_float(
             target_area_ratio_max, self.target_area_ratio_min, 1.0, 0.060
         )
-        self.forward_kp = self._positive_float(forward_kp, 500.0)
-        self.minimum_forward_speed = self._non_negative_int(minimum_forward_speed, 10)
         self.maximum_forward_speed = self._positive_int(maximum_forward_speed, 20)
         self.forward_speed_while_aligning = min(
             self._non_negative_int(forward_speed_while_aligning, 20), self.maximum_forward_speed
-        )
-        self.large_horizontal_error_ratio = self._clamp_float(
-            large_horizontal_error_ratio, self.horizontal_dead_zone_ratio, 1.0, 0.28
-        )
-        self.forward_speed_while_turning_ratio = self._clamp_float(
-            forward_speed_while_turning_ratio, 0.0, 1.0, 0.25
         )
         self.vertical_dead_zone_ratio = self._clamp_float(vertical_dead_zone_ratio, 0.0, 0.5, 0.10)
         self.vertical_speed = self._non_negative_int(vertical_speed, 8)
@@ -130,14 +118,8 @@ class FollowController:
             maximum_yaw_speed=cls._config_int(config, "maximum_yaw_speed", 25),
             target_area_ratio_min=cls._config_float(config, "target_area_ratio_min", 0.015),
             target_area_ratio_max=cls._config_float(config, "target_area_ratio_max", 0.060),
-            forward_kp=cls._config_float(config, "forward_kp", 500.0),
-            minimum_forward_speed=cls._config_int(config, "minimum_forward_speed", 10),
             maximum_forward_speed=cls._config_int(config, "maximum_forward_speed", 20),
             forward_speed_while_aligning=cls._config_int(config, "forward_speed_while_aligning", 20),
-            large_horizontal_error_ratio=cls._config_float(config, "large_horizontal_error_ratio", 0.28),
-            forward_speed_while_turning_ratio=cls._config_float(
-                config, "forward_speed_while_turning_ratio", 0.25
-            ),
             vertical_dead_zone_ratio=cls._config_float(config, "vertical_dead_zone_ratio", 0.10),
             vertical_speed=cls._config_int(config, "vertical_speed", 8),
             target_lock_stable_frames=cls._config_int(config, "target_lock_stable_frames", 15),

@@ -118,6 +118,77 @@ class MotionArbiterTestCase(unittest.TestCase):
         self.assertEqual(decision.command.as_tuple(), (0, 0, 0, 0))
         self.assertEqual(decision.observation.data_quality, "planner_error")
 
+    def test_error_observation_is_not_reused_by_sub_sampling(self) -> None:
+        safety = build_safety()
+        detector = StubDetector(ObstacleResult(), error=RuntimeError("sensor failure"))
+        arbiter = MotionArbiter(
+            detector=detector,
+            planner=ObstacleAvoidancePlanner(safety_manager=safety),
+            config={"obstacle": {"detect_every_n_frames": 2}},
+        )
+        context = MotionContext(mode="test", target_result={"found": True})
+        states = [
+            arbiter.decide(RCCommand(0, 20, 0, 0), frame=object(), context=context).state
+            for _ in range(3)
+        ]
+        # 失败帧不缓存观测：即使处于跳过帧，每个决策帧都必须重新检测并 FAILSAFE，
+        # 不能复用"未发现障碍"的错误结果变成全速跟随。
+        self.assertEqual(detector.detect_calls, 3)
+        self.assertEqual(states, ["FAILSAFE", "FAILSAFE", "FAILSAFE"])
+
+    def test_sub_sampling_preserves_detection_confirmation_cadence(self) -> None:
+        safety = build_safety()
+
+        class CountingFoundDetector:
+            def __init__(self) -> None:
+                self.detect_calls = 0
+                self.observation = ObstacleResult(
+                    found=True,
+                    state="BLOCKED",
+                    side="center",
+                    free_space={"left": 0.9, "right": 0.1},
+                )
+
+            def detect(self, frame: Any, target_result: Dict[str, object]) -> ObstacleResult:
+                self.detect_calls += 1
+                self.observation.consecutive_found_frames = self.detect_calls
+                return self.observation
+
+            def reset(self) -> None:
+                self.detect_calls = 0
+
+        detector = CountingFoundDetector()
+        arbiter = MotionArbiter(
+            detector=detector,  # type: ignore[arg-type]
+            planner=ObstacleAvoidancePlanner(safety_manager=safety, detect_confirm_frames=3),
+            config={"obstacle": {"detect_every_n_frames": 2}},
+        )
+        context = MotionContext(mode="test", target_result={"found": True})
+        states = [
+            arbiter.decide(RCCommand(0, 20, 0, 0), frame=object(), context=context).state
+            for _ in range(4)
+        ]
+        # 确认按实际帧数推进：第 4 帧（2 次真实检测 + 跳过帧递增）达到 3 次确认开始绕行；
+        # 若跳过帧不递增，第 4 帧仍是 BRAKING，绕行会被推迟到第 5 帧。
+        self.assertEqual(detector.detect_calls, 2)
+        self.assertEqual(states, ["BRAKING", "BRAKING", "BRAKING", "AVOIDING"])
+
+    def test_invalidate_observation_forces_fresh_detection(self) -> None:
+        safety = build_safety()
+        detector = StubDetector(ObstacleResult(found=False))
+        arbiter = MotionArbiter(
+            detector=detector,
+            planner=ObstacleAvoidancePlanner(safety_manager=safety),
+            config={"obstacle": {"detect_every_n_frames": 2}},
+        )
+        context = MotionContext(mode="test", target_result={"found": True})
+        arbiter.decide(RCCommand(0, 20, 0, 0), frame=object(), context=context)
+        arbiter.decide(RCCommand(0, 20, 0, 0), frame=object(), context=context)
+        self.assertEqual(detector.detect_calls, 1)  # 第二次是跳过帧
+        arbiter.invalidate_observation()
+        arbiter.decide(RCCommand(0, 20, 0, 0), frame=object(), context=context)
+        self.assertEqual(detector.detect_calls, 2)
+
     def test_llm_friendly_jsonl_is_written_without_blocking_decision(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             safety = build_safety()

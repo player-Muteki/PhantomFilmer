@@ -311,6 +311,9 @@ class FollowSession:
             self.paused = not self.paused
             self.session_state = "PAUSED" if self.paused else "FOLLOWING"
             self._safe_zero_output()
+            if not self.paused and self.motion_arbiter is not None:
+                # 恢复时强制下一帧重新检测，避免复用暂停前可能已过期的观测。
+                self.motion_arbiter.invalidate_observation()
             print("跟随已暂停。" if self.paused else "跟随已恢复。")
             return None
 
@@ -482,7 +485,7 @@ class FollowSession:
                 continue
             detect_failures = 0
             command, lost_action = self.process_detection(target_result, frame_width, frame_height)
-            if self.motion_arbiter is not None:
+            if self.motion_arbiter is not None and not (self.paused or self.emergency_stop):
                 decision = self.motion_arbiter.decide(
                     desired_command=command,
                     frame=frame,
@@ -495,9 +498,11 @@ class FollowSession:
                     self.session_state = "OBSTACLE_FAILSAFE_LANDING"
                     self._safe_zero_output()
                     break
-            else:
+            elif self.motion_arbiter is None:
                 # 仅当没有装配 motion_arbiter 时才使用原始检测器/规划器回退路径。
                 command = self.apply_obstacle_avoidance(command, target_result, frame)
+            # 暂停/急停时冻结自主运动：不运行仲裁（既不覆盖指令，也不会在暂停中
+            # 被避障超时强制降落），command 保持 process_detection 返回的悬停。
 
             battery = self._read_battery()
             height = self._read_height()
