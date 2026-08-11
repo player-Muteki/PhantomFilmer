@@ -4,8 +4,7 @@ from typing import Any, Dict, Optional
 
 import numpy as np
 
-
-DetectionResult = Dict[str, Optional[object]]
+from vision.detector_protocol import DetectionResult
 
 
 class TargetDetector:

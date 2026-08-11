@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import patch
 
 import main
+from app import config as app_config
 from vision.aruco_detect import ArucoTargetDetector
 from vision.detector_factory import create_detector
 from vision.person_reid_detect import PersonReIDDetector
@@ -35,7 +36,7 @@ class DetectorFactoryTestCase(unittest.TestCase):
             create_detector({"vision": {"detector_type": "unknown"}})
 
     def test_build_system_uses_factory_selected_aruco_detector(self) -> None:
-        with patch.object(main, "load_config", return_value={"vision": {"detector_type": "aruco"}}):
+        with patch.object(app_config, "load_config", return_value={"vision": {"detector_type": "aruco"}}):
             controller = main.build_system(use_fake=True)
         self.assertIsInstance(controller.tools._detector, ArucoTargetDetector)
 

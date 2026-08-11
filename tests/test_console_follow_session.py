@@ -26,6 +26,7 @@ from control.follow_session import FollowSession
 from drone.fake_adapter import FakeDroneAdapter
 from drone.safety import SafetyConfig, SafetyManager
 import main
+from app import modes as app_modes
 from vision.aruco_detect import ArucoTargetDetector
 from vision.target_detect import TargetDetector
 
@@ -545,7 +546,7 @@ class ConsoleFollowSessionTestCase(unittest.TestCase):
     """Verify Console follow session safety-state behavior without GUI."""
 
     def test_follow_and_console_use_shared_follow_session(self) -> None:
-        follow_source = inspect.getsource(main.run_follow)
+        follow_source = inspect.getsource(app_modes.run_follow)
         console_source = inspect.getsource(ConsoleTools.start_follow_task)
 
         self.assertIn("FollowSession", follow_source)

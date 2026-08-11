@@ -208,7 +208,10 @@ class SwarmManager:
 
     def all_ready(self) -> bool:
         """Return True when all nodes are connected and have enough battery."""
-        return not self.safety_manager.check_takeoff_allowed(self.nodes.values())
+        # check_takeoff_allowed 返回"阻塞原因字典"：空字典表示所有节点就绪。
+        # 显式保存后再取反，避免依赖字典 truthiness 的隐晦表达。
+        blockers = self.safety_manager.check_takeoff_allowed(self.nodes.values())
+        return not blockers
 
     def get_failed_nodes(self) -> List[SwarmDroneNode]:
         """Return nodes that are disconnected or have a recorded error."""

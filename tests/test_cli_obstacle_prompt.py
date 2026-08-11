@@ -5,6 +5,7 @@ import unittest
 from unittest.mock import patch
 
 import main
+from app import config as app_config
 
 
 class ObstaclePromptTestCase(unittest.TestCase):
@@ -47,7 +48,7 @@ class RuntimeObstacleConfigTestCase(unittest.TestCase):
                 "minimum_obstacle_area": 321,
             },
         }
-        with patch.object(main, "load_config", return_value=configured):
+        with patch.object(app_config, "load_config", return_value=configured):
             runtime = main.load_runtime_config(True)
 
         self.assertTrue(runtime["obstacle"]["enabled"])
@@ -59,14 +60,14 @@ class RuntimeObstacleConfigTestCase(unittest.TestCase):
 
     def test_false_override_replaces_true_default(self) -> None:
         configured = {"obstacle": {"enabled": True}}
-        with patch.object(main, "load_config", return_value=configured):
+        with patch.object(app_config, "load_config", return_value=configured):
             runtime = main.load_runtime_config(False)
         self.assertFalse(runtime["obstacle"]["enabled"])
         self.assertTrue(configured["obstacle"]["enabled"])
 
     def test_no_override_preserves_loaded_config(self) -> None:
         configured = {"obstacle": {"enabled": True}}
-        with patch.object(main, "load_config", return_value=configured):
+        with patch.object(app_config, "load_config", return_value=configured):
             runtime = main.load_runtime_config()
         self.assertIs(runtime, configured)
 

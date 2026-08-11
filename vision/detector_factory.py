@@ -10,23 +10,12 @@ Usage::
     debug_frame = detector.draw_debug(frame, result)
 """
 
-from typing import Any, Dict, Optional, Protocol
+from typing import Dict
+
+from vision.detector_protocol import DetectorProtocol, DetectionResult
 
 
-DetectionResult = Dict[str, Optional[object]]
-
-
-class VisionDetector(Protocol):
-    """Structural interface shared by all target detectors."""
-
-    def detect(self, frame: Any) -> DetectionResult:
-        """Return the target detection result for one frame."""
-
-    def draw_debug(self, frame: Any, result: DetectionResult) -> Any:
-        """Render detector-specific debug information on a frame."""
-
-
-def create_detector(config: Dict) -> VisionDetector:
+def create_detector(config: Dict) -> DetectorProtocol:
     """Create a vision detector based on configuration.
 
     Args:

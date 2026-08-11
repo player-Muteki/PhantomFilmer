@@ -10,8 +10,8 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 
+from vision.detector_protocol import DetectionResult
 
-DetectionResult = Dict[str, Any]
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 

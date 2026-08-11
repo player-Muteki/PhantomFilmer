@@ -260,6 +260,9 @@ class FollowSession:
         decision = self.motion_arbiter.decide(
             desired_command=command,
             frame=frame,
+            # 预飞段（fixed-demo 固定航线）尚未进入目标跟随，故意不提供目标区域：
+            # 让避障检测器观察整个画面，避免目标排除逻辑误用于目标可能尚未进入
+            # 视野的阶段。进入正常跟随后由 _loop 传入真实检测结果。
             context=MotionContext(mode=self.mode_label, target_result={"found": False}),
         )
         self.last_obstacle_result = decision.observation
@@ -416,6 +419,7 @@ class FollowSession:
             import cv2
 
         frame_failures = 0
+        detect_failures = 0
         stats_started_at = monotonic()
         frame_counter = 0
         command_counter = 0
@@ -449,7 +453,21 @@ class FollowSession:
             frame_failures = 0
             frame_counter += 1
             frame_height, frame_width = frame.shape[:2]
-            target_result = self.detector.detect(frame)
+            try:
+                target_result = self.detector.detect(frame)
+            except Exception as exc:
+                # 检测器异常（如 ReID 推理失败）不中断整个任务：先零输出并重试，
+                # 连续失败达到帧数上限后按视频丢失同样的安全策略降落。
+                detect_failures += 1
+                print(f"目标检测异常（{detect_failures}/{self.frame_failure_limit}）：{exc}")
+                self._safe_zero_output()
+                if detect_failures >= self.frame_failure_limit:
+                    print("检测器连续异常，准备安全降落。")
+                    self.session_state = "FRAME_LOST_LANDING"
+                    break
+                sleep(0.05)
+                continue
+            detect_failures = 0
             command, lost_action = self.process_detection(target_result, frame_width, frame_height)
             if self.motion_arbiter is not None:
                 decision = self.motion_arbiter.decide(
