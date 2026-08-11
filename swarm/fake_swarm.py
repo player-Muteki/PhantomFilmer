@@ -1,6 +1,6 @@
 """Factory helpers for four-node fake swarm validation."""
 
-from typing import Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional
 
 from drone.fake_adapter import FakeDroneAdapter
 
@@ -37,16 +37,19 @@ class FailableFakeDroneAdapter(FakeDroneAdapter):
 def create_fake_swarm_nodes(
     drone_configs: Optional[Iterable[dict]] = None,
     failing_ids: Optional[Iterable[str]] = None,
+    rc_failing_ids: Optional[Iterable[str]] = None,
     verbose_rc: bool = False,
 ) -> List[SwarmDroneNode]:
     """Create fake nodes from swarm config."""
     failing = set(failing_ids or ())
+    rc_failing = set(rc_failing_ids or ())
     configs = list(drone_configs or DEFAULT_FAKE_DRONES)
     nodes: List[SwarmDroneNode] = []
     for item in configs:
         drone_id = str(item.get("id"))
         adapter = FailableFakeDroneAdapter(
             fail_connect=drone_id in failing,
+            fail_rc=drone_id in rc_failing,
             verbose_rc=verbose_rc,
         )
         nodes.append(
@@ -58,3 +61,20 @@ def create_fake_swarm_nodes(
             )
         )
     return nodes
+
+
+def default_swarm_config() -> Dict[str, object]:
+    """Return a default fake swarm config block."""
+    return {
+        "enabled": False,
+        "command_interval_ms": 200,
+        "takeoff_interval_s": 1.0,
+        "max_lr_speed": 10,
+        "max_fb_speed": 10,
+        "max_ud_speed": 10,
+        "max_yaw_speed": 10,
+        "minimum_takeoff_battery": 30,
+        "leader_id": "drone_1",
+        "video_drone_id": "drone_1",
+        "drones": [dict(item) for item in DEFAULT_FAKE_DRONES],
+    }

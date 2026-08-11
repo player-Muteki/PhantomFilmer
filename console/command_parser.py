@@ -1,17 +1,17 @@
-"""Natural-language to safe Agent command parsing."""
+"""Natural-language to safe console command parsing."""
 
 from typing import Iterable, Optional
 
-from agent.commands import AgentCommand
-from agent.llm_client import LLMClient
+from console.commands import ConsoleCommand
+from console.llm_client import LLMClient
 
 
 EXACT_COMMANDS = {
-    "状态": AgentCommand.GET_STATUS,
-    "开始任务": AgentCommand.START_FOLLOW,
-    "停止任务": AgentCommand.STOP_TASK,
-    "急停": AgentCommand.EMERGENCY_STOP,
-    "退出": AgentCommand.EXIT,
+    "状态": ConsoleCommand.GET_STATUS,
+    "开始任务": ConsoleCommand.START_FOLLOW,
+    "停止任务": ConsoleCommand.STOP_TASK,
+    "急停": ConsoleCommand.EMERGENCY_STOP,
+    "退出": ConsoleCommand.EXIT,
 }
 
 NEGATION_MARKERS = (
@@ -39,7 +39,7 @@ UNCERTAIN_MARKERS = (
 )
 
 LOCAL_PATTERNS = (
-    (AgentCommand.EMERGENCY_STOP, (
+    (ConsoleCommand.EMERGENCY_STOP, (
         "急停",
         "紧急停止",
         "立即急停",
@@ -47,7 +47,7 @@ LOCAL_PATTERNS = (
         "立刻急停",
         "emergency stop",
     )),
-    (AgentCommand.GET_STATUS, (
+    (ConsoleCommand.GET_STATUS, (
         "状态",
         "现在无人机怎么样",
         "看看现在无人机状态",
@@ -58,7 +58,7 @@ LOCAL_PATTERNS = (
         "当前电量",
         "无人机情况",
     )),
-    (AgentCommand.START_FOLLOW, (
+    (ConsoleCommand.START_FOLLOW, (
         "开始任务",
         "开始跟随",
         "启动跟随",
@@ -68,7 +68,7 @@ LOCAL_PATTERNS = (
         "可以开始工作了",
         "开始工作",
     )),
-    (AgentCommand.STOP_TASK, (
+    (ConsoleCommand.STOP_TASK, (
         "停止任务",
         "停止当前任务",
         "先停一下",
@@ -77,7 +77,7 @@ LOCAL_PATTERNS = (
         "结束任务",
         "取消任务",
     )),
-    (AgentCommand.EXIT, (
+    (ConsoleCommand.EXIT, (
         "退出",
         "退出系统",
         "结束系统",
@@ -88,16 +88,16 @@ LOCAL_PATTERNS = (
 
 
 class CommandParser:
-    """Parse user input into one whitelisted Agent action."""
+    """Parse user input into one whitelisted console action."""
 
     def __init__(self, llm_client: Optional[LLMClient] = None) -> None:
         self.llm_client = llm_client
 
-    def parse(self, user_text: str) -> AgentCommand:
+    def parse(self, user_text: str) -> ConsoleCommand:
         """Resolve an action using local rules first, then LLM fallback."""
         normalized = user_text.strip()
         if not normalized:
-            return AgentCommand.UNKNOWN
+            return ConsoleCommand.UNKNOWN
 
         exact_command = EXACT_COMMANDS.get(normalized)
         if exact_command is not None:
@@ -106,12 +106,12 @@ class CommandParser:
         lowered = normalized.lower()
         for action, keywords in LOCAL_PATTERNS:
             if self._matches_local_pattern(lowered, keywords):
-                if action != AgentCommand.GET_STATUS and self._is_uncertain_command(lowered):
-                    return AgentCommand.UNKNOWN
+                if action != ConsoleCommand.GET_STATUS and self._is_uncertain_command(lowered):
+                    return ConsoleCommand.UNKNOWN
                 return action
 
         if self.llm_client is None:
-            return AgentCommand.UNKNOWN
+            return ConsoleCommand.UNKNOWN
         return self.llm_client.classify(normalized)
 
     def _matches_local_pattern(self, user_text: str, keywords: Iterable[str]) -> bool:

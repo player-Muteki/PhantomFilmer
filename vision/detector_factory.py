@@ -43,7 +43,7 @@ def create_detector(config: Dict) -> VisionDetector:
     if not isinstance(cfg, dict):
         cfg = config
 
-    detector_type = str(cfg.get("detector_type", "red"))
+    detector_type = str(cfg.get("detector_type", "red")).strip().lower()
 
     if detector_type == "red":
         from vision.target_detect import TargetDetector
@@ -53,7 +53,11 @@ def create_detector(config: Dict) -> VisionDetector:
         from vision.aruco_detect import ArucoTargetDetector
         return ArucoTargetDetector.from_config(config)
 
+    if detector_type == "person_reid":
+        from vision.person_reid_detect import PersonReIDDetector
+        return PersonReIDDetector.from_config(config)
+
     raise ValueError(
         f"Unsupported detector_type: '{detector_type}'. "
-        "Supported types: 'red', 'aruco'."
+        "Supported types: 'red', 'aruco', 'person_reid'."
     )

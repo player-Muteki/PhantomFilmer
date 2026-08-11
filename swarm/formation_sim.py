@@ -1,4 +1,4 @@
-"""Four-drone virtual-structure simulation for umbrella coverage."""
+"""Four-drone virtual-structure simulation for formation coverage."""
 
 from dataclasses import dataclass
 import os
@@ -8,7 +8,7 @@ from typing import Dict, Optional, Tuple
 
 @dataclass
 class DronePoint:
-    """A drone target position in the virtual umbrella structure."""
+    """A drone target position in the virtual formation structure."""
 
     x: float
     y: float
@@ -20,7 +20,7 @@ FormationPoints = Dict[str, DronePoint]
 
 
 class FormationSimulator:
-    """Virtual-structure simulator for four-drone umbrella coverage."""
+    """Virtual-structure simulator for four-drone formation coverage."""
 
     def __init__(self, target: TargetPoint = (0.0, 0.0, 0.0), d: float = 1.2, h: float = 1.5) -> None:
         self.target = target
@@ -55,7 +55,7 @@ class FormationSimulator:
         return self.points
 
     def save_2d_plot(self, output_path: Path) -> Path:
-        """Save a 2D matplotlib visualization of the four-drone umbrella rectangle."""
+        """Save a 2D matplotlib visualization of the four-drone formation rectangle."""
         if not self.points:
             self.compute_umbrella_formation()
 
@@ -78,7 +78,7 @@ class FormationSimulator:
         figure, axis = plt.subplots(figsize=(7, 7))
         rectangle_x = [p1.x, p2.x, p4.x, p3.x, p1.x]
         rectangle_y = [p1.y, p2.y, p4.y, p3.y, p1.y]
-        axis.plot(rectangle_x, rectangle_y, "b-", linewidth=2, label="umbrella rectangle")
+        axis.plot(rectangle_x, rectangle_y, "b-", linewidth=2, label="formation rectangle")
 
         drone_x = [point.x for point in self.points.values()]
         drone_y = [point.y for point in self.points.values()]
@@ -87,10 +87,10 @@ class FormationSimulator:
             axis.text(point.x + 0.04, point.y + 0.04, name, fontsize=10)
 
         axis.scatter([target_x], [target_y], c="tab:red", s=120, marker="o", label="pedestrian target")
-        axis.scatter([target_x], [target_y], c="tab:green", s=70, marker="x", label="umbrella center")
+        axis.scatter([target_x], [target_y], c="tab:green", s=70, marker="x", label="formation center")
         axis.text(target_x + 0.04, target_y - 0.12, "target / center", fontsize=10)
 
-        axis.set_title("DroneUmbrella Four-Drone Virtual Structure")
+        axis.set_title("PhantomFilmer Four-Drone Virtual Structure")
         axis.set_xlabel("x / m")
         axis.set_ylabel("y / m")
         axis.set_aspect("equal", adjustable="box")

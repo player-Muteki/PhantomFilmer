@@ -76,9 +76,9 @@ class ArucoDetectorInitTestCase(unittest.TestCase):
         self.assertAlmostEqual(ArucoTargetDetector(smoothing_alpha=-1).smoothing_alpha, 0.0)
         self.assertAlmostEqual(ArucoTargetDetector(smoothing_alpha=5).smoothing_alpha, 1.0)
 
-    def test_temporary_lost_frames_min_1(self) -> None:
-        self.assertEqual(ArucoTargetDetector(temporary_lost_frames=0).temporary_lost_frames, 1)
-        self.assertEqual(ArucoTargetDetector(temporary_lost_frames=-5).temporary_lost_frames, 1)
+    def test_temporary_lost_frames_allows_zero(self) -> None:
+        self.assertEqual(ArucoTargetDetector(temporary_lost_frames=0).temporary_lost_frames, 0)
+        self.assertEqual(ArucoTargetDetector(temporary_lost_frames=-5).temporary_lost_frames, 0)
 
     @unittest.skipIf(not CV2_AVAILABLE, "cv2 not available")
     def test_from_config_full_vision_section(self) -> None:
@@ -169,6 +169,7 @@ class ArucoDetectorEdgeCaseTestCase(unittest.TestCase):
         self.assertIsNotNone(out)
         self.assertEqual(out.size, 0)
 
+    @unittest.skipIf(not CV2_AVAILABLE, "cv2 not available — skipping frame-lost debug test")
     def test_draw_debug_valid_frame_lost(self) -> None:
         result = self.detector.detect(np.ones((480, 640, 3), dtype=np.uint8) * 128)
         frame = np.ones((480, 640, 3), dtype=np.uint8) * 200
@@ -210,6 +211,7 @@ class ArucoDetectorDetectionTestCase(unittest.TestCase):
         self.assertGreater(r["area"], 0)
         self.assertEqual(r["marker_id"], 23)
         self.assertEqual(r["detector_type"], "aruco")
+        self.assertFalse(r["is_predicted"])
 
     def test_center_within_bbox(self) -> None:
         r = self.detector.detect(self.frame_bgr)
@@ -340,6 +342,7 @@ class ArucoDetectorTempLostTestCase(unittest.TestCase):
 
         r2 = detector.detect(self._blank_frame())
         self.assertTrue(r2["found"], "Should still report found within temp-lost window")
+        self.assertTrue(r2["is_predicted"])
         self.assertEqual(r2["center"], r1["center"])
 
     def test_exceeds_threshold_reports_lost(self) -> None:
@@ -350,6 +353,17 @@ class ArucoDetectorTempLostTestCase(unittest.TestCase):
         _ = detector.detect(blank)
         r3 = detector.detect(blank)
         self.assertFalse(r3["found"])
+        self.assertFalse(r3["is_predicted"])
+
+    def test_zero_temporary_lost_frames_reports_lost_immediately(self) -> None:
+        detector = ArucoTargetDetector(temporary_lost_frames=0)
+        detected = detector.detect(self._detect_frame())
+        self.assertTrue(detected["found"])
+        self.assertFalse(detected["is_predicted"])
+
+        lost = detector.detect(self._blank_frame())
+        self.assertFalse(lost["found"])
+        self.assertFalse(lost["is_predicted"])
 
     def test_recovery_after_temp_lost(self) -> None:
         detector = ArucoTargetDetector(temporary_lost_frames=3)

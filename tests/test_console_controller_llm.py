@@ -1,4 +1,4 @@
-"""Tests for AgentController natural-language command dispatch."""
+"""Tests for ConsoleController natural-language command dispatch."""
 
 import sys
 import unittest
@@ -11,10 +11,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from agent.agent_controller import AgentController
-from agent.command_parser import CommandParser
-from agent.commands import AgentCommand
-from agent.llm_client import LLMClient
+from console.console_controller import ConsoleController
+from console.command_parser import CommandParser
+from console.commands import ConsoleCommand
+from console.llm_client import LLMClient
 
 
 class StubParser:
@@ -23,7 +23,7 @@ class StubParser:
     def __init__(self, actions):
         self.actions = list(actions)
 
-    def parse(self, user_text: str) -> AgentCommand:
+    def parse(self, user_text: str) -> ConsoleCommand:
         return self.actions.pop(0)
 
 
@@ -55,12 +55,12 @@ class StubTools:
         self.calls.append("emergency_stop")
 
 
-class AgentControllerLLMTestCase(unittest.TestCase):
+class ConsoleControllerLLMTestCase(unittest.TestCase):
     """Verify controller dispatch remains inside safety-wrapped tools."""
 
     def test_unknown_command_does_not_call_tools(self) -> None:
         tools = StubTools()
-        controller = AgentController(tools=tools, parser=StubParser([AgentCommand.UNKNOWN, AgentCommand.EXIT]))
+        controller = ConsoleController(tools=tools, parser=StubParser([ConsoleCommand.UNKNOWN, ConsoleCommand.EXIT]))
 
         with patch("builtins.input", side_effect=["模糊指令", "退出"]), patch("sys.stdout", new=StringIO()) as stdout:
             result = controller.run()
@@ -71,7 +71,7 @@ class AgentControllerLLMTestCase(unittest.TestCase):
 
     def test_start_follow_still_requires_local_confirmation(self) -> None:
         tools = StubTools()
-        controller = AgentController(tools=tools, parser=StubParser([AgentCommand.START_FOLLOW, AgentCommand.EXIT]))
+        controller = ConsoleController(tools=tools, parser=StubParser([ConsoleCommand.START_FOLLOW, ConsoleCommand.EXIT]))
 
         with patch("builtins.input", side_effect=["帮我开始跟随目标", "yes", "退出"]), patch("sys.stdout", new=StringIO()):
             result = controller.run()
@@ -81,7 +81,7 @@ class AgentControllerLLMTestCase(unittest.TestCase):
 
     def test_status_command_dispatches_to_tools(self) -> None:
         tools = StubTools()
-        controller = AgentController(tools=tools, parser=StubParser([AgentCommand.GET_STATUS, AgentCommand.EXIT]))
+        controller = ConsoleController(tools=tools, parser=StubParser([ConsoleCommand.GET_STATUS, ConsoleCommand.EXIT]))
 
         with patch("builtins.input", side_effect=["看看现在无人机状态", "退出"]), patch("sys.stdout", new=StringIO()) as stdout:
             result = controller.run()
@@ -92,7 +92,7 @@ class AgentControllerLLMTestCase(unittest.TestCase):
 
     def test_emergency_stop_dispatches_locally(self) -> None:
         tools = StubTools()
-        controller = AgentController(tools=tools, parser=StubParser([AgentCommand.EMERGENCY_STOP, AgentCommand.EXIT]))
+        controller = ConsoleController(tools=tools, parser=StubParser([ConsoleCommand.EMERGENCY_STOP, ConsoleCommand.EXIT]))
 
         with patch("builtins.input", side_effect=["立即急停", "退出"]), patch("sys.stdout", new=StringIO()):
             result = controller.run()
@@ -103,7 +103,7 @@ class AgentControllerLLMTestCase(unittest.TestCase):
     def test_missing_llm_key_prints_local_only_hint(self) -> None:
         tools = StubTools()
         llm_client = LLMClient(enabled=True, api_key="")
-        controller = AgentController(
+        controller = ConsoleController(
             tools=tools,
             parser=CommandParser(llm_client=llm_client),
             llm_client=llm_client,

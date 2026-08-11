@@ -105,16 +105,28 @@ class SwarmDroneNode:
         return self.status_snapshot()
 
     def stop(self) -> NodeStatus:
-        """Stop this node and release adapter resources."""
-        try:
-            if self.connected:
+        """Zero motion, land if needed, and release adapter resources."""
+        errors = []
+        if self.connected:
+            try:
                 self.adapter.move_rc(0, 0, 0, 0)
+            except Exception as exc:
+                errors.append(f"zero RC failed: {exc}")
+
+        if self.airborne:
+            try:
+                self.adapter.land()
+                self.airborne = False
+            except Exception as exc:
+                errors.append(f"landing failed: {exc}")
+
+        try:
             self.adapter.stop()
-            self.connected = False
-            self.airborne = False
-            self.last_error = None
         except Exception as exc:
-            self.last_error = str(exc)
+            errors.append(f"adapter stop failed: {exc}")
+
+        self.connected = False
+        self.last_error = "; ".join(errors) if errors else None
         return self.status_snapshot()
 
     def mark_offline(self, reason: str) -> None:

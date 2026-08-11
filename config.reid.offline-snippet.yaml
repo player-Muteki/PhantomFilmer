@@ -1,0 +1,13 @@
+# Merge this vision block into config.yaml only for offline dry-run testing.
+# Do not use these PRID-derived starting values to authorize flight.
+vision:
+  detector_type: person_reid
+  reference_images: "data/reid_target/cam_a_0001.png,data/reid_target/cam_a_0020.png,data/reid_target/cam_a_0080.png"
+  person_detector_model: "weights/yolov8n.pt"
+  person_detection_confidence: 0.25
+  reid_model_name: "osnet_x0_25"
+  reid_model_path: "weights/osnet_x0_25_msmt17.pth"
+  reid_device: "cpu"
+  reid_similarity_threshold: 0.60
+  reid_ambiguity_margin: 0.05
+  reid_temporary_lost_frames: 0

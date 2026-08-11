@@ -5,7 +5,7 @@ import os
 from typing import Optional
 from urllib import error, request
 
-from agent.commands import AgentCommand
+from console.commands import ConsoleCommand
 
 
 DEFAULT_BASE_URL = "https://api.openai.com/v1/chat/completions"
@@ -15,7 +15,7 @@ SYSTEM_PROMPT = """你是一个无人机任务命令分类器。\n你只能把�
 
 
 class LLMClient:
-    """Classify natural-language input into one whitelisted Agent action."""
+    """Classify natural-language input into one whitelisted console action."""
 
     def __init__(
         self,
@@ -35,10 +35,10 @@ class LLMClient:
         """Return whether online classification is configured and ready."""
         return self.enabled and bool(self.api_key)
 
-    def classify(self, user_text: str) -> AgentCommand:
+    def classify(self, user_text: str) -> ConsoleCommand:
         """Return one safe action or UNKNOWN when classification is unavailable."""
         if not self.is_available() or not user_text.strip():
-            return AgentCommand.UNKNOWN
+            return ConsoleCommand.UNKNOWN
 
         payload = {
             "model": self.model,
@@ -65,13 +65,13 @@ class LLMClient:
                 body = response.read().decode("utf-8")
         except error.HTTPError as exc:
             exc.read()
-            return AgentCommand.UNKNOWN
+            return ConsoleCommand.UNKNOWN
         except (error.URLError, TimeoutError, ValueError):
-            return AgentCommand.UNKNOWN
+            return ConsoleCommand.UNKNOWN
 
         return self._parse_response(body)
 
-    def _parse_response(self, body: str) -> AgentCommand:
+    def _parse_response(self, body: str) -> ConsoleCommand:
         """Extract one whitelisted action from a chat-completions response body."""
         try:
             response_json = json.loads(body)
@@ -79,9 +79,9 @@ class LLMClient:
             result = json.loads(content)
             action = str(result.get("action", "")).strip().upper()
         except (KeyError, IndexError, TypeError, json.JSONDecodeError):
-            return AgentCommand.UNKNOWN
+            return ConsoleCommand.UNKNOWN
 
         try:
-            return AgentCommand(action)
+            return ConsoleCommand(action)
         except ValueError:
-            return AgentCommand.UNKNOWN
+            return ConsoleCommand.UNKNOWN

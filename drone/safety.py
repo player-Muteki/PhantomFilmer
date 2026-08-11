@@ -1,4 +1,4 @@
-"""Safety protection logic for the low-altitude drone umbrella prototype."""
+"""Safety protection logic for the low-altitude PhantomFilmer prototype."""
 
 from dataclasses import dataclass
 from time import monotonic

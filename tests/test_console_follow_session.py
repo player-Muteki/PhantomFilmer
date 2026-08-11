@@ -1,10 +1,11 @@
-"""Tests for fake camera frames and Agent visual follow session logic."""
+"""Tests for fake camera frames and Console visual follow session logic."""
 
 import inspect
 import sys
 import unittest
 from pathlib import Path
-from time import monotonic
+from threading import Event
+from time import monotonic, sleep
 
 
 try:
@@ -17,17 +18,19 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-import agent.tools as agent_tools_module
-from agent.tools import AgentTools
+import console.tools as console_tools_module
+from console.follow_session import ConsoleFollowSession
+from console.tools import ConsoleTools
 from control.follow_control import FollowController, RCCommand
 from control.follow_session import FollowSession
 from drone.fake_adapter import FakeDroneAdapter
 from drone.safety import SafetyConfig, SafetyManager
 import main
+from vision.aruco_detect import ArucoTargetDetector
 from vision.target_detect import TargetDetector
 
 
-def build_safety() -> SafetyManager:
+def build_safety(max_rc_speed: int = 25) -> SafetyManager:
     """Build a test safety manager with short target-loss timing."""
     return SafetyManager(
         SafetyConfig(
@@ -35,29 +38,27 @@ def build_safety() -> SafetyManager:
             low_battery_land=20,
             max_height_cm=150,
             min_height_cm=60,
-            max_rc_speed=25,
+            max_rc_speed=max_rc_speed,
             target_lost_hover_seconds=1,
             target_lost_land_seconds=2,
         )
     )
 
 
-def build_session(drone: FakeDroneAdapter, safety: SafetyManager) -> FollowSession:
-    """Create a no-GUI Agent follow session for unit tests."""
-    return FollowSession(
+def build_session(drone: FakeDroneAdapter, safety: SafetyManager) -> ConsoleFollowSession:
+    """Create a no-GUI Console follow session for unit tests."""
+    return ConsoleFollowSession(
         drone=drone,
         safety_manager=safety,
         detector=TargetDetector(),
         follow_controller=FollowController(safety_manager=safety),
         config={
-            "display_agent_camera": False,
+            "display_console_camera": False,
             "camera_width": 640,
             "camera_height": 480,
             "frame_failure_limit": 3,
         },
         mode_label="FAKE",
-        state_label="AGENT",
-        allow_pause=True,
     )
 
 
@@ -68,8 +69,15 @@ class RaisingLoopSession(FollowSession):
         raise RuntimeError("forced loop failure")
 
 
+class FailedHeightTakeoffSession(FollowSession):
+    """Session that reports no takeoff height after a successful command."""
+
+    def _read_height(self):
+        return 0
+
+
 class ImmediateSession:
-    """Session stub used to verify Agent starts follow on the caller thread."""
+    """Session stub used to verify Console starts follow in the background."""
 
     run_count = 0
 
@@ -79,6 +87,34 @@ class ImmediateSession:
     def run(self):
         ImmediateSession.run_count += 1
         return type("Result", (), {"state": "STOPPED", "airborne": False, "streaming": False})()
+
+
+class BlockingSession:
+    """Session stub that remains active until the console requests a stop."""
+
+    started = Event()
+
+    def __init__(self, **kwargs) -> None:
+        self.stop_event = kwargs["stop_event"]
+        self.airborne = True
+
+    def run(self):
+        BlockingSession.started.set()
+        self.stop_event.wait(timeout=2)
+        self.airborne = False
+        return type("Result", (), {"state": "STOPPED", "airborne": False, "streaming": False})()
+
+    def request_stop(self) -> None:
+        self.stop_event.set()
+
+    def request_emergency_stop(self) -> None:
+        self.stop_event.set()
+
+
+class StuckSession:
+    """Session stub used to verify timeout landing fallback."""
+
+    airborne = False
 
 
 @unittest.skipIf(cv2 is None, "opencv-contrib-python is required for fake camera and visual detection tests")
@@ -119,6 +155,32 @@ class FakeAdapterTestCase(unittest.TestCase):
 
         self.assertFalse(result["found"])
         self.assertEqual(drone.last_rc_command, (3, 4, 0, -2))
+
+    @unittest.skipUnless(
+        cv2 is not None and hasattr(cv2, "aruco"),
+        "OpenCV ArUco support is required",
+    )
+    def test_fake_aruco_frame_is_detected(self) -> None:
+        config = {
+            "vision": {
+                "detector_type": "aruco",
+                "aruco_dictionary": "DICT_4X4_50",
+                "target_marker_id": 23,
+                "min_marker_area": 100,
+            }
+        }
+        drone = FakeDroneAdapter(
+            verbose_rc=False,
+            detector_type="aruco",
+            aruco_dictionary="DICT_4X4_50",
+            target_marker_id=23,
+        )
+        detector = ArucoTargetDetector.from_config(config)
+
+        result = detector.detect(drone.get_frame())
+
+        self.assertTrue(result["found"])
+        self.assertEqual(result["marker_id"], 23)
 
 
 class FollowControllerTestCase(unittest.TestCase):
@@ -217,7 +279,28 @@ class FollowControllerTestCase(unittest.TestCase):
 
         self.assertLess(command.forward_backward, 0)
 
-    def test_large_horizontal_error_suppresses_forward(self) -> None:
+    def test_distance_control_uses_full_speed_outside_hover_band(self) -> None:
+        controller = FollowController.from_config(
+            safety_manager=build_safety(max_rc_speed=35),
+            config={
+                "target_area_ratio_min": 0.030,
+                "target_area_ratio_max": 0.080,
+                "minimum_forward_speed": 12,
+                "maximum_forward_speed": 35,
+            },
+        )
+
+        far = controller.compute_command(
+            {"found": True, "center": (320, 240), "area": 0.020 * 640 * 480}, 640, 480
+        )
+        close = controller.compute_command(
+            {"found": True, "center": (320, 240), "area": 0.090 * 640 * 480}, 640, 480
+        )
+
+        self.assertEqual(far.forward_backward, 35)
+        self.assertEqual(close.forward_backward, -35)
+
+    def test_horizontal_error_allows_alignment_speed_forward_while_turning(self) -> None:
         controller = self.build_controller()
         centered_far = controller.compute_command(
             {"found": True, "center": (320, 240), "area": 1000, "bbox": (305, 225, 30, 30)},
@@ -230,7 +313,9 @@ class FollowControllerTestCase(unittest.TestCase):
             480,
         )
 
-        self.assertLess(large_error_far.forward_backward, centered_far.forward_backward)
+        self.assertGreater(centered_far.forward_backward, 0)
+        self.assertEqual(large_error_far.forward_backward, controller.forward_speed_while_aligning)
+        self.assertLess(large_error_far.yaw, 0)
 
     def test_small_horizontal_error_allows_forward(self) -> None:
         controller = self.build_controller()
@@ -241,6 +326,132 @@ class FollowControllerTestCase(unittest.TestCase):
         )
 
         self.assertGreater(command.forward_backward, 0)
+
+    def test_vertical_error_allows_alignment_speed_forward(self) -> None:
+        controller = self.build_controller()
+        command = controller.compute_command(
+            {"found": True, "center": (320, 100), "area": 1000, "bbox": (305, 85, 30, 30)},
+            640,
+            480,
+        )
+
+        self.assertGreater(command.up_down, 0)
+        self.assertEqual(command.forward_backward, controller.forward_speed_while_aligning)
+
+    def test_yaw_and_vertical_adjustments_can_run_together(self) -> None:
+        controller = self.build_controller()
+        command = controller.compute_command(
+            {"found": True, "center": (120, 100), "area": 10000, "bbox": (90, 70, 60, 60)},
+            640,
+            480,
+        )
+
+        self.assertLess(command.yaw, 0)
+        self.assertGreater(command.up_down, 0)
+        self.assertEqual(command.forward_backward, 0)
+
+    def test_three_axis_alignment_uses_fixed_forward_speed(self) -> None:
+        controller = self.build_controller()
+        command = controller.compute_command(
+            {"found": True, "center": (120, 100), "area": 1000, "bbox": (105, 85, 30, 30)},
+            640,
+            480,
+        )
+
+        self.assertLess(command.yaw, 0)
+        self.assertGreater(command.up_down, 0)
+        self.assertEqual(command.forward_backward, controller.forward_speed_while_aligning)
+
+    def test_configured_vertical_and_alignment_speeds_are_applied(self) -> None:
+        controller = FollowController.from_config(
+            safety_manager=build_safety(max_rc_speed=35),
+            config={
+                "vertical_speed": 20,
+                "forward_speed_while_aligning": 16,
+                "target_area_ratio_min": 0.03,
+                "target_area_ratio_max": 0.08,
+            },
+        )
+        command = controller.compute_command(
+            {"found": True, "center": (120, 100), "area": 1000}, 640, 480
+        )
+
+        self.assertEqual(command.up_down, 20)
+        self.assertEqual(command.forward_backward, 16)
+
+    def test_lock_hovers_after_target_is_stable_for_configured_frames(self) -> None:
+        controller = FollowController.from_config(
+            safety_manager=build_safety(),
+            config={
+                "target_area_ratio_min": 0.02,
+                "target_area_ratio_max": 0.04,
+                "target_lock_stable_frames": 2,
+                "target_lock_exit_area_ratio_min": 0.015,
+                "target_lock_exit_area_ratio_max": 0.05,
+                "target_lock_exit_horizontal_dead_zone_ratio": 0.12,
+                "target_lock_exit_vertical_dead_zone_ratio": 0.15,
+            },
+        )
+        result = {"found": True, "is_predicted": False, "center": (320, 240), "area": 9000}
+
+        controller.compute_command(result, 640, 480)
+        command = controller.compute_command(result, 640, 480)
+
+        self.assertEqual(command.as_tuple(), (0, 0, 0, 0))
+        self.assertEqual(controller.last_debug.target_state, "LOCKED")
+
+    def test_locked_target_ignores_small_motion_but_resumes_following_when_moved(self) -> None:
+        controller = FollowController.from_config(
+            safety_manager=build_safety(),
+            config={
+                "target_area_ratio_min": 0.02,
+                "target_area_ratio_max": 0.04,
+                "target_lock_stable_frames": 1,
+                "target_lock_exit_area_ratio_min": 0.015,
+                "target_lock_exit_area_ratio_max": 0.05,
+                "target_lock_exit_horizontal_dead_zone_ratio": 0.12,
+                "target_lock_exit_vertical_dead_zone_ratio": 0.15,
+            },
+        )
+        stable = {"found": True, "is_predicted": False, "center": (320, 240), "area": 9000}
+        controller.compute_command(stable, 640, 480)
+
+        small_motion = controller.compute_command(
+            {"found": True, "is_predicted": False, "center": (350, 240), "area": 9000}, 640, 480
+        )
+        moved = controller.compute_command(
+            {"found": True, "is_predicted": False, "center": (320, 240), "area": 3000}, 640, 480
+        )
+
+        self.assertEqual(small_motion.as_tuple(), (0, 0, 0, 0))
+        self.assertEqual(controller.last_debug.target_state, "FOUND")
+        self.assertGreater(moved.forward_backward, 0)
+
+    def test_predicted_detection_cannot_enter_lock(self) -> None:
+        controller = FollowController.from_config(
+            safety_manager=build_safety(),
+            config={"target_area_ratio_min": 0.02, "target_area_ratio_max": 0.04, "target_lock_stable_frames": 1},
+        )
+        command = controller.compute_command(
+            {"found": True, "is_predicted": True, "center": (320, 240), "area": 9000}, 640, 480
+        )
+
+        self.assertEqual(command.as_tuple(), (0, 0, 0, 0))
+        self.assertEqual(controller.last_debug.target_state, "FOUND")
+
+    def test_predicted_detection_releases_existing_lock(self) -> None:
+        controller = FollowController.from_config(
+            safety_manager=build_safety(),
+            config={"target_area_ratio_min": 0.02, "target_area_ratio_max": 0.04, "target_lock_stable_frames": 1},
+        )
+        controller.compute_command(
+            {"found": True, "is_predicted": False, "center": (320, 240), "area": 9000}, 640, 480
+        )
+        controller.compute_command(
+            {"found": True, "is_predicted": True, "center": (320, 240), "area": 9000}, 640, 480
+        )
+
+        self.assertEqual(controller.last_debug.target_state, "FOUND")
 
     def test_lost_target_outputs_zero(self) -> None:
         controller = self.build_controller()
@@ -330,42 +541,93 @@ class FollowControllerTestCase(unittest.TestCase):
         self.assertGreater(command.yaw, 0)
 
 
-class AgentFollowSessionTestCase(unittest.TestCase):
-    """Verify Agent follow session safety-state behavior without GUI."""
+class ConsoleFollowSessionTestCase(unittest.TestCase):
+    """Verify Console follow session safety-state behavior without GUI."""
 
-    def test_follow_and_agent_use_shared_follow_session(self) -> None:
+    def test_follow_and_console_use_shared_follow_session(self) -> None:
         follow_source = inspect.getsource(main.run_follow)
-        agent_source = inspect.getsource(AgentTools.start_follow_task)
+        console_source = inspect.getsource(ConsoleTools.start_follow_task)
 
         self.assertIn("FollowSession", follow_source)
-        self.assertIn("FollowSession", agent_source)
+        self.assertIn("FollowSession", console_source)
+        self.assertTrue(issubclass(ConsoleFollowSession, FollowSession))
 
-    def test_agent_start_follow_task_runs_session_on_caller_thread(self) -> None:
+    def test_console_start_follow_task_runs_session_in_background(self) -> None:
         drone = FakeDroneAdapter(verbose_rc=False)
         drone.connect()
         safety = build_safety()
-        tools = AgentTools(
+        tools = ConsoleTools(
             drone=drone,
             safety_manager=safety,
             detector=TargetDetector(),
             follow_controller=FollowController(safety_manager=safety),
-            config={"display_agent_camera": False},
+            config={"display_console_camera": False},
             mode_label="FAKE",
         )
         tools.connected = True
         ImmediateSession.run_count = 0
 
-        original_session = agent_tools_module.FollowSession
-        agent_tools_module.FollowSession = ImmediateSession
+        original_session = console_tools_module.FollowSession
+        console_tools_module.FollowSession = ImmediateSession
         try:
             result = tools.start_follow_task()
+            stopped = tools.wait_for_task(timeout=1)
         finally:
-            agent_tools_module.FollowSession = original_session
+            console_tools_module.FollowSession = original_session
 
         self.assertTrue(result)
+        self.assertTrue(stopped)
         self.assertEqual(ImmediateSession.run_count, 1)
         self.assertFalse(tools.is_task_active())
         self.assertEqual(tools.current_mode, "STOPPED")
+
+    def test_console_can_stop_background_follow_task(self) -> None:
+        drone = FakeDroneAdapter(verbose_rc=False)
+        drone.connect()
+        safety = build_safety()
+        tools = ConsoleTools(
+            drone=drone,
+            safety_manager=safety,
+            detector=TargetDetector(),
+            follow_controller=FollowController(safety_manager=safety),
+            config={"display_console_camera": False},
+            mode_label="FAKE",
+        )
+        tools.connected = True
+        BlockingSession.started.clear()
+
+        original_session = console_tools_module.FollowSession
+        console_tools_module.FollowSession = BlockingSession
+        try:
+            self.assertTrue(tools.start_follow_task())
+            self.assertTrue(BlockingSession.started.wait(timeout=1))
+            self.assertTrue(tools.is_task_active())
+            tools.stop_task()
+        finally:
+            console_tools_module.FollowSession = original_session
+
+        self.assertFalse(tools.is_task_active())
+        self.assertEqual(tools.current_mode, "待机")
+
+    def test_shutdown_timeout_attempts_landing_without_airborne_flag(self) -> None:
+        drone = FakeDroneAdapter(verbose_rc=False)
+        drone.connect()
+        drone.height_cm = 70
+        safety = build_safety()
+        tools = ConsoleTools(
+            drone=drone,
+            safety_manager=safety,
+            detector=TargetDetector(),
+            follow_controller=FollowController(safety_manager=safety),
+            config={"task_stop_timeout_seconds": 1},
+            mode_label="FAKE",
+        )
+        tools.connected = True
+        tools.wait_for_task = lambda timeout=None: False
+
+        tools._wait_for_session_shutdown(StuckSession())
+
+        self.assertEqual(drone.get_height(), 0)
 
     def test_pause_forces_zero_rc(self) -> None:
         drone = FakeDroneAdapter(verbose_rc=False)
@@ -376,7 +638,7 @@ class AgentFollowSessionTestCase(unittest.TestCase):
         session.send_command(RCCommand(12, 12, 0, 0))
 
         self.assertEqual(drone.last_rc_command, (0, 0, 0, 0))
-        self.assertEqual(session.session_state, "PAUSED")
+        self.assertEqual(session.console_state, "PAUSED")
 
     def test_emergency_stop_blocks_nonzero_rc(self) -> None:
         drone = FakeDroneAdapter(verbose_rc=False)
@@ -388,7 +650,7 @@ class AgentFollowSessionTestCase(unittest.TestCase):
 
         self.assertEqual(action, "emergency")
         self.assertEqual(drone.last_rc_command, (0, 0, 0, 0))
-        self.assertEqual(session.session_state, "EMERGENCY_STOP")
+        self.assertEqual(session.console_state, "EMERGENCY_STOP")
 
     def test_long_target_loss_enters_landing_state(self) -> None:
         drone = FakeDroneAdapter(verbose_rc=False)
@@ -404,7 +666,7 @@ class AgentFollowSessionTestCase(unittest.TestCase):
 
         self.assertEqual(action, "land")
         self.assertEqual(command.as_tuple(), (0, 0, 0, 0))
-        self.assertEqual(session.session_state, "TARGET_LOST_LANDING")
+        self.assertEqual(session.console_state, "TARGET_LOST_LANDING")
 
     def test_frame_failure_stops_with_zero_rc(self) -> None:
         drone = FakeDroneAdapter(verbose_rc=False)
@@ -423,7 +685,42 @@ class AgentFollowSessionTestCase(unittest.TestCase):
 
         session._loop()
 
-        self.assertEqual(session.session_state, "FRAME_LOST_LANDING")
+        self.assertEqual(session.console_state, "FRAME_LOST_LANDING")
+        self.assertEqual(drone.last_rc_command, (0, 0, 0, 0))
+
+    def test_height_outside_safe_range_stops_with_zero_rc(self) -> None:
+        drone = FakeDroneAdapter(verbose_rc=False)
+        drone.height_cm = 151
+        safety = build_safety()
+        session = build_session(drone, safety)
+        session.camera = type(
+            "SingleFrameCamera",
+            (),
+            {
+                "read_frame": lambda self: type(
+                    "Frame",
+                    (),
+                    {"shape": (480, 640, 3)},
+                )(),
+                "stop": lambda self: None,
+            },
+        )()
+        session.detector = type(
+            "Detector",
+            (),
+            {
+                "detect": lambda self, frame: {
+                    "found": True,
+                    "center": (320, 240),
+                    "area": 12000,
+                    "bbox": (280, 200, 80, 80),
+                },
+            },
+        )()
+
+        session._loop()
+
+        self.assertEqual(session.console_state, "HEIGHT_LIMIT_LANDING")
         self.assertEqual(drone.last_rc_command, (0, 0, 0, 0))
 
     def test_exception_cleanup_sends_zero_and_lands(self) -> None:
@@ -435,7 +732,7 @@ class AgentFollowSessionTestCase(unittest.TestCase):
             detector=TargetDetector(),
             follow_controller=FollowController(safety_manager=safety),
             config={
-                "display_agent_camera": False,
+                "display_console_camera": False,
                 "camera_width": 640,
                 "camera_height": 480,
             },
@@ -448,6 +745,24 @@ class AgentFollowSessionTestCase(unittest.TestCase):
         self.assertEqual(drone.last_rc_command, (0, 0, 0, 0))
         self.assertEqual(drone.get_height(), 0)
         self.assertFalse(session.streaming)
+
+    def test_failed_takeoff_height_still_attempts_landing(self) -> None:
+        drone = FakeDroneAdapter(verbose_rc=False)
+        safety = build_safety()
+        session = FailedHeightTakeoffSession(
+            drone=drone,
+            safety_manager=safety,
+            detector=TargetDetector(),
+            follow_controller=FollowController(safety_manager=safety),
+            config={"display_console_camera": False},
+            mode_label="FAKE",
+        )
+
+        result = session.run()
+
+        self.assertEqual(result.state, "STOPPED")
+        self.assertEqual(drone.get_height(), 0)
+        self.assertFalse(result.airborne)
 
     def test_djitellopy_only_imported_by_tello_adapter(self) -> None:
         project_root = PROJECT_ROOT

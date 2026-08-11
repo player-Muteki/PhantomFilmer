@@ -1,2 +1,15 @@
 __pycache__/
 *.py[cod]
+.pytest_cache/
+.matplotlib_cache/
+.DS_Store
+.venv/
+.claude/
+.venv*/
+.matplotlib/
+.ultralytics/
+weights/
+data/reid_target/
+data/reid_test/
+data/datasets/
+logs/

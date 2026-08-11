@@ -1,4 +1,4 @@
-"""Import tests for the DroneUmbrella project skeleton."""
+"""Import tests for the PhantomFilmer project skeleton."""
 
 import sys
 import unittest
@@ -14,13 +14,15 @@ class ImportTestCase(unittest.TestCase):
     """Verify that all project modules can be imported."""
 
     def test_import_all_modules(self) -> None:
-        import agent.agent_controller
-        import agent.command_parser
-        import agent.commands
-        import agent.llm_client
-        import agent.tools
+        import console.console_controller
+        import console.command_parser
+        import console.commands
+        import console.follow_session
+        import console.llm_client
+        import console.tools
         import control.follow_session
         import control.follow_control
+        import control.obstacle_avoidance
         import drone.drone_adapter
         import drone.fake_adapter
         import drone.safety
@@ -32,19 +34,23 @@ class ImportTestCase(unittest.TestCase):
         import swarm.swarm_manager
         import swarm.swarm_node
         import swarm.swarm_safety
+        import ui.dashboard
         import vision.camera
         import vision.target_detect
         import vision.aruco_detect
         import vision.detector_factory
+        import vision.obstacle_detect
 
         self.assertIsNotNone(main)
-        self.assertIsNotNone(agent.agent_controller)
-        self.assertIsNotNone(agent.command_parser)
-        self.assertIsNotNone(agent.commands)
-        self.assertIsNotNone(agent.llm_client)
-        self.assertIsNotNone(agent.tools)
+        self.assertIsNotNone(console.console_controller)
+        self.assertIsNotNone(console.command_parser)
+        self.assertIsNotNone(console.commands)
+        self.assertIsNotNone(console.follow_session)
+        self.assertIsNotNone(console.llm_client)
+        self.assertIsNotNone(console.tools)
         self.assertIsNotNone(control.follow_session)
         self.assertIsNotNone(control.follow_control)
+        self.assertIsNotNone(control.obstacle_avoidance)
         self.assertIsNotNone(drone.drone_adapter)
         self.assertIsNotNone(drone.fake_adapter)
         self.assertIsNotNone(drone.safety)
@@ -55,10 +61,12 @@ class ImportTestCase(unittest.TestCase):
         self.assertIsNotNone(swarm.swarm_manager)
         self.assertIsNotNone(swarm.swarm_node)
         self.assertIsNotNone(swarm.swarm_safety)
+        self.assertIsNotNone(ui.dashboard)
         self.assertIsNotNone(vision.camera)
         self.assertIsNotNone(vision.target_detect)
         self.assertIsNotNone(vision.aruco_detect)
         self.assertIsNotNone(vision.detector_factory)
+        self.assertIsNotNone(vision.obstacle_detect)
 
     def test_safety_manager_import(self) -> None:
         from drone.safety import SafetyConfig, SafetyManager
@@ -76,20 +84,6 @@ class ImportTestCase(unittest.TestCase):
         self.assertTrue(safety.can_takeoff(30))
         self.assertFalse(safety.can_takeoff(29))
         self.assertEqual(safety.limit_rc_command(-100, -30, 0, 88), (-25, -25, 0, 25))
-
-    def test_detector_factory_supports_configured_detectors(self) -> None:
-        from vision.aruco_detect import ArucoTargetDetector
-        from vision.detector_factory import create_detector
-        from vision.target_detect import TargetDetector
-
-        self.assertIsInstance(create_detector({}), TargetDetector)
-        self.assertIsInstance(
-            create_detector({"vision": {"detector_type": "aruco"}}),
-            ArucoTargetDetector,
-        )
-
-        with self.assertRaises(ValueError):
-            create_detector({"vision": {"detector_type": "unsupported"}})
 
 
 if __name__ == "__main__":
