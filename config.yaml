@@ -18,6 +18,7 @@ vision:
   min_marker_area: 300
 display_console_camera: true
 console_window_name: "PhantomFilmer Console Follow"
+task_stop_timeout_seconds: 10
 fake_camera_enabled: true
 fake_target_speed: 3
 fake_target_lost_interval_seconds: 12
@@ -57,6 +58,8 @@ swarm:
   enabled: false
   command_interval_ms: 200
   takeoff_interval_s: 1.0
+  require_formation_feedback: true
+  formation_feedback_timeout_s: 0.5
   hover_test_seconds: 10
   rc_test_seconds: 0.5
   rc_test_left_right: 0

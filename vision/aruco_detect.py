@@ -348,5 +348,5 @@ def _import_cv2():
     try:
         import cv2  # noqa: F811
     except ModuleNotFoundError as exc:
-        raise RuntimeError("缺少 opencv-python 依赖：请先安装 requirements.txt。") from exc
+        raise RuntimeError("缺少 opencv-contrib-python 依赖：请先安装 requirements.txt。") from exc
     return cv2

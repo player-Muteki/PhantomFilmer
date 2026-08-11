@@ -4,7 +4,8 @@ import inspect
 import sys
 import unittest
 from pathlib import Path
-from time import monotonic
+from threading import Event
+from time import monotonic, sleep
 
 
 try:
@@ -25,6 +26,7 @@ from control.follow_session import FollowSession
 from drone.fake_adapter import FakeDroneAdapter
 from drone.safety import SafetyConfig, SafetyManager
 import main
+from vision.aruco_detect import ArucoTargetDetector
 from vision.target_detect import TargetDetector
 
 
@@ -67,8 +69,15 @@ class RaisingLoopSession(FollowSession):
         raise RuntimeError("forced loop failure")
 
 
+class FailedHeightTakeoffSession(FollowSession):
+    """Session that reports no takeoff height after a successful command."""
+
+    def _read_height(self):
+        return 0
+
+
 class ImmediateSession:
-    """Session stub used to verify Console starts follow on the caller thread."""
+    """Session stub used to verify Console starts follow in the background."""
 
     run_count = 0
 
@@ -80,7 +89,35 @@ class ImmediateSession:
         return type("Result", (), {"state": "STOPPED", "airborne": False, "streaming": False})()
 
 
-@unittest.skipIf(cv2 is None, "opencv-python is required for fake camera and visual detection tests")
+class BlockingSession:
+    """Session stub that remains active until the console requests a stop."""
+
+    started = Event()
+
+    def __init__(self, **kwargs) -> None:
+        self.stop_event = kwargs["stop_event"]
+        self.airborne = True
+
+    def run(self):
+        BlockingSession.started.set()
+        self.stop_event.wait(timeout=2)
+        self.airborne = False
+        return type("Result", (), {"state": "STOPPED", "airborne": False, "streaming": False})()
+
+    def request_stop(self) -> None:
+        self.stop_event.set()
+
+    def request_emergency_stop(self) -> None:
+        self.stop_event.set()
+
+
+class StuckSession:
+    """Session stub used to verify timeout landing fallback."""
+
+    airborne = False
+
+
+@unittest.skipIf(cv2 is None, "opencv-contrib-python is required for fake camera and visual detection tests")
 class FakeAdapterTestCase(unittest.TestCase):
     """Verify the fake camera behaves like a real image source."""
 
@@ -118,6 +155,32 @@ class FakeAdapterTestCase(unittest.TestCase):
 
         self.assertFalse(result["found"])
         self.assertEqual(drone.last_rc_command, (3, 4, 0, -2))
+
+    @unittest.skipUnless(
+        cv2 is not None and hasattr(cv2, "aruco"),
+        "OpenCV ArUco support is required",
+    )
+    def test_fake_aruco_frame_is_detected(self) -> None:
+        config = {
+            "vision": {
+                "detector_type": "aruco",
+                "aruco_dictionary": "DICT_4X4_50",
+                "target_marker_id": 23,
+                "min_marker_area": 100,
+            }
+        }
+        drone = FakeDroneAdapter(
+            verbose_rc=False,
+            detector_type="aruco",
+            aruco_dictionary="DICT_4X4_50",
+            target_marker_id=23,
+        )
+        detector = ArucoTargetDetector.from_config(config)
+
+        result = detector.detect(drone.get_frame())
+
+        self.assertTrue(result["found"])
+        self.assertEqual(result["marker_id"], 23)
 
 
 class FollowControllerTestCase(unittest.TestCase):
@@ -489,7 +552,7 @@ class ConsoleFollowSessionTestCase(unittest.TestCase):
         self.assertIn("FollowSession", console_source)
         self.assertTrue(issubclass(ConsoleFollowSession, FollowSession))
 
-    def test_console_start_follow_task_runs_session_on_caller_thread(self) -> None:
+    def test_console_start_follow_task_runs_session_in_background(self) -> None:
         drone = FakeDroneAdapter(verbose_rc=False)
         drone.connect()
         safety = build_safety()
@@ -508,13 +571,63 @@ class ConsoleFollowSessionTestCase(unittest.TestCase):
         console_tools_module.FollowSession = ImmediateSession
         try:
             result = tools.start_follow_task()
+            stopped = tools.wait_for_task(timeout=1)
         finally:
             console_tools_module.FollowSession = original_session
 
         self.assertTrue(result)
+        self.assertTrue(stopped)
         self.assertEqual(ImmediateSession.run_count, 1)
         self.assertFalse(tools.is_task_active())
         self.assertEqual(tools.current_mode, "STOPPED")
+
+    def test_console_can_stop_background_follow_task(self) -> None:
+        drone = FakeDroneAdapter(verbose_rc=False)
+        drone.connect()
+        safety = build_safety()
+        tools = ConsoleTools(
+            drone=drone,
+            safety_manager=safety,
+            detector=TargetDetector(),
+            follow_controller=FollowController(safety_manager=safety),
+            config={"display_console_camera": False},
+            mode_label="FAKE",
+        )
+        tools.connected = True
+        BlockingSession.started.clear()
+
+        original_session = console_tools_module.FollowSession
+        console_tools_module.FollowSession = BlockingSession
+        try:
+            self.assertTrue(tools.start_follow_task())
+            self.assertTrue(BlockingSession.started.wait(timeout=1))
+            self.assertTrue(tools.is_task_active())
+            tools.stop_task()
+        finally:
+            console_tools_module.FollowSession = original_session
+
+        self.assertFalse(tools.is_task_active())
+        self.assertEqual(tools.current_mode, "待机")
+
+    def test_shutdown_timeout_attempts_landing_without_airborne_flag(self) -> None:
+        drone = FakeDroneAdapter(verbose_rc=False)
+        drone.connect()
+        drone.height_cm = 70
+        safety = build_safety()
+        tools = ConsoleTools(
+            drone=drone,
+            safety_manager=safety,
+            detector=TargetDetector(),
+            follow_controller=FollowController(safety_manager=safety),
+            config={"task_stop_timeout_seconds": 1},
+            mode_label="FAKE",
+        )
+        tools.connected = True
+        tools.wait_for_task = lambda timeout=None: False
+
+        tools._wait_for_session_shutdown(StuckSession())
+
+        self.assertEqual(drone.get_height(), 0)
 
     def test_pause_forces_zero_rc(self) -> None:
         drone = FakeDroneAdapter(verbose_rc=False)
@@ -575,6 +688,41 @@ class ConsoleFollowSessionTestCase(unittest.TestCase):
         self.assertEqual(session.console_state, "FRAME_LOST_LANDING")
         self.assertEqual(drone.last_rc_command, (0, 0, 0, 0))
 
+    def test_height_outside_safe_range_stops_with_zero_rc(self) -> None:
+        drone = FakeDroneAdapter(verbose_rc=False)
+        drone.height_cm = 151
+        safety = build_safety()
+        session = build_session(drone, safety)
+        session.camera = type(
+            "SingleFrameCamera",
+            (),
+            {
+                "read_frame": lambda self: type(
+                    "Frame",
+                    (),
+                    {"shape": (480, 640, 3)},
+                )(),
+                "stop": lambda self: None,
+            },
+        )()
+        session.detector = type(
+            "Detector",
+            (),
+            {
+                "detect": lambda self, frame: {
+                    "found": True,
+                    "center": (320, 240),
+                    "area": 12000,
+                    "bbox": (280, 200, 80, 80),
+                },
+            },
+        )()
+
+        session._loop()
+
+        self.assertEqual(session.console_state, "HEIGHT_LIMIT_LANDING")
+        self.assertEqual(drone.last_rc_command, (0, 0, 0, 0))
+
     def test_exception_cleanup_sends_zero_and_lands(self) -> None:
         drone = FakeDroneAdapter(verbose_rc=False)
         safety = build_safety()
@@ -597,6 +745,24 @@ class ConsoleFollowSessionTestCase(unittest.TestCase):
         self.assertEqual(drone.last_rc_command, (0, 0, 0, 0))
         self.assertEqual(drone.get_height(), 0)
         self.assertFalse(session.streaming)
+
+    def test_failed_takeoff_height_still_attempts_landing(self) -> None:
+        drone = FakeDroneAdapter(verbose_rc=False)
+        safety = build_safety()
+        session = FailedHeightTakeoffSession(
+            drone=drone,
+            safety_manager=safety,
+            detector=TargetDetector(),
+            follow_controller=FollowController(safety_manager=safety),
+            config={"display_console_camera": False},
+            mode_label="FAKE",
+        )
+
+        result = session.run()
+
+        self.assertEqual(result.state, "STOPPED")
+        self.assertEqual(drone.get_height(), 0)
+        self.assertFalse(result.airborne)
 
     def test_djitellopy_only_imported_by_tello_adapter(self) -> None:
         project_root = PROJECT_ROOT

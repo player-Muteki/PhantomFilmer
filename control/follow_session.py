@@ -1,7 +1,7 @@
 """Shared single-drone visual follow session."""
 
 from dataclasses import dataclass
-from threading import Event
+from threading import Event, Lock
 from time import monotonic, sleep
 from typing import Any, Dict, Optional, Tuple
 
@@ -52,6 +52,7 @@ class FollowSession:
         self.state_label = state_label
         self.allow_pause = allow_pause
         self.stop_event = stop_event or Event()
+        self._lifecycle_lock = Lock()
         self.display_enabled = bool(config.get("display_console_camera", True))
         self.frame_failure_limit = int(config.get("frame_failure_limit", 30))
         self.control_interval = self._read_control_interval(config)
@@ -81,20 +82,30 @@ class FollowSession:
         """Start stream, take off, show the follow window, and clean up safely."""
         try:
             self._reset_tracking_state()
-            self._start_camera()
-            self.drone.takeoff()
+            with self._lifecycle_lock:
+                if self.stop_event.is_set():
+                    self.session_state = "STOPPED"
+                    return FollowSessionResult(
+                        state=self.session_state,
+                        airborne=self.airborne,
+                        streaming=self.streaming,
+                    )
+                self._start_camera()
+                self.drone.takeoff()
+                self.airborne = True
             sleep(2)
             height = self._read_height()
             if height is not None and height < 10:
                 print("未检测到起飞高度，跟随任务未启动。")
                 self.session_state = "STOPPED"
+                self._safe_zero_output()
+                self._safe_land()
                 return FollowSessionResult(
                     state=self.session_state,
                     airborne=self.airborne,
                     streaming=self.streaming,
                 )
 
-            self.airborne = True
             if self.pre_follow_maneuver is not None:
                 self.session_state = "FIXED_DEMO"
                 print("固定演示航线已启动；航线完成后自动进入目标跟随。")
@@ -237,16 +248,18 @@ class FollowSession:
 
     def request_stop(self) -> None:
         """Request a normal stop from outside the OpenCV window loop."""
-        if self.session_state != "EMERGENCY_STOP":
-            self.session_state = "STOPPED"
-        self.stop_event.set()
+        with self._lifecycle_lock:
+            if self.session_state != "EMERGENCY_STOP":
+                self.session_state = "STOPPED"
+            self.stop_event.set()
 
     def request_emergency_stop(self) -> None:
         """Request an emergency stop from outside the OpenCV window loop."""
-        self.emergency_stop = True
-        self.paused = False
-        self.session_state = "EMERGENCY_STOP"
-        self.stop_event.set()
+        with self._lifecycle_lock:
+            self.emergency_stop = True
+            self.paused = False
+            self.session_state = "EMERGENCY_STOP"
+            self.stop_event.set()
         self._safe_zero_output()
 
     def draw_debug_frame(
@@ -325,7 +338,12 @@ class FollowSession:
             if self.stop_event.is_set():
                 if self.emergency_stop:
                     self.session_state = "EMERGENCY_STOP"
-                elif self.session_state not in ("LOW_BATTERY_LANDING", "TARGET_LOST_LANDING", "FRAME_LOST_LANDING"):
+                elif self.session_state not in (
+                    "LOW_BATTERY_LANDING",
+                    "HEIGHT_LIMIT_LANDING",
+                    "TARGET_LOST_LANDING",
+                    "FRAME_LOST_LANDING",
+                ):
                     self.session_state = "STOPPED"
                 break
 
@@ -353,17 +371,34 @@ class FollowSession:
             if self.stop_event.is_set():
                 if self.emergency_stop:
                     self.session_state = "EMERGENCY_STOP"
-                elif self.session_state not in ("LOW_BATTERY_LANDING", "TARGET_LOST_LANDING", "FRAME_LOST_LANDING"):
+                elif self.session_state not in (
+                    "LOW_BATTERY_LANDING",
+                    "HEIGHT_LIMIT_LANDING",
+                    "TARGET_LOST_LANDING",
+                    "FRAME_LOST_LANDING",
+                ):
                     self.session_state = "STOPPED"
                 break
 
             if battery is not None and self.safety_manager.should_land(battery):
                 print(f"电量已降至 {battery}%，准备安全降落。")
                 self.session_state = "LOW_BATTERY_LANDING"
+                self._safe_zero_output()
+                break
+
+            if height is not None and not self.safety_manager.check_height(height):
+                print(
+                    f"飞行高度 {height} cm 超出安全范围 "
+                    f"[{self.safety_manager.config.min_height_cm}, "
+                    f"{self.safety_manager.config.max_height_cm}] cm，准备安全降落。"
+                )
+                self.session_state = "HEIGHT_LIMIT_LANDING"
+                self._safe_zero_output()
                 break
 
             if lost_action == "land":
                 print("目标长时间丢失，准备安全降落。")
+                self._safe_zero_output()
                 break
 
             self.send_command(command)

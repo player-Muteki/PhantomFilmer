@@ -1,3 +1,7 @@
 __pycache__/
 *.py[cod]
+.pytest_cache/
+.matplotlib_cache/
+.DS_Store
+.venv/
 .claude/

@@ -34,13 +34,20 @@ class DetectorFactoryTestCase(unittest.TestCase):
             controller = main.build_system(use_fake=True)
         self.assertIsInstance(controller.tools._detector, ArucoTargetDetector)
 
-    def test_fake_aruco_follow_exits_before_connecting(self) -> None:
-        config = {"vision": {"detector_type": "aruco"}}
-        with patch.object(main, "load_config", return_value=config), patch.object(
-            main, "create_drone_adapter"
-        ) as create_adapter:
-            self.assertEqual(main.run_follow(use_fake=True), 0)
-        create_adapter.return_value.connect.assert_not_called()
+    def test_fake_adapter_uses_selected_aruco_target(self) -> None:
+        drone = main.create_drone_adapter(
+            use_fake=True,
+            config={
+                "vision": {
+                    "detector_type": "aruco",
+                    "aruco_dictionary": "DICT_4X4_50",
+                    "target_marker_id": 23,
+                }
+            },
+        )
+
+        self.assertEqual(drone.detector_type, "aruco")
+        self.assertEqual(drone.target_marker_id, 23)
 
 
 if __name__ == "__main__":

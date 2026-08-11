@@ -1,6 +1,6 @@
 """Console tools for high-level drone task scheduling."""
 
-from threading import Event, Lock
+from threading import Event, Lock, Thread, current_thread
 from typing import Dict, Optional, Tuple
 
 from control.follow_control import FollowController
@@ -48,7 +48,13 @@ class ConsoleTools:
         self.streaming = False
         self._stop_event = Event()
         self._control_lock = Lock()
+        self._task_lock = Lock()
         self._active_session: Optional[FollowSession] = None
+        self._task_thread: Optional[Thread] = None
+        self._task_stop_timeout_seconds = max(
+            1.0,
+            float(self._config.get("task_stop_timeout_seconds", 10.0)),
+        )
 
     def connect(self) -> None:
         """Connect through the selected DroneAdapter."""
@@ -80,12 +86,12 @@ class ConsoleTools:
         )
 
     def start_follow_task(self) -> bool:
-        """Check safety, take off, and run the visual console follow session."""
+        """Check safety and start the visual follow session in the background."""
         self._require_connection()
         if not self._follow_task_allowed:
             print(self._follow_task_block_reason or "当前配置不允许启动跟随任务。")
             return False
-        if self.airborne or self._active_session is not None:
+        if self.airborne or self.is_task_active():
             print("任务已经在运行，请先停止当前任务。")
             return False
 
@@ -108,28 +114,43 @@ class ConsoleTools:
             allow_pause=True,
             stop_event=self._stop_event,
         )
-        self._active_session = session
-        self.current_mode = "跟随任务"
-        self._stop_event.clear()
-
+        task_thread = Thread(
+            target=self._run_follow_session,
+            args=(session,),
+            name="PhantomFilmerFollow",
+            daemon=False,
+        )
+        with self._task_lock:
+            self._active_session = session
+            self._task_thread = task_thread
+            self.current_mode = "跟随任务"
+            self._stop_event.clear()
+        authorize_takeoff = getattr(self._drone, "authorize_next_takeoff", None)
+        if callable(authorize_takeoff):
+            authorize_takeoff()
         try:
-            result = session.run()
-            self.airborne = result.airborne
-            self.streaming = result.streaming
-            self.current_mode = result.state
-            print(f"控制台跟随任务结束，当前状态：{self.current_mode}")
-            return result.state not in ("EMERGENCY_STOP", "FRAME_LOST_LANDING")
+            task_thread.start()
         except Exception:
-            self.current_mode = "异常保护"
+            with self._task_lock:
+                self._active_session = None
+                self._task_thread = None
+                self.current_mode = "异常保护"
             raise
-        finally:
-            self.airborne = False
-            self.streaming = False
-            self._active_session = None
+        return True
 
     def is_task_active(self) -> bool:
         """Return whether a visual follow session is currently active."""
-        return self._active_session is not None
+        with self._task_lock:
+            return self._active_session is not None
+
+    def wait_for_task(self, timeout: Optional[float] = None) -> bool:
+        """Wait for the current background task and report whether it stopped."""
+        with self._task_lock:
+            task_thread = self._task_thread
+        if task_thread is None or task_thread is current_thread():
+            return not self.is_task_active()
+        task_thread.join(timeout=timeout)
+        return not task_thread.is_alive()
 
     def start_task_after_confirmation(self) -> bool:
         """Compatibility wrapper for starting the visual follow task."""
@@ -147,30 +168,31 @@ class ConsoleTools:
 
     def stop_task(self) -> None:
         """Stop following and land safely."""
-        active_session = self._active_session
+        with self._task_lock:
+            active_session = self._active_session
         self._stop_event.set()
         if active_session is not None and hasattr(active_session, "request_stop"):
             active_session.request_stop()
         self._safe_zero_output()
-        if self.airborne:
-            self._safe_land()
-        self._stop_stream()
+        self._wait_for_session_shutdown(active_session)
         self.current_mode = "待机" if self.connected else "未连接"
         print("当前任务已停止，无人机已降落。")
 
     def emergency_stop(self) -> None:
         """Immediately stop follow output and request the active task to land."""
-        active_session = self._active_session
+        with self._task_lock:
+            active_session = self._active_session
         self._stop_event.set()
         if active_session is not None and hasattr(active_session, "request_emergency_stop"):
             active_session.request_emergency_stop()
         self._safe_zero_output()
+        self._wait_for_session_shutdown(active_session)
         self.current_mode = "急停"
-        print("急停已执行：当前控制输出已清零，跟随任务已停止。")
+        print("急停已执行：当前控制输出已清零，跟随任务已停止并降落。")
 
     def close(self) -> None:
         """Stop active work, land if needed, and release adapter resources."""
-        if self._active_session is not None or self.airborne:
+        if self.is_task_active() or self.airborne:
             self.stop_task()
         else:
             self._stop_event.set()
@@ -197,6 +219,41 @@ class ConsoleTools:
         with self._control_lock:
             if not self._stop_event.is_set() or limited == (0, 0, 0, 0):
                 self._drone.move_rc(*limited)
+
+    def _run_follow_session(self, session: FollowSession) -> None:
+        """Run one follow session and publish its final state to the console."""
+        try:
+            result = session.run()
+            self.airborne = result.airborne
+            self.streaming = result.streaming
+            self.current_mode = result.state
+            print(f"控制台跟随任务结束，当前状态：{self.current_mode}")
+        except Exception as exc:
+            self.current_mode = "异常保护"
+            print(f"控制台跟随任务异常结束：{exc}")
+        finally:
+            self.airborne = False
+            self.streaming = False
+            revoke_takeoff = getattr(self._drone, "revoke_takeoff_authorization", None)
+            if callable(revoke_takeoff):
+                revoke_takeoff()
+            with self._task_lock:
+                if self._active_session is session:
+                    self._active_session = None
+
+    def _wait_for_session_shutdown(self, active_session: Optional[FollowSession]) -> None:
+        """Wait for normal cleanup, then force a landing if shutdown stalls."""
+        if self.wait_for_task(timeout=self._task_stop_timeout_seconds):
+            return
+        print("跟随任务停止超时，正在执行强制降落保护。")
+        try:
+            self._drone.land()
+        except RuntimeError as exc:
+            print(f"强制降落失败：{exc}")
+        finally:
+            if active_session is not None:
+                active_session.airborne = False
+            self.airborne = False
 
     def _safe_zero_output(self) -> None:
         """Send a safety-limited zero command when connected."""

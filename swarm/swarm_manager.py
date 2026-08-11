@@ -6,7 +6,7 @@ from typing import Callable, Dict, Iterable, List, Optional, Tuple, Union
 
 from control.follow_control import RCCommand
 
-from .formation_control import FormationController
+from .formation_control import FormationController, FormationCorrection
 from .swarm_node import NodeStatus, SwarmDroneNode
 from .swarm_safety import RC_Tuple, SwarmSafetyManager
 
@@ -60,17 +60,36 @@ class SwarmManager:
         self.takeoff_interval_s = max(0.0, float(takeoff_interval_s))
 
     @classmethod
-    def from_config(cls, config: dict, nodes: Iterable[SwarmDroneNode]) -> "SwarmManager":
+    def from_config(
+        cls,
+        config: dict,
+        nodes: Iterable[SwarmDroneNode],
+        require_formation_feedback: Optional[bool] = None,
+    ) -> "SwarmManager":
         """Build manager from config.yaml data and supplied nodes."""
         swarm = config.get("swarm", {}) if isinstance(config, dict) else {}
         if not isinstance(swarm, dict):
             swarm = {}
+        feedback_required = bool(swarm.get("require_formation_feedback", True))
+        if require_formation_feedback is not None:
+            feedback_required = bool(require_formation_feedback)
         return cls(
             nodes=nodes,
             safety_manager=SwarmSafetyManager.from_dict(config),
+            formation_controller=FormationController(
+                require_feedback=feedback_required,
+                feedback_timeout_s=float(swarm.get("formation_feedback_timeout_s", 0.5)),
+            ),
             command_interval_ms=int(swarm.get("command_interval_ms", 200)),
             takeoff_interval_s=float(swarm.get("takeoff_interval_s", 1.0)),
         )
+
+    def update_formation_feedback(
+        self,
+        corrections: Dict[str, FormationCorrection],
+    ) -> None:
+        """Provide fresh per-node corrections from an external position tracker."""
+        self.formation_controller.update_feedback(corrections)
 
     def connect_all(self) -> SwarmBatchResult:
         """Connect every node and keep per-node failures isolated."""
@@ -114,7 +133,13 @@ class SwarmManager:
 
     def send_rc_all(self, command: Union[RCCommand, RC_Tuple], duration_s: float = 0.0) -> SwarmBatchResult:
         """Send a base command to all nodes after formation and safety checks."""
-        commands = self.formation_controller.distribute(self.nodes.keys(), self._as_tuple(command))
+        base_command = self._as_tuple(command)
+        if (
+            not self.safety_manager.is_zero_command(base_command)
+            and not self.formation_controller.has_fresh_feedback(self.nodes.keys())
+        ):
+            return self.zero_rc_all(action="send_rc_all_feedback_blocked")
+        commands = self.formation_controller.distribute(self.nodes.keys(), base_command)
         nonzero_requested = any(not self.safety_manager.is_zero_command(cmd) for cmd in commands.values())
         if nonzero_requested and not self.safety_manager.allow_nonzero_rc(self.nodes.values()):
             return self.zero_rc_all(action="send_rc_all_blocked")
@@ -134,6 +159,11 @@ class SwarmManager:
         if drone_id not in self.nodes:
             raise KeyError(f"unknown swarm drone id: {drone_id}")
         rc_command = self._as_tuple(command)
+        if (
+            not self.safety_manager.is_zero_command(rc_command)
+            and not self.formation_controller.has_fresh_feedback(self.nodes.keys())
+        ):
+            return self.zero_rc_all(action="send_node_rc_feedback_blocked")
         if not self.safety_manager.is_zero_command(rc_command) and not self.safety_manager.allow_nonzero_rc(
             self.nodes.values()
         ):
@@ -155,13 +185,19 @@ class SwarmManager:
         zero_result = self.zero_rc_all(action="emergency_zero_rc")
         results = dict(zero_result.results)
         for node in self.nodes.values():
+            zero_action = results.get(node.drone_id)
             node_start = monotonic()
             status = node.stop()
             elapsed = self._elapsed_ms(node_start)
-            error = status.last_error
+            errors = []
+            if zero_action is not None and zero_action.error:
+                errors.append(zero_action.error)
+            if status.last_error:
+                errors.append(status.last_error)
+            error = "; ".join(errors) if errors else None
             results[node.drone_id] = SwarmActionResult(
                 drone_id=node.drone_id,
-                success=error is None,
+                success=(zero_action is None or zero_action.success) and error is None,
                 action="emergency_stop_all",
                 elapsed_ms=elapsed,
                 status=status,

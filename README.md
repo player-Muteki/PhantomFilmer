@@ -5,7 +5,7 @@
 ## 依赖
 
 - `djitellopy` — 无人机通信控制
-- `opencv-python` — 摄像头图像处理与目标检测
+- `opencv-contrib-python` — 摄像头图像处理、目标检测与 ArUco 支持
 - `numpy` — 数值计算
 - `pyyaml` — 配置文件读取
 - `matplotlib` — 四机编队仿真可视化
@@ -15,16 +15,19 @@
 `DroneAdapter` 是统一抽象基类，定义 `connect/takeoff/land/stop/move_rc/get_battery/get_height/stream_on/stream_off/get_frame` 接口。其他模块只依赖此接口，不直接导入硬件 SDK。
 
 - **TelloDroneAdapter** — RoboMaster TT / Tello Talent 真机实现，唯一直接导入 `djitellopy` 的模块。
-- **FakeDroneAdapter** — 模拟实现，生成动态 OpenCV 测试画面（红色目标左右/上下移动、大小周期变化、间歇丢失），无真机时使用 `--fake` 启用。
+- **FakeDroneAdapter** — 模拟实现，按检测器配置生成动态红色目标或 ArUco 标记，支持移动、大小变化和间歇丢失；无真机时使用 `--fake` 启用。
 
 如需接入其他型号无人机，新增 `DroneAdapter` 子类即可。
 
 ## 运行
 
 ```bash
-pip install -r requirements.txt
-python3 main.py --mode <mode> [--fake]
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python main.py --mode <mode> [--fake]
 ```
+
+开发和测试环境使用 `requirements-dev.txt`。OpenCV 核心包与 contrib 包固定为同一版本，并让 contrib 最后安装，以兼容 `djitellopy` 的传递依赖和 ArUco 模块。
 
 ### 模式列表
 
@@ -58,8 +61,10 @@ python3 main.py --mode <mode> [--fake]
 
 `config.yaml` 中 `vision.detector_type` 决定检测器类型：
 
-- **`red`**（默认）— 红色目标检测，使用 HSV 颜色阈值 + RGB 主色过滤
+- **`red`** — 红色目标检测，使用 HSV 颜色阈值 + RGB 主色过滤
 - **`aruco`** — ArUco 二维码检测（默认 DICT_4X4_50, ID 23），支持坐标/面积平滑和临时丢失容忍
+
+当前项目配置选择 `aruco`；检测器工厂在未配置类型时默认使用 `red`。
 
 ```bash
 # 打印 ArUco 标记
@@ -86,14 +91,14 @@ python3 vision/generate_marker.py
 `SafetyManager` 负责单机安全检查：
 - 起飞前电量低于 `min_battery_takeoff` 禁止起飞
 - 飞行中电量低于 `low_battery_land` 建议降落
+- 飞行高度超出 `[min_height_cm, max_height_cm]` 时立即清零并进入降落流程
 - `limit_rc_command` 每通道钳位到 `[-max_rc_speed, max_rc_speed]`
-- `check_height` 确保高度在 `[min_height_cm, max_height_cm]`
 
 ## 控制台
 
 ```bash
-python3 main.py --mode console      # 真机
-python3 main.py --mode console --fake  # 模拟
+.venv/bin/python main.py --mode console      # 真机
+.venv/bin/python main.py --mode console --fake  # 模拟
 ```
 
 自然语言控制台采用两层命令解析：
@@ -104,6 +109,7 @@ python3 main.py --mode console --fake  # 模拟
 所有解析结果映射为白名单动作：`GET_STATUS`、`START_FOLLOW`、`STOP_TASK`、`EMERGENCY_STOP`、`EXIT`、`UNKNOWN`。
 
 控制台只能通过 `ConsoleTools` 调用任务级工具，`ConsoleTools` 内部经过 `SafetyManager` 安全检查。大模型不直接操控飞控。
+跟随任务在后台线程运行，控制台可继续接收停止、急停和退出命令；这些命令会清零输出、请求会话结束并等待降落清理完成。
 
 启用 LLM 分类需设置：
 ```yaml
@@ -128,11 +134,15 @@ llm_model: "deepseek-chat"
 无真机时通过 `--fake` 启用 `FakeDroneAdapter`：
 
 - 返回模拟电量（80%）和高度
-- 生成包含动态红色目标的 OpenCV 测试画面
+- 按 `vision.detector_type` 生成动态红色目标或 ArUco 标记
 - 目标会左右/上下移动、大小周期变化、间歇丢失
 - 画面仍然经过 `TargetDetector.detect`、`FollowController`、`SafetyManager` 和 `FakeDroneAdapter.move_rc`，不是直接伪造识别结果
 
-Fake 模式无法验证 ArUco 识别（Fake 画面只生成红色目标）。使用 ArUco 时需使用真实摄像头。
+Fake ArUco 画面会经过真实的 `ArucoTargetDetector`，适合验证软件链路；光照、运动模糊、无线视频延迟等仍需真机测试。
+
+## 编队反馈保护
+
+真机 `send_rc_all` 默认要求外部位置跟踪器为所有节点提供新鲜的编队修正，反馈超过 `formation_feedback_timeout_s` 或缺少任意节点时，非零编队指令会被清零并拒绝。Fake Swarm 为便于软件测试可跳过该门禁。
 
 ## 仪表盘
 
@@ -141,5 +151,5 @@ Fake 模式无法验证 ArUco 识别（Fake 画面只生成红色目标）。使
 ## 测试
 
 ```bash
-python3 -m pytest tests/
+.venv/bin/python -m pytest tests/
 ```

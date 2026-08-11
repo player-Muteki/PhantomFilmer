@@ -199,14 +199,6 @@ def selected_detector_type(config: dict) -> str:
     return str(vision.get("detector_type", "red")).strip().lower()
 
 
-def fake_aruco_message() -> str:
-    """Explain why the red-only fake camera cannot validate ArUco following."""
-    return (
-        "当前 FakeDroneAdapter 只生成红色目标，无法验证 ArUco 识别。"
-        "请使用红色 detector_type，或使用真实摄像头/离线 ArUco 图像测试。"
-    )
-
-
 def create_drone_adapter(
     use_fake: bool,
     verbose_fake_rc: bool = True,
@@ -215,6 +207,9 @@ def create_drone_adapter(
     """Create either the fake drone adapter or the real Tello adapter."""
     if use_fake:
         config = config or {}
+        vision_config = config.get("vision", {})
+        if not isinstance(vision_config, dict):
+            vision_config = {}
         return FakeDroneAdapter(
             verbose_rc=verbose_fake_rc,
             camera_width=int(config.get("camera_width", 640)),
@@ -226,6 +221,11 @@ def create_drone_adapter(
             target_lost_duration_seconds=float(
                 config.get("fake_target_lost_duration_seconds", 2)
             ),
+            detector_type=selected_detector_type(config),
+            aruco_dictionary=str(
+                vision_config.get("aruco_dictionary", "DICT_4X4_50")
+            ),
+            target_marker_id=int(vision_config.get("target_marker_id", 23)),
         )
     return TelloDroneAdapter()
 
@@ -248,8 +248,6 @@ def build_system(use_fake: bool = False) -> ConsoleController:
         mode_label="FAKE" if use_fake else "REAL",
         frame_width=int(config.get("camera_width", 640)),
         frame_height=int(config.get("camera_height", 480)),
-        follow_task_allowed=not (use_fake and selected_detector_type(config) == "aruco"),
-        follow_task_block_reason=fake_aruco_message(),
     )
     llm_client = LLMClient(
         base_url=str(config.get("llm_base_url", DEFAULT_BASE_URL)),
@@ -303,17 +301,13 @@ def run_camera(use_fake: bool = False) -> int:
     try:
         import cv2
     except ModuleNotFoundError:
-        print("缺少 opencv-python 依赖：请先安装 requirements.txt。")
+        print("缺少 opencv-contrib-python 依赖：请先安装 requirements.txt。")
         return 1
 
     config = load_config()
     drone = create_drone_adapter(use_fake, config=config)
     camera = None
     detector = create_detector(config)
-
-    if use_fake and selected_detector_type(config) == "aruco":
-        print(fake_aruco_message())
-        return 0
 
     try:
         print("正在连接模拟无人机..." if use_fake else "正在连接 RoboMaster TT / Tello...")
@@ -367,7 +361,7 @@ def run_camera_debug(use_fake: bool = False) -> int:
     try:
         import cv2
     except ModuleNotFoundError:
-        print("缺少 opencv-python 依赖：请先安装 requirements.txt。")
+        print("缺少 opencv-contrib-python 依赖：请先安装 requirements.txt。")
         return 1
 
     config = load_config()
@@ -484,10 +478,6 @@ def run_follow(use_fake: bool = False) -> int:
     detector = create_detector(config)
     controller = FollowController.from_config(safety_manager=safety, config=config)
 
-    if use_fake and selected_detector_type(config) == "aruco":
-        print(fake_aruco_message())
-        return 0
-
     try:
         print("正在连接模拟无人机..." if use_fake else "正在连接 RoboMaster TT / Tello...")
         drone.connect()
@@ -536,10 +526,6 @@ def run_fixed_demo(use_fake: bool = False) -> int:
     drone = create_drone_adapter(use_fake, config=config)
     detector = create_detector(config)
     controller = FollowController.from_config(safety_manager=safety, config=config)
-
-    if use_fake and selected_detector_type(config) == "aruco":
-        print(fake_aruco_message())
-        return 0
 
     try:
         print("正在连接模拟无人机..." if use_fake else "正在连接 RoboMaster TT / Tello...")
@@ -591,7 +577,7 @@ def run_follow_dry_run(use_fake: bool = False) -> int:
     try:
         import cv2
     except ModuleNotFoundError:
-        print("缺少 opencv-python 依赖：请先安装 requirements.txt。")
+        print("缺少 opencv-contrib-python 依赖：请先安装 requirements.txt。")
         return 1
 
     config = load_config()
@@ -601,10 +587,6 @@ def run_follow_dry_run(use_fake: bool = False) -> int:
     detector = create_detector(config)
     controller = FollowController.from_config(safety_manager=safety, config=config)
     control_interval = read_control_interval(config)
-
-    if use_fake and selected_detector_type(config) == "aruco":
-        print(fake_aruco_message())
-        return 0
 
     try:
         print("正在连接模拟无人机..." if use_fake else "正在连接 RoboMaster TT / Tello...")
@@ -801,7 +783,11 @@ def build_swarm_manager(config: dict, use_fake: bool = False) -> SwarmManager:
         nodes = create_fake_swarm_nodes(configs)
     else:
         nodes = create_real_swarm_nodes(configs)
-    return SwarmManager.from_config(config, nodes)
+    return SwarmManager.from_config(
+        config,
+        nodes,
+        require_formation_feedback=False if use_fake else None,
+    )
 
 
 def print_swarm_batch(result: SwarmBatchResult) -> None:

@@ -17,6 +17,15 @@ class TelloDroneAdapter(DroneAdapter):
         self._tello: Optional[Any] = None
         self.connected = False
         self.streaming = False
+        self._takeoff_authorized = False
+
+    def authorize_next_takeoff(self) -> None:
+        """Skip the adapter prompt once after an outer workflow confirms safety."""
+        self._takeoff_authorized = True
+
+    def revoke_takeoff_authorization(self) -> None:
+        """Discard an unused outer-workflow takeoff authorization."""
+        self._takeoff_authorized = False
 
     def connect(self) -> None:
         """Connect to the drone over its Wi-Fi network."""
@@ -37,9 +46,12 @@ class TelloDroneAdapter(DroneAdapter):
     def takeoff(self) -> None:
         """Take off only after the user explicitly confirms the action."""
         self._require_connection()
-        answer = input("即将起飞，请确认周围安全并输入 YES 继续：").strip()
-        if answer != "YES":
-            raise RuntimeError("已取消起飞：未收到用户确认。")
+        if self._takeoff_authorized:
+            self._takeoff_authorized = False
+        else:
+            answer = input("即将起飞，请确认周围安全并输入 YES 继续：").strip()
+            if answer != "YES":
+                raise RuntimeError("已取消起飞：未收到用户确认。")
         try:
             self._tello.takeoff()
         except Exception as exc:
@@ -71,6 +83,7 @@ class TelloDroneAdapter(DroneAdapter):
         finally:
             self.connected = False
             self.streaming = False
+            self._takeoff_authorized = False
 
     def move_rc(self, left_right: int, forward_backward: int, up_down: int, yaw: int) -> None:
         """Send remote-control velocity values to the aircraft."""
@@ -124,7 +137,7 @@ class TelloDroneAdapter(DroneAdapter):
         try:
             import cv2
         except ModuleNotFoundError as exc:
-            raise RuntimeError("缺少 opencv-python 依赖：请先安装 requirements.txt。") from exc
+            raise RuntimeError("缺少 opencv-contrib-python 依赖：请先安装 requirements.txt。") from exc
         try:
             frame_reader = self._tello.get_frame_read()
             frame = frame_reader.frame

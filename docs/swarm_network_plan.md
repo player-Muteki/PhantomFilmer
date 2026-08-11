@@ -4,6 +4,8 @@
 
 当前 `swarm/` 已建立 `SwarmDroneNode`、`SwarmManager`、`SwarmSafetyManager`、Fake Swarm 和真机节点工厂。现阶段真机推进顺序仍然是网络与状态读取优先，不起飞、不转桨；确认四机 IP 和端口后，再进入单机、两机、四机飞行测试。
 
+真机编队非零指令默认启用反馈门禁：外部位置跟踪器必须通过 `SwarmManager.update_formation_feedback()` 提供覆盖所有节点、且未超过 `formation_feedback_timeout_s` 的修正值。反馈缺失或过期时只允许零 RC、降落和急停操作。
+
 ## 四台 TT 联网目标
 
 四台 RoboMaster TT 需要进入同一个局域网，并且每台都有唯一身份：
