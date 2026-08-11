@@ -92,6 +92,11 @@ class PersonReIDDetectorTestCase(unittest.TestCase):
         result = detector.detect(self.frame)
         self.assertFalse(result["found"])
         self.assertAlmostEqual(result["similarity"], 0.0)
+        self.assertEqual(result["candidate_count"], 1)
+        self.assertEqual(len(result["candidates"]), 1)
+        self.assertEqual(result["candidates"][0]["bbox"], (5, 10, 30, 80))
+        self.assertAlmostEqual(result["candidates"][0]["similarity"], 0.0)
+        self.assertEqual(result["similarity_threshold"], 0.7)
 
     def test_ambiguous_top_two_people_are_rejected(self):
         detector = build_detector(
@@ -105,6 +110,60 @@ class PersonReIDDetectorTestCase(unittest.TestCase):
         result = detector.detect(self.frame)
         self.assertFalse(result["found"])
         self.assertTrue(result["ambiguous"])
+        self.assertEqual(result["candidate_count"], 2)
+        self.assertEqual(len(result["candidates"]), 2)
+
+    def test_debug_overlay_draws_every_yolo_candidate_and_scores(self):
+        detector = build_detector(
+            [
+                {"bbox_xyxy": (5, 10, 35, 90)},
+                {"bbox_xyxy": (60, 20, 110, 90)},
+            ],
+            [[0.6, 0.8], [0.8, 0.6]],
+            similarity_threshold=0.9,
+        )
+        result = detector.detect(self.frame)
+        rectangles = []
+        labels = []
+        fake_cv2 = SimpleNamespace(
+            FONT_HERSHEY_SIMPLEX=0,
+            line=lambda *args, **kwargs: None,
+            rectangle=lambda *args, **kwargs: rectangles.append(args),
+            putText=lambda image, label, *args, **kwargs: labels.append(label),
+        )
+
+        with patch.dict(sys.modules, {"cv2": fake_cv2}):
+            detector.draw_debug(self.frame, result)
+
+        self.assertEqual(len(rectangles), 2)
+        self.assertTrue(any("#1 ReID=" in label and "AREA=" in label for label in labels))
+        self.assertTrue(any("#2 ReID=" in label and "AREA=" in label for label in labels))
+        self.assertTrue(
+            any("YOLO people=2" in label and "threshold=0.900" in label for label in labels)
+        )
+        self.assertTrue(any(label.startswith("ReID BELOW THRESHOLD") for label in labels))
+
+    def test_candidate_area_ratio_uses_follow_distance_thresholds(self):
+        detector = build_detector(
+            [
+                {"bbox_xyxy": (0, 0, 10, 30)},
+                {"bbox_xyxy": (20, 0, 40, 30)},
+                {"bbox_xyxy": (50, 0, 80, 40)},
+            ],
+            [[1.0, 0.0], [0.8, 0.6], [0.6, 0.8]],
+            target_area_ratio_min=0.03,
+            target_area_ratio_max=0.08,
+        )
+
+        result = detector.detect(self.frame)
+
+        self.assertEqual(
+            [candidate["distance_state"] for candidate in result["candidates"]],
+            ["FAR", "OK", "NEAR"],
+        )
+        self.assertAlmostEqual(result["candidates"][0]["area_ratio"], 0.025)
+        self.assertAlmostEqual(result["candidates"][1]["area_ratio"], 0.05)
+        self.assertAlmostEqual(result["candidates"][2]["area_ratio"], 0.1)
 
     def test_temporary_loss_is_marked_predicted(self):
         person_detector = FakePersonDetector([{"bbox_xyxy": (5, 10, 35, 90)}])

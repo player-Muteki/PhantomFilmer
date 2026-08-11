@@ -20,6 +20,7 @@ class FakeDroneAdapter(DroneAdapter):
         target_speed: int = 3,
         target_lost_interval_seconds: float = 12.0,
         target_lost_duration_seconds: float = 2.0,
+        takeoff_height_cm: int = 70,
         detector_type: str = "red",
         aruco_dictionary: str = "DICT_4X4_50",
         target_marker_id: int = 23,
@@ -34,6 +35,7 @@ class FakeDroneAdapter(DroneAdapter):
         self.target_speed = target_speed
         self.target_lost_interval_seconds = target_lost_interval_seconds
         self.target_lost_duration_seconds = target_lost_duration_seconds
+        self.takeoff_height_cm = max(20, int(takeoff_height_cm))
         self.detector_type = str(detector_type).strip().lower()
         self.aruco_dictionary = str(aruco_dictionary)
         self.target_marker_id = int(target_marker_id)
@@ -49,8 +51,8 @@ class FakeDroneAdapter(DroneAdapter):
         print("模拟无人机连接成功")
 
     def takeoff(self) -> None:
-        """Simulate takeoff and set height to 70 cm."""
-        self.height_cm = 70
+        """Simulate takeoff at the configured base height."""
+        self.height_cm = self.takeoff_height_cm
         print("模拟起飞")
 
     def land(self) -> None:

@@ -193,6 +193,12 @@ class FollowSession:
                     airborne=self.airborne,
                     streaming=self.streaming,
                 )
+            if not self._reach_base_hover_height():
+                return FollowSessionResult(
+                    state=self.session_state,
+                    airborne=self.airborne,
+                    streaming=self.streaming,
+                )
 
             if self.pre_follow_maneuver is not None:
                 self.session_state = "FIXED_DEMO"
@@ -415,32 +421,275 @@ class FollowSession:
         return {}
 
     def _wait_for_takeoff_stabilization(self, duration: float) -> bool:
-        """Keep the shared window responsive while the aircraft stabilizes."""
-        if not self.display_enabled:
+        """Keep ReID and the shared window active while takeoff stabilizes."""
+        keep_detecting = self.initial_target_lock_frames > 0
+        if not self.display_enabled and not keep_detecting:
             sleep(duration)
             return True
 
-        import cv2
+        cv2 = None
+        if self.display_enabled:
+            import cv2
 
         deadline = monotonic() + max(0.0, duration)
+        frame_failures = 0
+        detect_failures = 0
         while monotonic() < deadline and not self.stop_event.is_set():
             frame = self._read_frame()
-            if frame is not None:
-                cv2.putText(
-                    frame,
-                    "TAKING OFF - q: land | e: emergency land",
-                    (20, 36),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.6,
-                    (0, 255, 255),
-                    2,
-                )
-                cv2.imshow(self.window_name, frame)
-            action = self.handle_key(cv2.waitKey(1) & 0xFF)
-            if action in ("stop", "emergency"):
-                return False
+            if frame is None:
+                frame_failures += 1
+                if frame_failures >= self.frame_failure_limit:
+                    print("起飞稳定阶段连续无法读取视频帧，准备安全降落。")
+                    self.session_state = "FRAME_LOST_LANDING"
+                    return False
+            else:
+                frame_failures = 0
+                preview = frame
+                if keep_detecting:
+                    try:
+                        result = self.detector.detect(frame)
+                        detect_failures = 0
+                        if self.display_enabled:
+                            preview = self.detector.draw_debug(frame, result)
+                    except Exception as exc:
+                        detect_failures += 1
+                        print(
+                            "起飞稳定阶段 ReID 检测异常"
+                            f"（{detect_failures}/{self.frame_failure_limit}）：{exc}"
+                        )
+                        if detect_failures >= self.frame_failure_limit:
+                            self.session_state = "FRAME_LOST_LANDING"
+                            return False
+                if self.display_enabled:
+                    cv2.putText(
+                        preview,
+                        "TAKING OFF - ReID remains active",
+                        (20, max(36, preview.shape[0] - 48)),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.6,
+                        (0, 255, 255),
+                        2,
+                    )
+                    cv2.putText(
+                        preview,
+                        "q: land | e: emergency land",
+                        (20, max(68, preview.shape[0] - 20)),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.55,
+                        (255, 255, 255),
+                        1,
+                    )
+                    cv2.imshow(self.window_name, preview)
+            if self.display_enabled:
+                action = self.handle_key(cv2.waitKey(1) & 0xFF)
+                if action in ("stop", "emergency"):
+                    return False
             sleep(self.control_interval)
         return not self.stop_event.is_set()
+
+    def _reach_base_hover_height(self) -> bool:
+        """Reach base altitude while continuously verifying an authorized ReID target."""
+        try:
+            target_height = int(self.config.get("base_hover_height_cm", 0))
+        except (TypeError, ValueError):
+            target_height = 0
+        if target_height <= 0:
+            return True
+
+        minimum_height = self.safety_manager.config.min_height_cm
+        maximum_height = self.safety_manager.config.max_height_cm
+        if not minimum_height <= target_height <= maximum_height:
+            print(
+                f"基础悬停高度 {target_height} cm 不在安全范围 "
+                f"[{minimum_height}, {maximum_height}] cm 内，准备降落。"
+            )
+            self.session_state = "BASE_HEIGHT_FAILED"
+            return False
+
+        tolerance = max(
+            2,
+            int(self.config.get("base_hover_height_tolerance_cm", 5)),
+        )
+        vertical_speed = max(
+            1,
+            min(
+                self.safety_manager.config.max_rc_speed,
+                abs(int(self.config.get("base_hover_vertical_speed", 20))),
+            ),
+        )
+        timeout = max(
+            3.0,
+            float(self.config.get("base_hover_timeout_seconds", 12.0)),
+        )
+        required_stable_readings = max(
+            1,
+            int(self.config.get("base_hover_stable_readings", 3)),
+        )
+        require_reid_target = self.initial_target_lock_frames > 0
+        reacquire_frames = max(
+            1,
+            int(self.config.get("base_hover_reid_reacquire_frames", 3)),
+        )
+        target_lost_timeout = max(
+            1.0,
+            float(
+                self.config.get(
+                    "base_hover_target_lost_timeout_seconds",
+                    self.safety_manager.config.target_lost_land_seconds,
+                )
+            ),
+        )
+        target_tracker = TargetLockTracker(reacquire_frames)
+        target_ready = not require_reid_target
+        target_lost_since: Optional[float] = None
+        deadline = monotonic() + timeout
+        stable_readings = 0
+        height_failures = 0
+        frame_failures = 0
+        detect_failures = 0
+        self.session_state = "REACHING_BASE_HEIGHT"
+        print(f"正在到达基础悬停高度：{target_height} cm。")
+        if require_reid_target:
+            print(f"升高期间持续运行 ReID；目标连续确认 {reacquire_frames} 帧后才允许升高。")
+
+        while monotonic() < deadline and not self.stop_event.is_set():
+            height = self._read_height()
+            if height is None:
+                height_failures += 1
+                self._safe_zero_output()
+                if height_failures >= self.frame_failure_limit:
+                    print("连续无法读取飞行高度，准备安全降落。")
+                    self.session_state = "BASE_HEIGHT_FAILED"
+                    return False
+                sleep(self.control_interval)
+                continue
+
+            height_failures = 0
+            if height > maximum_height:
+                print(
+                    f"飞行高度 {height} cm 已超过安全上限 {maximum_height} cm，"
+                    "准备安全降落。"
+                )
+                self.session_state = "HEIGHT_LIMIT_LANDING"
+                self._safe_zero_output()
+                return False
+
+            preview = None
+            result: Optional[Dict[str, object]] = None
+            if require_reid_target or self.display_enabled:
+                frame = self._read_frame()
+                if frame is None:
+                    frame_failures += 1
+                    if require_reid_target:
+                        target_ready = False
+                        target_tracker.reset()
+                    if frame_failures >= self.frame_failure_limit:
+                        print("升高阶段连续无法读取视频帧，准备安全降落。")
+                        self.session_state = "FRAME_LOST_LANDING"
+                        self._safe_zero_output()
+                        return False
+                else:
+                    frame_failures = 0
+                    try:
+                        result = self.detector.detect(frame)
+                        detect_failures = 0
+                        if require_reid_target:
+                            target_ready = target_tracker.observe(result)
+                            target_is_fresh = (
+                                bool(result.get("found"))
+                                and not bool(result.get("is_predicted"))
+                                and not bool(result.get("ambiguous"))
+                            )
+                            if target_is_fresh:
+                                target_lost_since = None
+                            elif target_lost_since is None:
+                                target_lost_since = monotonic()
+                        if self.display_enabled:
+                            preview = self.detector.draw_debug(frame, result)
+                    except Exception as exc:
+                        detect_failures += 1
+                        if require_reid_target:
+                            target_ready = False
+                            target_tracker.reset()
+                            if target_lost_since is None:
+                                target_lost_since = monotonic()
+                        print(
+                            "升高阶段 ReID 检测异常"
+                            f"（{detect_failures}/{self.frame_failure_limit}）：{exc}"
+                        )
+                        if detect_failures >= self.frame_failure_limit:
+                            self.session_state = "FRAME_LOST_LANDING"
+                            self._safe_zero_output()
+                            return False
+                        preview = frame
+
+            if (
+                require_reid_target
+                and target_lost_since is not None
+                and monotonic() - target_lost_since >= target_lost_timeout
+            ):
+                print("升高阶段目标持续丢失，准备安全降落。")
+                self.session_state = "TARGET_LOST_LANDING"
+                self._safe_zero_output()
+                return False
+
+            height_error = target_height - height
+            if not target_ready:
+                stable_readings = 0
+                command = self.follow_controller.hover()
+            elif abs(height_error) <= tolerance:
+                stable_readings += 1
+                command = self.follow_controller.hover()
+            else:
+                stable_readings = 0
+                command = RCCommand(
+                    up_down=vertical_speed if height_error > 0 else -vertical_speed
+                )
+            self.send_command(command)
+
+            if self.display_enabled:
+                import cv2
+
+                if preview is not None:
+                    identity_text = "ReID READY" if target_ready else "ReID WAIT - HOVERING"
+                    cv2.putText(
+                        preview,
+                        f"BASE HEIGHT {height}/{target_height} cm | {identity_text}",
+                        (20, max(36, preview.shape[0] - 48)),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.6,
+                        (0, 255, 255) if target_ready else (0, 165, 255),
+                        2,
+                    )
+                    cv2.putText(
+                        preview,
+                        "q: land | e: emergency land",
+                        (20, max(68, preview.shape[0] - 20)),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.55,
+                        (255, 255, 255),
+                        1,
+                    )
+                    cv2.imshow(self.window_name, preview)
+                action = self.handle_key(cv2.waitKey(1) & 0xFF)
+                if action in ("stop", "emergency"):
+                    return False
+
+            if stable_readings >= required_stable_readings:
+                self._safe_zero_output()
+                self.session_state = "BASE_HEIGHT_READY"
+                print(f"基础悬停高度已稳定且目标身份有效：{height} cm。")
+                return True
+            sleep(self.control_interval)
+
+        self._safe_zero_output()
+        if self.stop_event.is_set():
+            if self.session_state != "EMERGENCY_STOP":
+                self.session_state = "STOPPED"
+        else:
+            print(f"未能在 {timeout:.1f} 秒内安全到达基础悬停高度，准备降落。")
+            self.session_state = "BASE_HEIGHT_FAILED"
+        return False
 
     def _pre_follow_should_abort(self) -> bool:
         """Stop a predefined maneuver after an external or emergency request."""

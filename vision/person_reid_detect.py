@@ -109,6 +109,8 @@ class PersonReIDDetector:
         similarity_threshold: float = 0.65,
         ambiguity_margin: float = 0.05,
         temporary_lost_frames: int = 0,
+        target_area_ratio_min: float = 0.03,
+        target_area_ratio_max: float = 0.08,
         person_detector: Optional[Any] = None,
         feature_extractor: Optional[Any] = None,
         reference_features: Optional[Any] = None,
@@ -122,6 +124,11 @@ class PersonReIDDetector:
         self.similarity_threshold = _clamp_float(similarity_threshold, -1.0, 1.0, 0.65)
         self.ambiguity_margin = _clamp_float(ambiguity_margin, 0.0, 2.0, 0.05)
         self.temporary_lost_frames = max(0, int(temporary_lost_frames))
+        self.target_area_ratio_min = _clamp_float(target_area_ratio_min, 0.0, 1.0, 0.03)
+        self.target_area_ratio_max = _clamp_float(target_area_ratio_max, 0.0, 1.0, 0.08)
+        if self.target_area_ratio_max <= self.target_area_ratio_min:
+            self.target_area_ratio_min = 0.03
+            self.target_area_ratio_max = 0.08
         self._person_detector = person_detector
         self._feature_extractor = feature_extractor
         self._reference_feature: Optional[np.ndarray] = None
@@ -154,12 +161,14 @@ class PersonReIDDetector:
             similarity_threshold=_safe_float(cfg.get("reid_similarity_threshold"), 0.65),
             ambiguity_margin=_safe_float(cfg.get("reid_ambiguity_margin"), 0.05),
             temporary_lost_frames=_safe_int(cfg.get("reid_temporary_lost_frames"), 0),
+            target_area_ratio_min=_safe_float(config.get("target_area_ratio_min"), 0.03),
+            target_area_ratio_max=_safe_float(config.get("target_area_ratio_max"), 0.08),
             reference_features=reference_features,
         )
 
     def detect(self, frame: Any) -> DetectionResult:
         if not _valid_frame(frame):
-            return self._empty_result()
+            return self._empty_result(similarity_threshold=self.similarity_threshold)
         self._ensure_ready()
         detections = self._person_detector.detect_people(frame)
         candidates = self._prepare_candidates(frame, detections)
@@ -171,14 +180,35 @@ class PersonReIDDetector:
         if features.shape[0] != len(candidates):
             raise RuntimeError("ReID 特征数量与行人候选数量不一致。")
         similarities = features @ self._reference_feature
+        frame_area = max(1, int(frame.shape[0]) * int(frame.shape[1]))
+        candidate_diagnostics = [
+            {
+                "bbox": candidate[0],
+                "similarity": float(similarity),
+                "area_ratio": float(candidate[0][2] * candidate[0][3]) / frame_area,
+                "distance_state": self._distance_state(
+                    float(candidate[0][2] * candidate[0][3]) / frame_area
+                ),
+            }
+            for candidate, similarity in zip(candidates, similarities)
+        ]
         order = np.argsort(similarities)[::-1]
         best_index = int(order[0])
         best_similarity = float(similarities[best_index])
         second_similarity = float(similarities[int(order[1])]) if len(order) > 1 else -1.0
         if best_similarity < self.similarity_threshold:
-            return self._handle_not_found(best_similarity=best_similarity)
+            return self._handle_not_found(
+                best_similarity=best_similarity,
+                second_similarity=second_similarity if len(order) > 1 else None,
+                candidate_diagnostics=candidate_diagnostics,
+            )
         if len(order) > 1 and best_similarity - second_similarity < self.ambiguity_margin:
-            return self._handle_not_found(best_similarity=best_similarity, ambiguous=True)
+            return self._handle_not_found(
+                best_similarity=best_similarity,
+                second_similarity=second_similarity,
+                ambiguous=True,
+                candidate_diagnostics=candidate_diagnostics,
+            )
 
         x, y, width, height = candidates[best_index][0]
         center = (x + width // 2, y + height // 2)
@@ -189,12 +219,15 @@ class PersonReIDDetector:
             "target_center_x": center[0],
             "target_center_y": center[1],
             "area": float(width * height),
+            "area_ratio": float(width * height) / frame_area,
             "bbox": (x, y, width, height),
             "detector_type": "person_reid",
             "similarity": best_similarity,
             "second_similarity": second_similarity if len(order) > 1 else None,
             "ambiguous": False,
             "candidate_count": len(candidates),
+            "candidates": candidate_diagnostics,
+            "similarity_threshold": self.similarity_threshold,
         }
         self._lost_count = 0
         self._last_valid_result = dict(result)
@@ -223,25 +256,92 @@ class PersonReIDDetector:
         frame_center = (width // 2, height // 2)
         cv2.line(debug, (frame_center[0], 0), (frame_center[0], height), (255, 0, 0), 1)
         cv2.line(debug, (0, frame_center[1]), (width, frame_center[1]), (255, 0, 0), 1)
-        if result.get("found"):
-            x, y, box_width, box_height = result["bbox"]
-            color = (0, 180, 255) if result.get("is_predicted") else (0, 255, 0)
+        accepted_bbox = result.get("bbox") if result.get("found") else None
+        candidate_diagnostics = result.get("candidates") or []
+        accepted_box_drawn = False
+        for index, candidate in enumerate(candidate_diagnostics, start=1):
+            bbox = candidate.get("bbox")
+            if bbox is None or len(bbox) != 4:
+                continue
+            x, y, box_width, box_height = (int(value) for value in bbox)
+            accepted = accepted_bbox is not None and tuple(bbox) == tuple(accepted_bbox)
+            accepted_box_drawn = accepted_box_drawn or accepted
+            color = (0, 255, 0) if accepted else (0, 165, 255)
             cv2.rectangle(debug, (x, y), (x + box_width, y + box_height), color, 2)
-            similarity = float(result.get("similarity") or 0.0)
-            state = "PREDICTED" if result.get("is_predicted") else "MATCH"
+            similarity = candidate.get("similarity")
+            similarity_text = "N/A" if similarity is None else f"{float(similarity):.3f}"
+            area_ratio = float(candidate.get("area_ratio") or 0.0)
+            distance_state = str(candidate.get("distance_state") or "N/A")
             cv2.putText(
                 debug,
-                f"ReID {state} sim={similarity:.3f}",
+                f"#{index} ReID={similarity_text} AREA={area_ratio:.3f} {distance_state}",
                 (max(0, x), max(20, y - 8)),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.55,
+                0.5,
                 color,
                 2,
             )
+
+        # Compatibility fallback for injected/custom results without diagnostics.
+        if result.get("found") and not accepted_box_drawn:
+            x, y, box_width, box_height = result["bbox"]
+            color = (0, 180, 255) if result.get("is_predicted") else (0, 255, 0)
+            cv2.rectangle(debug, (x, y), (x + box_width, y + box_height), color, 2)
+
+        candidate_count = int(result.get("candidate_count") or 0)
+        best_similarity = result.get("similarity")
+        best_text = "N/A" if best_similarity is None else f"{float(best_similarity):.3f}"
+        threshold = float(result.get("similarity_threshold", self.similarity_threshold))
+        cv2.putText(
+            debug,
+            f"YOLO people={candidate_count} best={best_text} threshold={threshold:.3f}",
+            (20, 28),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            (255, 255, 255),
+            2,
+        )
+        if result.get("found"):
+            state = "PREDICTED" if result.get("is_predicted") else "MATCH"
+            status_color = (0, 180, 255) if result.get("is_predicted") else (0, 255, 0)
+        elif result.get("ambiguous"):
+            state = "AMBIGUOUS"
+            status_color = (0, 165, 255)
+        elif candidate_count:
+            state = "BELOW THRESHOLD"
+            status_color = (0, 0, 255)
         else:
-            reason = "AMBIGUOUS" if result.get("ambiguous") else "LOST"
-            cv2.putText(debug, f"ReID {reason}", (20, 36), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+            state = "NO PERSON"
+            status_color = (0, 0, 255)
+        best_candidate = None
+        if candidate_diagnostics:
+            best_candidate = max(
+                candidate_diagnostics,
+                key=lambda item: float(item.get("similarity") or -1.0),
+            )
+        best_area_text = "N/A"
+        best_distance_text = "N/A"
+        if best_candidate is not None:
+            best_area_text = f"{float(best_candidate.get('area_ratio') or 0.0):.3f}"
+            best_distance_text = str(best_candidate.get("distance_state") or "N/A")
+        cv2.putText(
+            debug,
+            f"ReID {state} | BEST AREA={best_area_text} {best_distance_text}",
+            (20, 58),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.65,
+            status_color,
+            2,
+        )
         return debug
+
+    def _distance_state(self, area_ratio: float) -> str:
+        """Classify a person-box ratio using the active follow distance band."""
+        if area_ratio < self.target_area_ratio_min:
+            return "FAR"
+        if area_ratio > self.target_area_ratio_max:
+            return "NEAR"
+        return "OK"
 
     def reset(self) -> None:
         self._lost_count = 0
@@ -340,20 +440,41 @@ class PersonReIDDetector:
         return candidates
 
     def _handle_not_found(
-        self, best_similarity: Optional[float] = None, ambiguous: bool = False
+        self,
+        best_similarity: Optional[float] = None,
+        second_similarity: Optional[float] = None,
+        ambiguous: bool = False,
+        candidate_diagnostics: Optional[List[Dict[str, object]]] = None,
     ) -> DetectionResult:
+        diagnostics = list(candidate_diagnostics or [])
         self._lost_count += 1
         if self._last_valid_result is not None and self._lost_count <= self.temporary_lost_frames:
             predicted = dict(self._last_valid_result)
             predicted["is_predicted"] = True
-            predicted["candidate_count"] = 0
+            predicted["candidate_count"] = len(diagnostics)
+            predicted["candidates"] = diagnostics
+            predicted["similarity"] = best_similarity
+            predicted["second_similarity"] = second_similarity
+            predicted["ambiguous"] = ambiguous
+            predicted["similarity_threshold"] = self.similarity_threshold
             return predicted
-        return self._empty_result(best_similarity, ambiguous)
+        return self._empty_result(
+            best_similarity,
+            second_similarity,
+            ambiguous,
+            diagnostics,
+            self.similarity_threshold,
+        )
 
     @staticmethod
     def _empty_result(
-        best_similarity: Optional[float] = None, ambiguous: bool = False
+        best_similarity: Optional[float] = None,
+        second_similarity: Optional[float] = None,
+        ambiguous: bool = False,
+        candidate_diagnostics: Optional[List[Dict[str, object]]] = None,
+        similarity_threshold: float = 0.65,
     ) -> DetectionResult:
+        diagnostics = list(candidate_diagnostics or [])
         return {
             "found": False,
             "is_predicted": False,
@@ -364,9 +485,11 @@ class PersonReIDDetector:
             "bbox": None,
             "detector_type": "person_reid",
             "similarity": best_similarity,
-            "second_similarity": None,
+            "second_similarity": second_similarity,
             "ambiguous": ambiguous,
-            "candidate_count": 0,
+            "candidate_count": len(diagnostics),
+            "candidates": diagnostics,
+            "similarity_threshold": similarity_threshold,
         }
 
     @classmethod

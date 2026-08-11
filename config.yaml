@@ -2,8 +2,17 @@ min_battery_takeoff: 30
 low_battery_land: 20
 # 高度安全范围：飞行高度超出 [min_height_cm, max_height_cm] 会触发自动降落，
 # 真机调参时按试飞场地重新标定。
-max_height_cm: 150
+max_height_cm: 220
 min_height_cm: 60
+# 起飞后先到达 1.5 m 基础悬停高度，再进入自动跟随。
+base_hover_height_cm: 150
+base_hover_height_tolerance_cm: 5
+base_hover_vertical_speed: 20
+base_hover_timeout_seconds: 12
+base_hover_stable_readings: 3
+# ReID 演示升高期间：身份未连续确认时只悬停，不继续上升。
+base_hover_reid_reacquire_frames: 3
+base_hover_target_lost_timeout_seconds: 8
 max_rc_speed: 35
 camera_width: 640
 camera_height: 480
@@ -42,18 +51,18 @@ horizontal_dead_zone_ratio: 0.08
 yaw_kp: 160
 minimum_yaw_speed: 20
 maximum_yaw_speed: 35
-# ArUco 前后距离分区：0.030–0.080 悬停，区外全速调整。
-target_area_ratio_min: 0.030
-target_area_ratio_max: 0.080
+# 人物框占画面 0.15–0.30 时保持前后距离，区外调整。
+target_area_ratio_min: 0.15
+target_area_ratio_max: 0.30
 maximum_forward_speed: 35
 forward_speed_while_aligning: 16
 vertical_dead_zone_ratio: 0.10
 vertical_speed: 20
 target_lock_stable_frames: 15
-# 锁定退出面积带比进入带（0.030–0.080）更宽：0.025–0.085 形成面积滞回，
+# 锁定退出面积带比进入带（0.15–0.30）略宽：0.13–0.32 形成面积滞回，
 # 避免面积在中带边界附近波动时反复锁定/解锁。
-target_lock_exit_area_ratio_min: 0.025
-target_lock_exit_area_ratio_max: 0.085
+target_lock_exit_area_ratio_min: 0.13
+target_lock_exit_area_ratio_max: 0.32
 target_lock_exit_horizontal_dead_zone_ratio: 0.12
 target_lock_exit_vertical_dead_zone_ratio: 0.15
 control_interval: 0.05

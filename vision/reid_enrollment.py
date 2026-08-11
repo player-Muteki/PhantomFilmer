@@ -38,6 +38,10 @@ class TargetLockTracker:
         self.consecutive_frames = self.consecutive_frames + 1 if trustworthy else 0
         return self.consecutive_frames >= self.required_frames
 
+    def reset(self) -> None:
+        """Discard partial progress after a frame or inference failure."""
+        self.consecutive_frames = 0
+
     @property
     def progress(self) -> str:
         """Return a compact progress label for the preview window."""

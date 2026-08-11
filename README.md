@@ -190,6 +190,7 @@ MPLCONFIGDIR=.matplotlib YOLO_CONFIG_DIR=.ultralytics \
 - 起飞前电量低于 `min_battery_takeoff` 禁止起飞
 - 飞行中电量低于 `low_battery_land` 建议降落
 - 飞行高度超出 `[min_height_cm, max_height_cm]` 时立即清零并降落
+- 自动跟随会话起飞后先闭环到达 `base_hover_height_cm`（当前为 150 cm），连续稳定后才进入跟随；ReID 演示在起飞稳定和升高期间保持识别，身份丢失时停止升高并悬停，重新连续确认后才恢复；测高、视频、识别失败或超时则降落
 - `limit_rc_command` 将每个通道限制在 `[-max_rc_speed, max_rc_speed]`
 - 目标丢失、身份歧义和外部停止请求都会优先产生零控制输出
 

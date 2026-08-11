@@ -70,6 +70,7 @@ def create_drone_adapter(
             target_lost_duration_seconds=float(
                 config.get("fake_target_lost_duration_seconds", 2)
             ),
+            takeoff_height_cm=int(config.get("base_hover_height_cm", 70)),
             detector_type=selected_detector_type(config),
             aruco_dictionary=str(
                 vision_config.get("aruco_dictionary", "DICT_4X4_50")

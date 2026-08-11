@@ -96,6 +96,8 @@ def test_lock_tracker_requires_fresh_unambiguous_consecutive_matches() -> None:
     assert not tracker.observe({"found": True, "is_predicted": False, "ambiguous": True})
     assert not tracker.observe({"found": True, "is_predicted": False, "ambiguous": False})
     assert tracker.observe({"found": True, "is_predicted": False, "ambiguous": False})
+    tracker.reset()
+    assert tracker.progress == "0/2"
 
 
 def test_runtime_config_enables_reid_without_mutating_project_default(tmp_path: Path) -> None:
