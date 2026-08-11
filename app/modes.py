@@ -409,6 +409,7 @@ def run_reid_demo(
     lock_timeout = max(1.0, float(config.get("reid_lock_timeout_seconds", 30.0)))
 
     def confirm_takeoff(result: dict[str, object]) -> bool:
+        """Terminal fallback used only when video display is disabled."""
         similarity = float(result.get("similarity") or 0.0)
         print(
             f"地面 ReID 已锁定目标（相似度 {similarity:.3f}）。"
@@ -466,6 +467,7 @@ def run_reid_demo(
             initial_target_lock_frames=required_lock_frames,
             initial_target_lock_timeout_seconds=lock_timeout,
             pre_takeoff_confirmation=confirm_takeoff,
+            window_takeoff_confirmation=True,
         )
         session.run()
         return 0

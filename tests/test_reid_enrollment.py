@@ -196,3 +196,68 @@ def test_target_must_still_be_present_after_human_confirmation(monkeypatch) -> N
 
     assert result.state == "TARGET_LOCK_FAILED"
     assert session.drone.takeoff_calls == 0
+
+
+def test_window_confirmation_reuses_one_window_and_accepts_y(monkeypatch) -> None:
+    import cv2
+
+    detector = SequenceDetector(
+        [{"found": True, "is_predicted": False, "ambiguous": False, "similarity": 0.93}]
+    )
+    session = build_ground_session(detector, confirmation=lambda result: False)
+    session.display_enabled = True
+    shown_windows: list[str] = []
+    keys = iter([ord("y"), -1])
+    monkeypatch.setattr(cv2, "putText", lambda image, *args, **kwargs: image)
+    monkeypatch.setattr(cv2, "imshow", lambda name, image: shown_windows.append(name))
+    monkeypatch.setattr(cv2, "waitKey", lambda delay: next(keys))
+    monkeypatch.setattr("control.follow_session.sleep", lambda seconds: None)
+
+    result = session._wait_for_window_takeoff_confirmation()
+
+    assert result["found"] is True
+    assert shown_windows
+    assert set(shown_windows) == {session.window_name}
+
+
+def test_window_confirmation_q_cancels_takeoff(monkeypatch) -> None:
+    import cv2
+
+    detector = SequenceDetector(
+        [{"found": True, "is_predicted": False, "ambiguous": False}]
+    )
+    session = build_ground_session(detector, confirmation=lambda result: True)
+    session.display_enabled = True
+    monkeypatch.setattr(cv2, "putText", lambda image, *args, **kwargs: image)
+    monkeypatch.setattr(cv2, "imshow", lambda name, image: None)
+    monkeypatch.setattr(cv2, "waitKey", lambda delay: ord("q"))
+    monkeypatch.setattr("control.follow_session.sleep", lambda seconds: None)
+
+    result = session._wait_for_window_takeoff_confirmation()
+
+    assert result == {}
+    assert session.session_state == "TAKEOFF_CANCELLED"
+    assert session.drone.takeoff_calls == 0
+
+
+def test_window_confirmation_rejects_y_until_target_is_fresh(monkeypatch) -> None:
+    import cv2
+
+    detector = SequenceDetector(
+        [
+            {"found": False, "is_predicted": False, "ambiguous": False},
+            {"found": True, "is_predicted": False, "ambiguous": False, "similarity": 0.92},
+        ]
+    )
+    session = build_ground_session(detector, confirmation=lambda result: True)
+    session.display_enabled = True
+    keys = iter([ord("y"), ord("y"), -1])
+    monkeypatch.setattr(cv2, "putText", lambda image, *args, **kwargs: image)
+    monkeypatch.setattr(cv2, "imshow", lambda name, image: None)
+    monkeypatch.setattr(cv2, "waitKey", lambda delay: next(keys))
+    monkeypatch.setattr("control.follow_session.sleep", lambda seconds: None)
+
+    result = session._wait_for_window_takeoff_confirmation()
+
+    assert result["found"] is True
+    assert detector.index == 2

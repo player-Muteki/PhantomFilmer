@@ -48,6 +48,7 @@ class FollowSession:
         initial_target_lock_frames: int = 0,
         initial_target_lock_timeout_seconds: float = 30.0,
         pre_takeoff_confirmation: Optional[Callable[[Dict[str, object]], bool]] = None,
+        window_takeoff_confirmation: bool = False,
     ) -> None:
         self.drone = drone
         self.safety_manager = safety_manager
@@ -65,6 +66,7 @@ class FollowSession:
             1.0, float(initial_target_lock_timeout_seconds)
         )
         self.pre_takeoff_confirmation = pre_takeoff_confirmation
+        self.window_takeoff_confirmation = bool(window_takeoff_confirmation)
         self.config = config
         self.mode_label = mode_label
         self.window_name = window_name or str(
@@ -129,31 +131,36 @@ class FollowSession:
                         airborne=self.airborne,
                         streaming=self.streaming,
                     )
-                if (
-                    self.pre_takeoff_confirmation is not None
-                    and not self.pre_takeoff_confirmation(locked_result)
-                ):
-                    print("已取消起飞：现场人员未确认目标身份。")
-                    self.session_state = "TAKEOFF_CANCELLED"
-                    return FollowSessionResult(
-                        state=self.session_state,
-                        airborne=self.airborne,
-                        streaming=self.streaming,
-                    )
-                if (
-                    self.pre_takeoff_confirmation is not None
-                    and not self._verify_fresh_target_before_takeoff()
-                ):
-                    print(
-                        "人工确认后目标已离开或身份变得模糊，"
-                        "未起飞。"
-                    )
-                    self.session_state = "TARGET_LOCK_FAILED"
-                    return FollowSessionResult(
-                        state=self.session_state,
-                        airborne=self.airborne,
-                        streaming=self.streaming,
-                    )
+                if self.window_takeoff_confirmation and self.display_enabled:
+                    locked_result = self._wait_for_window_takeoff_confirmation()
+                    if not locked_result:
+                        if self.session_state != "TAKEOFF_CANCELLED":
+                            self.session_state = "TARGET_LOCK_FAILED"
+                        return FollowSessionResult(
+                            state=self.session_state,
+                            airborne=self.airborne,
+                            streaming=self.streaming,
+                        )
+                elif self.pre_takeoff_confirmation is not None:
+                    if not self.pre_takeoff_confirmation(locked_result):
+                        print("已取消起飞：现场人员未确认目标身份。")
+                        self.session_state = "TAKEOFF_CANCELLED"
+                        return FollowSessionResult(
+                            state=self.session_state,
+                            airborne=self.airborne,
+                            streaming=self.streaming,
+                        )
+                    if not self._verify_fresh_target_before_takeoff():
+                        print(
+                            "人工确认后目标已离开或身份变得模糊，"
+                            "未起飞。"
+                        )
+                        self.session_state = "TARGET_LOCK_FAILED"
+                        return FollowSessionResult(
+                            state=self.session_state,
+                            airborne=self.airborne,
+                            streaming=self.streaming,
+                        )
 
             with self._lifecycle_lock:
                 if self.stop_event.is_set():
@@ -169,7 +176,12 @@ class FollowSession:
                         authorize_takeoff()
                 self.drone.takeoff()
                 self.airborne = True
-            sleep(2)
+            if not self._wait_for_takeoff_stabilization(2.0):
+                return FollowSessionResult(
+                    state=self.session_state,
+                    airborne=self.airborne,
+                    streaming=self.streaming,
+                )
             height = self._read_height()
             if height is not None and height < 10:
                 print("未检测到起飞高度，跟随任务未启动。")
@@ -316,6 +328,119 @@ class FollowSession:
             print(f"起飞前最终 ReID 检查失败：{exc}")
             return False
         return TargetLockTracker(required_frames=1).observe(result)
+
+    def _wait_for_window_takeoff_confirmation(self) -> Dict[str, object]:
+        """Keep one OpenCV window alive while Y/Q authorizes or cancels takeoff."""
+        import cv2
+
+        timeout = max(
+            1.0,
+            float(
+                self.config.get(
+                    "reid_confirmation_timeout_seconds",
+                    self.initial_target_lock_timeout_seconds,
+                )
+            ),
+        )
+        started_at = monotonic()
+        frame_failures = 0
+        self.session_state = "GROUND_TAKEOFF_CONFIRMATION"
+        print("目标人物已锁定。请在视频窗口按 Y 确认起飞，按 Q 取消。")
+
+        while not self.stop_event.is_set():
+            if monotonic() - started_at >= timeout:
+                print("起飞确认超时，无人机保持在地面。")
+                self.session_state = "TAKEOFF_CANCELLED"
+                return {}
+
+            frame = self._read_frame()
+            if frame is None:
+                frame_failures += 1
+                if frame_failures >= self.frame_failure_limit:
+                    print("等待起飞确认时连续无法读取视频帧，无人机保持在地面。")
+                    return {}
+                cv2.waitKey(1)
+                sleep(self.control_interval)
+                continue
+
+            frame_failures = 0
+            try:
+                result = self.detector.detect(frame)
+            except Exception as exc:
+                print(f"等待起飞确认时 ReID 检测失败：{exc}")
+                return {}
+
+            target_is_fresh = TargetLockTracker(required_frames=1).observe(result)
+            preview = self.detector.draw_debug(frame, result)
+            status = (
+                "TARGET LOCKED - Y: take off | Q: cancel"
+                if target_is_fresh
+                else "TARGET LOST - move into view | Q: cancel"
+            )
+            color = (0, 255, 0) if target_is_fresh else (0, 165, 255)
+            cv2.putText(
+                preview,
+                status,
+                (20, max(36, preview.shape[0] - 20)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
+                color,
+                2,
+            )
+            cv2.imshow(self.window_name, preview)
+            key = cv2.waitKey(1) & 0xFF
+            if key in (ord("q"), ord("Q")):
+                print("已取消起飞，无人机保持在地面。")
+                self.session_state = "TAKEOFF_CANCELLED"
+                return {}
+            if key in (ord("y"), ord("Y")):
+                if not target_is_fresh:
+                    print("当前目标未通过最终身份检查，请重新进入画面后再按 Y。")
+                else:
+                    cv2.putText(
+                        preview,
+                        "TAKEOFF AUTHORIZED - keep clear",
+                        (20, 36),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.65,
+                        (0, 255, 255),
+                        2,
+                    )
+                    cv2.imshow(self.window_name, preview)
+                    cv2.waitKey(1)
+                    return result
+            sleep(self.control_interval)
+
+        self.session_state = "TAKEOFF_CANCELLED"
+        return {}
+
+    def _wait_for_takeoff_stabilization(self, duration: float) -> bool:
+        """Keep the shared window responsive while the aircraft stabilizes."""
+        if not self.display_enabled:
+            sleep(duration)
+            return True
+
+        import cv2
+
+        deadline = monotonic() + max(0.0, duration)
+        while monotonic() < deadline and not self.stop_event.is_set():
+            frame = self._read_frame()
+            if frame is not None:
+                cv2.putText(
+                    frame,
+                    "TAKING OFF - q: land | e: emergency land",
+                    (20, 36),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6,
+                    (0, 255, 255),
+                    2,
+                )
+                cv2.imshow(self.window_name, frame)
+            action = self.handle_key(cv2.waitKey(1) & 0xFF)
+            if action in ("stop", "emergency"):
+                return False
+            sleep(self.control_interval)
+        return not self.stop_event.is_set()
 
     def _pre_follow_should_abort(self) -> bool:
         """Stop a predefined maneuver after an external or emergency request."""

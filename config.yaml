@@ -30,6 +30,7 @@ vision:
 # ReID 现场演示：地面连续识别达到该帧数后才允许人工确认起飞。
 reid_lock_stable_frames: 10
 reid_lock_timeout_seconds: 30
+reid_confirmation_timeout_seconds: 30
 display_console_camera: true
 console_window_name: "PhantomFilmer Console Follow"
 task_stop_timeout_seconds: 10
