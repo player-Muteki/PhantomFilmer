@@ -5,9 +5,11 @@ from typing import Dict, Optional, Tuple
 
 from control.follow_control import FollowController
 from control.follow_session import FollowSession
+from control.obstacle_avoidance import ObstacleAvoidancePlanner
 from drone.drone_adapter import DroneAdapter
 from drone.safety import SafetyManager
 from vision.detector_protocol import DetectorProtocol
+from vision.obstacle_detect import ObstacleDetector
 
 
 class ConsoleTools:
@@ -28,6 +30,8 @@ class ConsoleTools:
         mode_label: str = "REAL",
         frame_width: int = 640,
         frame_height: int = 480,
+        obstacle_detector: Optional[ObstacleDetector] = None,
+        obstacle_planner: Optional[ObstacleAvoidancePlanner] = None,
         follow_task_allowed: bool = True,
         follow_task_block_reason: Optional[str] = None,
     ) -> None:
@@ -39,6 +43,8 @@ class ConsoleTools:
         self._mode_label = mode_label
         self.frame_width = frame_width
         self.frame_height = frame_height
+        self._obstacle_detector = obstacle_detector
+        self._obstacle_planner = obstacle_planner
         self._follow_task_allowed = follow_task_allowed
         self._follow_task_block_reason = follow_task_block_reason
 
@@ -113,6 +119,8 @@ class ConsoleTools:
             state_label="CONSOLE",
             allow_pause=True,
             stop_event=self._stop_event,
+            obstacle_detector=self._obstacle_detector,
+            obstacle_planner=self._obstacle_planner,
         )
         task_thread = Thread(
             target=self._run_follow_session,

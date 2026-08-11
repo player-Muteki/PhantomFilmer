@@ -16,6 +16,18 @@ vision:
   smoothing_alpha: 0.30
   temporary_lost_frames: 0
   min_marker_area: 300
+  # 人物 ReID 模式：改为 person_reid 后才会加载以下模型。
+  # 多张参考图用英文逗号分隔，路径相对于项目根目录。
+  reference_images: "data/reid_target/front.jpg,data/reid_target/side.jpg"
+  person_detector_model: "weights/yolov8n.pt"
+  person_detection_confidence: 0.45
+  reid_model_name: "osnet_x0_25"
+  reid_model_path: "weights/osnet_x0_25_msmt17.pth"
+  reid_device: "cpu"
+  reid_similarity_threshold: 0.65
+  reid_ambiguity_margin: 0.05
+  # 真机初测保持为 0：未确认身份时立即视为丢失并悬停。
+  reid_temporary_lost_frames: 0
 display_console_camera: true
 console_window_name: "PhantomFilmer Console Follow"
 task_stop_timeout_seconds: 10
@@ -47,6 +59,19 @@ target_lock_exit_vertical_dead_zone_ratio: 0.15
 control_interval: 0.05
 detector_min_area_ratio: 0.002
 detector_min_area: 500
+obstacle:
+  enabled: false
+  risk_zone_width_ratio: 0.55
+  risk_zone_height_ratio: 0.65
+  risk_zone_vertical_offset_ratio: 0.05
+  minimum_obstacle_area: 1500
+  caution_area_ratio: 0.08
+  blocked_area_ratio: 0.18
+  avoidance_yaw_speed: 18
+  avoidance_lateral_speed: 0
+  max_avoidance_seconds: 5.0
+  recovery_clear_frames: 10
+  forward_speed_in_caution_ratio: 0.35
 lost_target_hover_seconds: 3
 lost_target_land_seconds: 8
 llm_enabled: true

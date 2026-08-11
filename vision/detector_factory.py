@@ -40,7 +40,11 @@ def create_detector(config: Dict) -> object:
         from vision.aruco_detect import ArucoTargetDetector
         return ArucoTargetDetector.from_config(config)
 
+    if detector_type == "person_reid":
+        from vision.person_reid_detect import PersonReIDDetector
+        return PersonReIDDetector.from_config(config)
+
     raise ValueError(
         f"Unsupported detector_type: '{detector_type}'. "
-        "Supported types: 'red', 'aruco'."
+        "Supported types: 'red', 'aruco', 'person_reid'."
     )

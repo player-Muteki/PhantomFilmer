@@ -5,3 +5,10 @@ __pycache__/
 .DS_Store
 .venv/
 .claude/
+.venv*/
+.matplotlib/
+.ultralytics/
+weights/
+data/reid_target/
+data/reid_test/
+data/datasets/

@@ -7,10 +7,12 @@ from typing import Any, Dict, Optional, Tuple
 
 from control.fixed_demo import FixedDemoManeuver, FixedDemoProgress
 from control.follow_control import FollowController, RCCommand
+from control.obstacle_avoidance import AvoidanceDecision, ObstacleAvoidancePlanner
 from drone.drone_adapter import DroneAdapter
 from drone.safety import SafetyManager
 from vision.camera import CameraStream
 from vision.detector_protocol import DetectorProtocol
+from vision.obstacle_detect import ObstacleDetector, ObstacleResult
 
 
 @dataclass
@@ -38,12 +40,16 @@ class FollowSession:
         allow_pause: bool = False,
         stop_event: Optional[Event] = None,
         pre_follow_maneuver: Optional[FixedDemoManeuver] = None,
+        obstacle_detector: Optional[ObstacleDetector] = None,
+        obstacle_planner: Optional[ObstacleAvoidancePlanner] = None,
     ) -> None:
         self.drone = drone
         self.safety_manager = safety_manager
         self.detector = detector
         self.follow_controller = follow_controller
         self.pre_follow_maneuver = pre_follow_maneuver
+        self.obstacle_detector = obstacle_detector
+        self.obstacle_planner = obstacle_planner
         self.config = config
         self.mode_label = mode_label
         self.window_name = window_name or str(
@@ -66,6 +72,8 @@ class FollowSession:
         self.last_command = RCCommand()
         self.last_battery: Optional[int] = None
         self.last_height: Optional[int] = None
+        self.last_obstacle_result: Optional[ObstacleResult] = None
+        self.last_avoidance_decision: Optional[AvoidanceDecision] = None
         self.fps = 0.0
         self.control_hz = 0.0
 
@@ -82,6 +90,7 @@ class FollowSession:
         """Start stream, take off, show the follow window, and clean up safely."""
         try:
             self._reset_tracking_state()
+            self._prepare_detector()
             with self._lifecycle_lock:
                 if self.stop_event.is_set():
                     self.session_state = "STOPPED"
@@ -187,6 +196,12 @@ class FollowSession:
         action = self.handle_key(cv2.waitKey(1) & 0xFF)
         return action not in ("stop", "emergency")
 
+    def _prepare_detector(self) -> None:
+        """Preload optional detector models while the drone is still grounded."""
+        prepare_method = getattr(self.detector, "prepare", None)
+        if callable(prepare_method):
+            prepare_method()
+
     def process_detection(
         self,
         target_result: Dict[str, object],
@@ -220,6 +235,32 @@ class FollowSession:
         limited = self.safety_manager.limit_rc_command(*command.as_tuple())
         self.last_command = RCCommand(*limited)
         self.drone.move_rc(*self.last_command.as_tuple())
+
+    def apply_obstacle_avoidance(
+        self,
+        command: RCCommand,
+        target_result: Dict[str, object],
+        frame: Any,
+    ) -> RCCommand:
+        """Apply obstacle avoidance only during normal follow control."""
+        if self.obstacle_detector is None or self.obstacle_planner is None:
+            self.last_obstacle_result = None
+            self.last_avoidance_decision = None
+            return command
+        if self.emergency_stop or self.paused or self.stop_event.is_set():
+            self.last_obstacle_result = None
+            self.last_avoidance_decision = None
+            return command
+        if self.session_state != "FOLLOWING" or not target_result.get("found"):
+            self.last_obstacle_result = None
+            self.last_avoidance_decision = None
+            return command
+
+        obstacle_result = self.obstacle_detector.detect(frame, target_result)
+        decision = self.obstacle_planner.plan(command, obstacle_result)
+        self.last_obstacle_result = obstacle_result
+        self.last_avoidance_decision = decision
+        return decision.command
 
     def handle_key(self, key: int) -> Optional[str]:
         """Handle q/e and optional p window keys."""
@@ -274,6 +315,8 @@ class FollowSession:
         import cv2
 
         debug_frame = self.detector.draw_debug(frame, target_result)
+        if self.obstacle_detector is not None:
+            debug_frame = self.obstacle_detector.draw_debug(debug_frame, self.last_obstacle_result)
         frame_height, frame_width = debug_frame.shape[:2]
         frame_center = (frame_width // 2, frame_height // 2)
         vertical_dead_zone_px = int(frame_height * self.follow_controller.vertical_dead_zone_ratio / 2)
@@ -288,13 +331,24 @@ class FollowSession:
             tx, ty = target_center  # type: ignore[misc]
             cv2.line(debug_frame, frame_center, (int(tx), int(ty)), (0, 255, 255), 2)
 
-        panel_width = min(frame_width - 24, 430)
-        cv2.rectangle(debug_frame, (12, 84), (12 + panel_width, 326), (0, 0, 0), -1)
+        panel_width = min(frame_width - 24, 520)
+        cv2.rectangle(debug_frame, (12, 84), (12 + panel_width, 386), (0, 0, 0), -1)
         target_text = "FOUND" if target_result.get("found") else "LOST"
         battery_text = f"{battery}%" if battery is not None else "N/A"
         height_text = f"{height} cm" if height is not None else "N/A"
         lr, fb, ud, yaw = command.as_tuple()
         debug = self.follow_controller.last_debug
+        obstacle_text = "DISABLED"
+        obstacle_side = "none"
+        obstacle_area = 0.0
+        obstacle_reason = ""
+        if self.last_obstacle_result is not None:
+            obstacle_text = self.last_obstacle_result.state
+            obstacle_side = self.last_obstacle_result.side
+            obstacle_area = self.last_obstacle_result.area_ratio
+        if self.last_avoidance_decision is not None:
+            obstacle_text = self.last_avoidance_decision.state
+            obstacle_reason = self.last_avoidance_decision.reason
         key_text = "KEYS: p pause/resume, q stop+land, e emergency"
         if not self.allow_pause:
             key_text = "KEYS: q stop+land, e emergency"
@@ -309,6 +363,8 @@ class FollowSession:
             f"X: {debug.target_center_x}/{debug.frame_center_x} err={debug.horizontal_error} ({debug.horizontal_error_ratio:.2f})",
             f"Y: {debug.target_center_y}/{debug.frame_center_y} err={debug.vertical_error} ({debug.vertical_error_ratio:.2f})",
             f"AREA: {debug.area_ratio:.3f}  STATE: {debug.target_state}",
+            f"OBSTACLE: {obstacle_text} side={obstacle_side} area={obstacle_area:.3f}",
+            f"AVOID: {obstacle_reason}",
             key_text,
         )
         for index, line in enumerate(lines):
@@ -365,6 +421,7 @@ class FollowSession:
             frame_height, frame_width = frame.shape[:2]
             target_result = self.detector.detect(frame)
             command, lost_action = self.process_detection(target_result, frame_width, frame_height)
+            command = self.apply_obstacle_avoidance(command, target_result, frame)
 
             battery = self._read_battery()
             height = self._read_height()
@@ -446,6 +503,13 @@ class FollowSession:
         if callable(reset_method):
             reset_method()
         self.follow_controller.reset()
+        obstacle_reset_method = getattr(self.obstacle_detector, "reset", None)
+        if callable(obstacle_reset_method):
+            obstacle_reset_method()
+        if self.obstacle_planner is not None:
+            self.obstacle_planner.reset()
+        self.last_obstacle_result = None
+        self.last_avoidance_decision = None
 
     def _read_frame(self) -> Any:
         """Read one frame without crashing on a transient failure."""

@@ -33,6 +33,11 @@ class NoResetDetector:
         return frame
 
 
+class FailingPrepareDetector(NoResetDetector):
+    def prepare(self) -> None:
+        raise RuntimeError("model preflight failed")
+
+
 class ThreeFrameSession(FollowSession):
     def _start_camera(self) -> None:
         self.streaming = True
@@ -50,6 +55,28 @@ class RecordingFollowController(FollowController):
     def reset(self) -> None:
         self.reset_calls += 1
         super().reset()
+
+
+class RecordingObstacleDetector:
+    def __init__(self) -> None:
+        self.reset_calls = 0
+
+    def reset(self) -> None:
+        self.reset_calls += 1
+
+    def detect(self, frame, target_result):
+        return None
+
+    def draw_debug(self, frame, result):
+        return frame
+
+
+class RecordingObstaclePlanner:
+    def __init__(self) -> None:
+        self.reset_calls = 0
+
+    def reset(self) -> None:
+        self.reset_calls += 1
 
 
 class FollowSessionDetectorResetTestCase(unittest.TestCase):
@@ -75,6 +102,14 @@ class FollowSessionDetectorResetTestCase(unittest.TestCase):
         with patch("control.follow_session.sleep", return_value=None):
             self.build_session(NoResetDetector()).run()
 
+    def test_detector_prepare_failure_happens_before_takeoff(self) -> None:
+        session = self.build_session(FailingPrepareDetector())
+        with self.assertRaisesRegex(RuntimeError, "model preflight failed"):
+            session.run()
+        self.assertEqual(session.drone.height_cm, 0)
+        self.assertFalse(session.airborne)
+        self.assertFalse(session.streaming)
+
     def test_controller_reset_is_called_once_before_a_new_session(self) -> None:
         safety = SafetyManager(SafetyConfig(30, 20, 150, 60, 35, 3, 8))
         controller = RecordingFollowController(safety)
@@ -89,6 +124,25 @@ class FollowSessionDetectorResetTestCase(unittest.TestCase):
         with patch("control.follow_session.sleep", return_value=None):
             session.run()
         self.assertEqual(controller.reset_calls, 1)
+
+    def test_obstacle_modules_reset_once_before_a_new_session(self) -> None:
+        safety = SafetyManager(SafetyConfig(30, 20, 150, 60, 35, 3, 8))
+        obstacle_detector = RecordingObstacleDetector()
+        obstacle_planner = RecordingObstaclePlanner()
+        session = ThreeFrameSession(
+            drone=FakeDroneAdapter(verbose_rc=False),
+            safety_manager=safety,
+            detector=NoResetDetector(),
+            follow_controller=FollowController(safety_manager=safety),
+            config={"display_console_camera": False},
+            mode_label="FAKE",
+            obstacle_detector=obstacle_detector,
+            obstacle_planner=obstacle_planner,
+        )
+        with patch("control.follow_session.sleep", return_value=None):
+            session.run()
+        self.assertEqual(obstacle_detector.reset_calls, 1)
+        self.assertEqual(obstacle_planner.reset_calls, 1)
 
 
 if __name__ == "__main__":
