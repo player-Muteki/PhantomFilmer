@@ -30,5 +30,6 @@ The implementation is intentionally conservative: no metric depth is claimed, no
 - A blocked candidate brakes before it is confirmed, then only detours after temporal confirmation.
 - When both lateral sectors are unavailable, the planner scans at low yaw speed without moving forward.
 - If no safe local route is found within `max_avoidance_seconds`, `timeout_action: land` requests landing.
+- While the target is lost and a blocking obstacle is visible, avoidance takes priority: the planner actively detours (even though the desired command is all-zero) while ReID search is paused; once the obstacle clears, target-loss handling resumes and search re-triggers. Forward motion is still forced to zero throughout.
 - Any detector/planner exception in `MotionArbiter` degrades to a zero RC command.
 - JSONL logging is asynchronous and bounded; log failure or queue overflow must never delay control.

@@ -83,6 +83,63 @@ class ObstacleAvoidancePlannerTestCase(unittest.TestCase):
         )
         self.assertEqual(decision.command.yaw, 10)
 
+    def test_stationary_command_without_priority_brakes(self) -> None:
+        planner = ObstacleAvoidancePlanner(build_safety())
+        decision = planner.plan(
+            RCCommand(),
+            ObstacleResult(found=True, state="BLOCKED", side="left"),
+        )
+        self.assertEqual(decision.state, "BRAKING")
+        self.assertEqual(decision.command.as_tuple(), (0, 0, 0, 0))
+
+    def test_stationary_command_with_obstacle_priority_detours(self) -> None:
+        planner = ObstacleAvoidancePlanner(
+            build_safety(),
+            avoidance_yaw_speed=18,
+            avoidance_lateral_speed=12,
+        )
+        decision = planner.plan(
+            RCCommand(),
+            ObstacleResult(found=True, state="BLOCKED", side="left"),
+            obstacle_priority=True,
+        )
+        self.assertEqual(decision.state, "AVOIDING")
+        self.assertEqual(decision.command.forward_backward, 0)
+        self.assertNotEqual(decision.command.left_right, 0)
+        self.assertNotEqual(decision.command.yaw, 0)
+
+    def test_obstacle_priority_still_confirms_then_detours(self) -> None:
+        planner = ObstacleAvoidancePlanner(
+            build_safety(),
+            avoidance_yaw_speed=18,
+            avoidance_lateral_speed=12,
+            detect_confirm_frames=3,
+        )
+        first = planner.plan(
+            RCCommand(),
+            ObstacleResult(found=True, state="BLOCKED", side="left", consecutive_found_frames=1),
+            obstacle_priority=True,
+        )
+        confirmed = planner.plan(
+            RCCommand(),
+            ObstacleResult(found=True, state="BLOCKED", side="left", consecutive_found_frames=3),
+            obstacle_priority=True,
+        )
+        self.assertEqual(first.state, "BRAKING")
+        self.assertEqual(first.command.as_tuple(), (0, 0, 0, 0))
+        self.assertEqual(confirmed.state, "AVOIDING")
+        self.assertNotEqual(confirmed.command.left_right, 0)
+
+    def test_caution_with_obstacle_priority_hovers(self) -> None:
+        planner = ObstacleAvoidancePlanner(build_safety())
+        decision = planner.plan(
+            RCCommand(),
+            ObstacleResult(found=True, state="CAUTION", side="center"),
+            obstacle_priority=True,
+        )
+        self.assertEqual(decision.state, "CAUTION")
+        self.assertEqual(decision.command.as_tuple(), (0, 0, 0, 0))
+
 
 if __name__ == "__main__":
     unittest.main()

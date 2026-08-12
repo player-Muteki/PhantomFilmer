@@ -9,6 +9,11 @@ from typing import Any, Callable, Dict, Optional, Tuple
 
 from control.fixed_demo import FixedDemoManeuver, FixedDemoProgress
 from control.follow_control import FollowController, RCCommand
+from control.features import build_features
+from control.kernel.arbitration import ArbitrationEngine
+from control.kernel.features import ArbitrationContext
+from control.kernel.phases import KernelPhase
+from control.kernel.session import KernelSession
 from control.motion_arbiter import MotionArbiter, MotionContext
 from control.obstacle_avoidance import AvoidanceDecision, ObstacleAvoidancePlanner
 from control.target_search import TargetSearchController
@@ -128,6 +133,21 @@ class FollowSession:
         self.fps = 0.0
         self.control_hz = 0.0
         self._control_rate_warning_shown = False
+        self._features = build_features(
+            follow_controller=self.follow_controller,
+            safety_manager=self.safety_manager,
+            target_search=self.target_search,
+            search_enabled=self.target_search_enabled,
+            motion_arbiter=self.motion_arbiter,
+            mode_label=self.mode_label,
+        )
+        self._arbitration = ArbitrationEngine(
+            features=self._features,
+            follow_controller=self.follow_controller,
+            mode_label=self.mode_label,
+        )
+        # 内核门面：工作循环 / 唯一 RC 发射点 / fail-safe 都收拢在 KernelSession。
+        self._kernel = KernelSession(self)
 
     @property
     def console_state(self) -> str:
@@ -139,146 +159,13 @@ class FollowSession:
         self.session_state = value
 
     def run(self) -> FollowSessionResult:
-        """Start stream, take off, show the follow window, and clean up safely."""
-        try:
-            self._reset_tracking_state()
-            self._prepare_detector()
-            with self._lifecycle_lock:
-                if self.stop_event.is_set():
-                    self.session_state = "STOPPED"
-                    return FollowSessionResult(
-                        state=self.session_state,
-                        airborne=self.airborne,
-                        streaming=self.streaming,
-                    )
-                self._start_camera()
+        """Start stream, take off, show the follow window, and clean up safely.
 
-            locked_result: Dict[str, object] = {}
-            if self.initial_target_lock_frames > 0:
-                locked_result = self._wait_for_initial_target_lock()
-                if not locked_result:
-                    if self.session_state != "STOPPED":
-                        self.session_state = "TARGET_LOCK_FAILED"
-                    return FollowSessionResult(
-                        state=self.session_state,
-                        airborne=self.airborne,
-                        streaming=self.streaming,
-                    )
-                if self.window_takeoff_confirmation and self.display_enabled:
-                    locked_result = self._wait_for_window_takeoff_confirmation()
-                    if not locked_result:
-                        if self.session_state != "TAKEOFF_CANCELLED":
-                            self.session_state = "TARGET_LOCK_FAILED"
-                        return FollowSessionResult(
-                            state=self.session_state,
-                            airborne=self.airborne,
-                            streaming=self.streaming,
-                        )
-                elif self.pre_takeoff_confirmation is not None:
-                    if not self.pre_takeoff_confirmation(locked_result):
-                        print("已取消起飞：现场人员未确认目标身份。")
-                        self.session_state = "TAKEOFF_CANCELLED"
-                        return FollowSessionResult(
-                            state=self.session_state,
-                            airborne=self.airborne,
-                            streaming=self.streaming,
-                        )
-                    if not self._verify_fresh_target_before_takeoff():
-                        print(
-                            "人工确认后目标已离开或身份变得模糊，"
-                            "未起飞。"
-                        )
-                        self.session_state = "TARGET_LOCK_FAILED"
-                        return FollowSessionResult(
-                            state=self.session_state,
-                            airborne=self.airborne,
-                            streaming=self.streaming,
-                        )
-
-            with self._lifecycle_lock:
-                if self.stop_event.is_set():
-                    self.session_state = "STOPPED"
-                    return FollowSessionResult(
-                        state=self.session_state,
-                        airborne=self.airborne,
-                        streaming=self.streaming,
-                    )
-                if locked_result:
-                    authorize_takeoff = getattr(self.drone, "authorize_next_takeoff", None)
-                    if callable(authorize_takeoff):
-                        authorize_takeoff()
-                self.drone.takeoff()
-                self.airborne = True
-            if not self._wait_for_takeoff_stabilization(2.0):
-                return FollowSessionResult(
-                    state=self.session_state,
-                    airborne=self.airborne,
-                    streaming=self.streaming,
-                )
-            if not self._verify_takeoff_height():
-                self._safe_zero_output()
-                if self.airborne:
-                    self._safe_land()
-                return FollowSessionResult(
-                    state=self.session_state,
-                    airborne=self.airborne,
-                    streaming=self.streaming,
-                )
-            if not self._reach_base_hover_height():
-                self._safe_zero_output()
-                if self.airborne:
-                    self._safe_land()
-                return FollowSessionResult(
-                    state=self.session_state,
-                    airborne=self.airborne,
-                    streaming=self.streaming,
-                )
-
-            if self.pre_follow_maneuver is not None:
-                self.session_state = "FIXED_DEMO"
-                print("固定演示航线已启动；航线完成后自动进入目标跟随。")
-                print("窗口按键：q 停止并降落，e 急停并降落。")
-                completed = self.pre_follow_maneuver.run(
-                    send_command=self.send_motion_command,
-                    should_abort=self._pre_follow_should_abort,
-                    on_progress=self._show_pre_follow_progress,
-                    is_avoiding=self._fixed_demo_is_avoiding,
-                )
-                if not completed:
-                    if self.emergency_stop:
-                        self.session_state = "EMERGENCY_STOP"
-                    elif self.session_state != "STOPPED":
-                        self.session_state = "STOPPED"
-                    print("固定演示航线已中止，准备安全降落。")
-                else:
-                    self._reset_tracking_state()
-                    print("固定演示航线完成，控制输出已清零，开始目标跟随。")
-
-            if self.pre_follow_maneuver is None or completed:
-                self.session_state = "FOLLOWING"
-                print(f"跟随任务已启动，当前运行模式：{self.mode_label}")
-                if self.allow_pause:
-                    print("窗口按键：p 暂停/继续，q 停止并降落，e 急停并降落。")
-                else:
-                    print("窗口按键：q 停止并降落，e 急停并降落。")
-                self._loop()
-        except KeyboardInterrupt:
-            print("收到 Ctrl+C，正在安全停止跟随任务。")
-            self.session_state = "STOPPED"
-        finally:
-            self._safe_zero_output()
-            if self.airborne:
-                self._safe_land()
-            self._stop_camera()
-            if self.motion_arbiter is not None:
-                self.motion_arbiter.close()
-            self._destroy_window()
-
-        return FollowSessionResult(
-            state=self.session_state,
-            airborne=self.airborne,
-            streaming=self.streaming,
-        )
+        The lifecycle work loop, single RC emission seam, and fail-safe live in
+        ``KernelSession``; this facade keeps the constructor signature and return
+        type unchanged so callers and tests are unaffected.
+        """
+        return self._kernel.run()
 
     def _wait_for_initial_target_lock(self) -> Dict[str, object]:
         """Keep the aircraft grounded until fresh ReID matches are stable."""
@@ -906,13 +793,8 @@ class FollowSession:
         return self.follow_controller.compute_command(target_result, frame_width, frame_height), lost_action
 
     def send_command(self, command: RCCommand) -> None:
-        """Send a command through SafetyManager and DroneAdapter."""
-        if self.emergency_stop or self.paused or self.stop_event.is_set():
-            command = self.follow_controller.hover()
-
-        limited = self.safety_manager.limit_rc_command(*command.as_tuple())
-        self.last_command = RCCommand(*limited)
-        self.drone.move_rc(*self.last_command.as_tuple())
+        """Send a command through the kernel's single RC emission seam."""
+        self._kernel._emit(command)
 
     def send_motion_command(self, command: RCCommand) -> None:
         """Apply the shared obstacle arbiter before sending an autonomous command."""
@@ -934,37 +816,6 @@ class FollowSession:
         self.last_obstacle_result = decision.observation
         self.last_avoidance_decision = decision
         self.send_command(decision.command)
-
-    def apply_obstacle_avoidance(
-        self,
-        command: RCCommand,
-        target_result: Dict[str, object],
-        frame: Any,
-    ) -> RCCommand:
-        """Apply raw obstacle detection only on the no-arbiter fallback path.
-
-        生产装配（app.builder / app.modes）总是提供 motion_arbiter，此时不会走到
-        这里。此方法仅为直接传入 obstacle_detector/obstacle_planner 的装配保留，
-        与 arbiter 路径保持相同的"目标丢失时不输出避障指令"语义。
-        """
-        if self.obstacle_detector is None or self.obstacle_planner is None:
-            self.last_obstacle_result = None
-            self.last_avoidance_decision = None
-            return command
-        if self.emergency_stop or self.paused or self.stop_event.is_set():
-            self.last_obstacle_result = None
-            self.last_avoidance_decision = None
-            return command
-        if self.session_state != "FOLLOWING" or not target_result.get("found"):
-            self.last_obstacle_result = None
-            self.last_avoidance_decision = None
-            return command
-
-        obstacle_result = self.obstacle_detector.detect(frame, target_result)
-        decision = self.obstacle_planner.plan(command, obstacle_result)
-        self.last_obstacle_result = obstacle_result
-        self.last_avoidance_decision = decision
-        return decision.command
 
     def handle_key(self, key: int) -> Optional[str]:
         """Handle q/e and optional p window keys."""
@@ -1099,6 +950,7 @@ class FollowSession:
         frame_failures = 0
         detect_failures = 0
         height_failures = 0
+        engine_failures = 0
         stats_started_at = monotonic()
         frame_counter = 0
         command_counter = 0
@@ -1149,36 +1001,52 @@ class FollowSession:
                 continue
             detect_failures = 0
             yaw = self._read_yaw()
-            command, lost_action = self.process_detection(
-                target_result,
-                frame_width,
-                frame_height,
-                height_cm=self.last_height,
-                now=monotonic(),
-                yaw_deg=yaw,
-            )
-            search_motion = lost_action in ("search", "reacquired")
-            if (
-                self.motion_arbiter is not None
-                and not (self.paused or self.emergency_stop or search_motion)
-            ):
-                decision = self.motion_arbiter.decide(
-                    desired_command=command,
-                    frame=frame,
-                    context=MotionContext(mode=self.mode_label, target_result=target_result),
+            # 每 tick 的仲裁由 ArbitrationEngine 配方表（1-6）唯一决定：暂停/急停悬停、
+            # 目标丢失+障碍避障接管、目标存在跟随仲裁、目标丢失+无障碍搜索透传。
+            try:
+                outcome = self._arbitration.arbitrate(
+                    ArbitrationContext(
+                        phase=KernelPhase.FOLLOW,
+                        target_result=target_result,
+                        frame=frame,
+                        frame_width=frame_width,
+                        frame_height=frame_height,
+                        height_cm=self.last_height,
+                        yaw_deg=yaw,
+                        paused=self.paused,
+                        emergency=self.emergency_stop,
+                        stop_requested=self.stop_event.is_set(),
+                        now=monotonic(),
+                    )
                 )
-                self.last_obstacle_result = decision.observation
-                self.last_avoidance_decision = decision
-                command = decision.command
-                if decision.requires_landing:
-                    self.session_state = "OBSTACLE_FAILSAFE_LANDING"
-                    self._safe_zero_output()
+            except Exception as exc:
+                # 任一 feature 异常 → 内核 fail-safe 零输出；连续失败达到帧数上限后
+                # 按视频丢失同样的安全策略降落（不变量 2：绝不把异常传到飞控）。
+                engine_failures += 1
+                print(
+                    f"仲裁引擎异常"
+                    f"（{engine_failures}/{self.frame_failure_limit}）：{exc}"
+                )
+                self._kernel._failsafe(exc)
+                if engine_failures >= self.frame_failure_limit:
+                    print("仲裁引擎连续异常，准备安全降落。")
+                    self.session_state = "FRAME_LOST_LANDING"
                     break
-            elif self.motion_arbiter is None and not search_motion:
-                # 仅当没有装配 motion_arbiter 时才使用原始检测器/规划器回退路径。
-                command = self.apply_obstacle_avoidance(command, target_result, frame)
-            # 暂停/急停时冻结自主运动：不运行仲裁（既不覆盖指令，也不会在暂停中
-            # 被避障超时强制降落），command 保持 process_detection 返回的悬停。
+                sleep(0.05)
+                continue
+            engine_failures = 0
+            command = outcome.command
+            if outcome.state:
+                self.session_state = outcome.state
+            if outcome.reason:
+                self.search_reason = outcome.reason
+            if outcome.obstacle_ran:
+                self.last_obstacle_result = outcome.obstacle_observation
+                self.last_avoidance_decision = outcome.avoidance_decision
+            if outcome.requires_landing:
+                self.session_state = outcome.landing_state
+                self._safe_zero_output()
+                break
 
             battery = self._read_battery()
             height = self._read_height()
@@ -1225,7 +1093,7 @@ class FollowSession:
                 self._safe_zero_output()
                 break
 
-            if lost_action == "land":
+            if outcome.lost_land:
                 print("目标长时间丢失，准备安全降落。")
                 self._safe_zero_output()
                 break

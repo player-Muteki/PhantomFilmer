@@ -73,8 +73,14 @@ class MotionArbiter:
         desired_command: RCCommand,
         frame: Any,
         context: MotionContext,
+        obstacle_priority: bool = False,
     ) -> AvoidanceDecision:
-        """Observe one frame and return a bounded deterministic command."""
+        """Observe one frame and return a bounded deterministic command.
+
+        obstacle_priority 用于目标丢失场景：即使期望指令全零，也允许规划器
+        对已确认的阻挡障碍主动绕行，而不是命中静止刹车分支。默认 False，
+        普通跟随路径行为不变。
+        """
         if not self._active:
             self.reset(context.mode)
         started_at = monotonic()
@@ -94,7 +100,7 @@ class MotionArbiter:
                         observation,
                         consecutive_found_frames=observation.consecutive_found_frames + 1,
                     )
-            decision = self.planner.plan(desired_command, observation)
+            decision = self.planner.plan(desired_command, observation, obstacle_priority)
             self.last_observation = observation
         except Exception as exc:
             observation = ObstacleResult(

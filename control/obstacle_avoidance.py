@@ -108,8 +108,14 @@ class ObstacleAvoidancePlanner:
         self,
         follow_command: RCCommand,
         obstacle_result: ObstacleResult,
+        obstacle_priority: bool = False,
     ) -> AvoidanceDecision:
-        """Return one bounded action after applying obstacle priority rules."""
+        """Return one bounded action after applying obstacle priority rules.
+
+        obstacle_priority 用于目标丢失场景：即使期望指令全零，也要对已确认的
+        阻挡障碍主动绕行，而不是只刹车悬停（后者会让"被障碍挡住的目标"期间
+        原地等待，直到超时降落）。障碍存在时仍先做时间确认再绕行，前进恒为 0。
+        """
         self._plan_counter += 1
         plan_id = str(self._plan_counter)
         if not obstacle_result.found:
@@ -119,7 +125,7 @@ class ObstacleAvoidancePlanner:
         if obstacle_result.side in ("left", "right"):
             self._last_direction = "right" if obstacle_result.side == "left" else "left"
 
-        if not any(follow_command.as_tuple()):
+        if not obstacle_priority and not any(follow_command.as_tuple()):
             self.state = "BRAKING"
             return self._decision(
                 self._limited_command(0, 0, follow_command.up_down, 0),

@@ -99,6 +99,41 @@ class MotionArbiterTestCase(unittest.TestCase):
             arbiter.decide(RCCommand(0, 20, 0, 0), frame=object(), context=context)
         self.assertEqual(detector.detect_calls, 3)
 
+    def test_decide_forwards_obstacle_priority(self) -> None:
+        safety = build_safety()
+        result = ObstacleResult(
+            found=True,
+            state="BLOCKED",
+            side="left",
+            consecutive_found_frames=3,
+        )
+        planner = ObstacleAvoidancePlanner(
+            safety_manager=safety,
+            avoidance_yaw_speed=18,
+            avoidance_lateral_speed=12,
+        )
+        arbiter = MotionArbiter(detector=StubDetector(result), planner=planner)
+        context = MotionContext(mode="test", target_result={"found": False})
+
+        stationary_brake = arbiter.decide(
+            desired_command=RCCommand(),
+            frame=object(),
+            context=context,
+        )
+        detour = arbiter.decide(
+            desired_command=RCCommand(),
+            frame=object(),
+            context=context,
+            obstacle_priority=True,
+        )
+
+        # 目标丢失（全零期望指令）时默认仍刹车；obstacle_priority 让规划器主动绕行。
+        self.assertEqual(stationary_brake.state, "BRAKING")
+        self.assertEqual(stationary_brake.command.as_tuple(), (0, 0, 0, 0))
+        self.assertEqual(detour.state, "AVOIDING")
+        self.assertEqual(detour.command.forward_backward, 0)
+        self.assertNotEqual(detour.command.left_right, 0)
+
     def test_pipeline_error_returns_zero_command(self) -> None:
         safety = build_safety()
         arbiter = MotionArbiter(

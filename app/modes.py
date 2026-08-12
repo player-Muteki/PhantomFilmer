@@ -1,7 +1,7 @@
 """Per-mode CLI runners for PhantomFilmer."""
 
 from pathlib import Path
-from time import sleep
+from time import monotonic, sleep
 from typing import Optional, Sequence
 
 from app.builder import (
@@ -11,10 +11,13 @@ from app.builder import (
     create_drone_adapter,
 )
 from app.config import load_config, load_runtime_config, read_control_interval
+from control.features import build_features
 from control.fixed_demo import FixedDemoManeuver
 from control.follow_control import FollowController
 from control.follow_session import FollowSession
-from control.motion_arbiter import MotionContext
+from control.kernel.arbitration import ArbitrationEngine
+from control.kernel.features import ArbitrationContext
+from control.kernel.phases import KernelPhase
 from drone.safety import SafetyManager
 from drone.tello_adapter import TelloDroneAdapter
 from vision.camera import CameraStream
@@ -560,6 +563,17 @@ def run_follow_dry_run(
     controller = FollowController.from_config(safety_manager=safety, config=config)
     _, _, motion_arbiter = build_obstacle_modules(config, safety)
     control_interval = read_control_interval(config)
+    # 与生产路径共用同一仲裁引擎与 feature 注册表，保证 dry-run 决策逐帧一致。
+    engine = ArbitrationEngine(
+        features=build_features(
+            follow_controller=controller,
+            safety_manager=safety,
+            motion_arbiter=motion_arbiter,
+            mode_label="DRY_RUN",
+        ),
+        follow_controller=controller,
+        mode_label="DRY_RUN",
+    )
 
     try:
         print("正在连接模拟无人机..." if use_fake else "正在连接 RoboMaster TT / Tello...")
@@ -581,17 +595,26 @@ def run_follow_dry_run(
 
             frame_height, frame_width = frame.shape[:2]
             target_result = detector.detect(frame)
-            command = controller.compute_command(target_result, frame_width, frame_height)
-            obstacle_result = None
-            avoidance_decision = None
-            if motion_arbiter is not None:
-                avoidance_decision = motion_arbiter.decide(
-                    desired_command=command,
+            # 配方表（1-6）逐帧仲裁：目标丢失+障碍 → 避障接管（暂停找人）、
+            # 目标存在 → follow 期望指令经避障仲裁、目标丢失+无障碍 → 丢失悬停。
+            outcome = engine.arbitrate(
+                ArbitrationContext(
+                    phase=KernelPhase.FOLLOW,
+                    target_result=target_result,
                     frame=frame,
-                    context=MotionContext(mode="DRY_RUN", target_result=target_result),
+                    frame_width=frame_width,
+                    frame_height=frame_height,
+                    mode="DRY_RUN",
+                    height_cm=None,
+                    paused=False,
+                    emergency=False,
+                    stop_requested=False,
+                    now=monotonic(),
                 )
-                obstacle_result = avoidance_decision.observation
-                command = avoidance_decision.command
+            )
+            command = outcome.command
+            obstacle_result = outcome.obstacle_observation
+            avoidance_decision = outcome.avoidance_decision
             debug = controller.last_debug
             left_right, forward_backward, up_down, yaw = command.as_tuple()
             print(
