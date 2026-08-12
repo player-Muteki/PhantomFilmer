@@ -41,7 +41,7 @@ vision:
   reid_ambiguity_margin: 0.05
   # 真机初测保持为 0：未确认身份时立即视为丢失并悬停。
   reid_temporary_lost_frames: 0
-# ReID 现场演示：地面连续识别达到该帧数后才允许人工确认起飞。
+# 旧版地面锁定流程的兼容参数；当前 reid-demo 直接由命令行 y 授权起飞，不使用。
 reid_lock_stable_frames: 10
 reid_lock_timeout_seconds: 30
 reid_confirmation_timeout_seconds: 30
@@ -59,9 +59,10 @@ maximum_yaw_speed: 35
 # ArUco 前后距离分区：0.030–0.080 悬停，区外全速调整。
 target_area_ratio_min: 0.030
 target_area_ratio_max: 0.080
-# ReID 人物距离带：仅 reid-demo 运行期覆盖到 shared 配置，不影响默认 ArUco 跟随。
-reid_target_area_ratio_min: 0.15
-reid_target_area_ratio_max: 0.30
+# ReID 人物距离带：人物框占画面 0.25–0.35 时保持前后距离；
+# 仅 reid-demo 运行期覆盖到 shared 配置，不影响默认 ArUco 跟随。
+reid_target_area_ratio_min: 0.25
+reid_target_area_ratio_max: 0.35
 maximum_forward_speed: 35
 forward_speed_while_aligning: 16
 vertical_dead_zone_ratio: 0.10
@@ -71,9 +72,9 @@ target_lock_stable_frames: 15
 # 避免面积在中带边界附近波动时反复锁定/解锁。
 target_lock_exit_area_ratio_min: 0.025
 target_lock_exit_area_ratio_max: 0.085
-# ReID 锁定退出面积带比进入带（0.15–0.30）略宽：0.13–0.32 形成面积滞回。
-reid_target_lock_exit_area_ratio_min: 0.13
-reid_target_lock_exit_area_ratio_max: 0.32
+# ReID 锁定退出面积带比进入带（0.25–0.35）略宽：0.23–0.37 形成面积滞回。
+reid_target_lock_exit_area_ratio_min: 0.23
+reid_target_lock_exit_area_ratio_max: 0.37
 target_lock_exit_horizontal_dead_zone_ratio: 0.12
 target_lock_exit_vertical_dead_zone_ratio: 0.15
 control_interval: 0.05
@@ -109,25 +110,30 @@ obstacle:
 lost_target_hover_seconds: 3
 lost_target_land_seconds: 8
 # ReID 丢失目标后的有限搜索。先悬停判断；疑似距离过近时最多做两次短后退，
-# 其他情况只用原地偏航和 TOF 限高内的分层升降搜索，30 秒仍未找回则降落。
+# 其他情况只用原地偏航和 TOF 限高内的分层升降搜索，75 秒仍未找回则降落。
 target_search:
   enabled: true
   hold_seconds: 1.0
-  total_timeout_seconds: 30.0
+  # 三个高度层各完成一整圈需要更长总时限；其他安全保护仍持续生效。
+  total_timeout_seconds: 75.0
   reacquire_frames: 5
-  yaw_speed: 12
-  vertical_speed: 12
+  # 丢失后先按最后方向寻找：水平偏航 ±25、上下 ±20。
+  last_direction_yaw_speed: 25
+  # 后续各高度层偏航扫描速度和所有上下移动速度均为 ±20。
+  yaw_speed: 20
+  vertical_speed: 20
   last_direction_seconds: 2.0
-  sweep_short_seconds: 1.5
-  sweep_long_seconds: 3.0
+  full_rotation_degrees: 360
+  # 航向遥测不可用时的保底时间；偏航指令 20 时约用 18 秒完成一圈。
+  full_rotation_fallback_seconds: 18.0
   height_step_cm: 20
   min_height_cm: 80
   max_height_cm: 200
   close_recovery_enabled: true
-  close_area_ratio: 0.30
+  close_area_ratio: 0.35
   close_very_area_ratio: 0.40
-  close_backward_speed: 10
-  close_pulse_seconds: 0.35
+  close_backward_speed: 35
+  close_pulse_seconds: 1.5
   close_pause_seconds: 0.50
   close_max_attempts: 2
   edge_margin_ratio: 0.03

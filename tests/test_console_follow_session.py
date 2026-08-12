@@ -717,6 +717,36 @@ class ConsoleFollowSessionTestCase(unittest.TestCase):
         self.assertEqual(command.as_tuple(), (0, 0, 0, 0))
         self.assertEqual(session.console_state, "TARGET_LOST_LANDING")
 
+    def test_reid_direct_takeoff_can_search_without_ground_lock(self) -> None:
+        drone = FakeDroneAdapter(verbose_rc=False)
+        safety = SafetyManager(SafetyConfig(30, 20, 220, 60, 35, 1, 2))
+        session = FollowSession(
+            drone=drone,
+            safety_manager=safety,
+            detector=TargetDetector(),
+            follow_controller=FollowController(safety_manager=safety),
+            config={
+                "display_console_camera": False,
+                "target_search": {"enabled": True, "hold_seconds": 1.0},
+            },
+            mode_label="REID DIRECT TEST",
+            initial_target_lock_frames=0,
+            enable_target_search=True,
+        )
+
+        command, action = session.process_detection(
+            {"found": False, "center": None, "area": 0, "bbox": None},
+            frame_width=640,
+            frame_height=480,
+            height_cm=150,
+            now=0.0,
+        )
+
+        self.assertTrue(session.target_search_enabled)
+        self.assertEqual(action, "search")
+        self.assertEqual(command.as_tuple(), (0, 0, 0, 0))
+        self.assertEqual(session.console_state, "LOST_HOLD")
+
     def test_frame_failure_stops_with_zero_rc(self) -> None:
         drone = FakeDroneAdapter(verbose_rc=False)
         safety = build_safety()

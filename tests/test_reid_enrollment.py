@@ -17,6 +17,7 @@ from vision.reid_enrollment import (
     validate_reference_directory,
     validate_reference_images,
 )
+from app import modes as app_modes
 
 
 class SequenceDetector:
@@ -198,6 +199,64 @@ def test_target_must_still_be_present_after_human_confirmation(monkeypatch) -> N
 
     assert result.state == "TARGET_LOCK_FAILED"
     assert session.drone.takeoff_calls == 0
+
+
+def test_reid_demo_terminal_y_skips_ground_lock_and_enables_search(monkeypatch) -> None:
+    class DirectTakeoffDrone:
+        def __init__(self) -> None:
+            self.authorized = False
+
+        def connect(self) -> None:
+            pass
+
+        def get_battery(self) -> int:
+            return 90
+
+        def authorize_next_takeoff(self) -> None:
+            self.authorized = True
+
+        def stop(self) -> None:
+            pass
+
+    class PreparedDetector:
+        def __init__(self) -> None:
+            self.prepared = False
+
+        def prepare(self) -> None:
+            self.prepared = True
+
+    captured: dict[str, object] = {}
+
+    class RecordingSession:
+        def __init__(self, **kwargs) -> None:
+            captured.update(kwargs)
+
+        def run(self) -> None:
+            captured["ran"] = True
+
+    drone = DirectTakeoffDrone()
+    detector = PreparedDetector()
+    config = {
+        "min_battery_takeoff": 30,
+        "base_hover_height_cm": 150,
+        "vision": {"detector_type": "aruco"},
+        "target_search": {"enabled": True},
+    }
+    monkeypatch.setattr(app_modes, "load_runtime_config", lambda value: config)
+    monkeypatch.setattr(app_modes, "create_drone_adapter", lambda *args, **kwargs: drone)
+    monkeypatch.setattr(app_modes, "create_detector", lambda value: detector)
+    monkeypatch.setattr(app_modes, "build_obstacle_modules", lambda *args: (None, None, None))
+    monkeypatch.setattr(app_modes, "FollowSession", RecordingSession)
+    monkeypatch.setattr("builtins.input", lambda prompt: "y")
+
+    result = app_modes.run_reid_demo(use_fake=False, profile_name="person-a")
+
+    assert result == 0
+    assert detector.prepared
+    assert drone.authorized
+    assert captured["initial_target_lock_frames"] == 0
+    assert captured["enable_target_search"] is True
+    assert captured["ran"] is True
 
 
 def test_window_confirmation_reuses_one_window_and_accepts_y(monkeypatch) -> None:

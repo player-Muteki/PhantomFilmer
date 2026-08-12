@@ -39,6 +39,10 @@ class DroneAdapter(ABC):
     def get_height(self) -> int:
         """Return downward ground clearance in centimeters."""
 
+    def get_yaw(self) -> int:
+        """Return flight-controller heading in degrees when available."""
+        raise RuntimeError("当前无人机适配器不提供航向角。")
+
     @abstractmethod
     def stream_on(self) -> None:
         """Enable the drone video stream."""

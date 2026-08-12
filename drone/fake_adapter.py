@@ -44,6 +44,8 @@ class FakeDroneAdapter(DroneAdapter):
         self.target_visible = True
         self.force_target_visible = None
         self._started_at = monotonic()
+        self._last_rc_at = self._started_at
+        self.yaw_degrees = 0.0
 
     def connect(self) -> None:
         """Simulate drone connection."""
@@ -66,6 +68,10 @@ class FakeDroneAdapter(DroneAdapter):
 
     def move_rc(self, left_right: int, forward_backward: int, up_down: int, yaw: int) -> None:
         """Save and optionally print simulated RC command values."""
+        now = monotonic()
+        elapsed = max(0.0, min(0.2, now - self._last_rc_at))
+        self._last_rc_at = now
+        self.yaw_degrees = ((self.yaw_degrees + int(yaw) * elapsed + 180) % 360) - 180
         self.last_rc_command = (
             int(left_right),
             int(forward_backward),
@@ -89,6 +95,10 @@ class FakeDroneAdapter(DroneAdapter):
     def get_height(self) -> int:
         """Return simulated downward ground clearance in centimeters."""
         return self.height_cm
+
+    def get_yaw(self) -> int:
+        """Return simulated wrapped yaw in the same range as Tello telemetry."""
+        return int(round(self.yaw_degrees))
 
     def stream_on(self) -> None:
         """Simulate video stream startup."""

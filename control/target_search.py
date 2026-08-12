@@ -1,4 +1,4 @@
-"""Bounded target-loss recovery for appearance-based follow sessions."""
+"""Bounded and predictable target-loss recovery for ReID follow sessions."""
 
 from collections import deque
 from dataclasses import dataclass
@@ -19,23 +19,41 @@ class SearchDecision:
 
 
 class TargetSearchController:
-    """Search for a lost ReID target without blind forward or lateral flight."""
+    """Run one simple search loop without blind forward or lateral flight.
+
+    The fixed flow is: hold -> optional close backoff -> last horizontal
+    direction -> current/upper/lower layer scans -> repeat.
+    """
+
+    _LAYER_OFFSETS = (0, 1, -1)
 
     def __init__(self, config: Dict[str, object], min_height_cm: int, max_height_cm: int) -> None:
         search = config.get("target_search", {})
         cfg = search if isinstance(search, dict) else {}
         self.enabled = bool(cfg.get("enabled", True))
         self.hold_seconds = self._positive_float(cfg.get("hold_seconds"), 1.0)
-        self.total_timeout_seconds = self._positive_float(cfg.get("total_timeout_seconds"), 30.0)
-        self.yaw_speed = self._positive_int(cfg.get("yaw_speed"), 12)
-        self.vertical_speed = self._positive_int(cfg.get("vertical_speed"), 12)
+        self.total_timeout_seconds = self._positive_float(
+            cfg.get("total_timeout_seconds"), 75.0
+        )
+        self.yaw_speed = self._positive_int(cfg.get("yaw_speed"), 20)
+        self.last_direction_yaw_speed = self._positive_int(
+            cfg.get("last_direction_yaw_speed"), 25
+        )
+        self.vertical_speed = self._positive_int(cfg.get("vertical_speed"), 20)
         self.height_step_cm = self._positive_int(cfg.get("height_step_cm"), 20)
         self.min_height_cm = max(int(min_height_cm), int(cfg.get("min_height_cm", 80)))
         self.max_height_cm = min(int(max_height_cm), int(cfg.get("max_height_cm", 200)))
         self.reacquire_frames = self._positive_int(cfg.get("reacquire_frames"), 5)
-        self.last_direction_seconds = self._positive_float(cfg.get("last_direction_seconds"), 2.0)
-        self.sweep_short_seconds = self._positive_float(cfg.get("sweep_short_seconds"), 1.5)
-        self.sweep_long_seconds = self._positive_float(cfg.get("sweep_long_seconds"), 3.0)
+        self.last_direction_seconds = self._positive_float(
+            cfg.get("last_direction_seconds"), 2.0
+        )
+        self.full_rotation_degrees = self._positive_float(
+            cfg.get("full_rotation_degrees"), 360.0
+        )
+        self.full_rotation_fallback_seconds = self._positive_float(
+            cfg.get("full_rotation_fallback_seconds"),
+            self.full_rotation_degrees / max(1, self.yaw_speed),
+        )
         self.close_area_ratio = self._positive_float(
             cfg.get("close_area_ratio"),
             float(config.get("target_area_ratio_max", 0.30)),
@@ -45,9 +63,15 @@ class TargetSearchController:
             self._positive_float(cfg.get("close_very_area_ratio"), 0.40),
         )
         self.close_recovery_enabled = bool(cfg.get("close_recovery_enabled", True))
-        self.close_backward_speed = self._positive_int(cfg.get("close_backward_speed"), 10)
-        self.close_pulse_seconds = self._positive_float(cfg.get("close_pulse_seconds"), 0.35)
-        self.close_pause_seconds = self._positive_float(cfg.get("close_pause_seconds"), 0.50)
+        self.close_backward_speed = self._positive_int(
+            cfg.get("close_backward_speed"), 35
+        )
+        self.close_pulse_seconds = self._positive_float(
+            cfg.get("close_pulse_seconds"), 1.5
+        )
+        self.close_pause_seconds = self._positive_float(
+            cfg.get("close_pause_seconds"), 0.50
+        )
         self.close_max_attempts = self._positive_int(cfg.get("close_max_attempts"), 2)
         self.edge_margin_ratio = min(
             0.25, self._positive_float(cfg.get("edge_margin_ratio"), 0.03)
@@ -56,16 +80,19 @@ class TargetSearchController:
         self.state = "IDLE"
         self.search_started_at: Optional[float] = None
         self.phase_started_at: Optional[float] = None
+        self.verification_started_at: Optional[float] = None
         self.search_height_cm: Optional[int] = None
+        self.layer_index = 0
+        self.has_observed_target = False
         self.last_horizontal_direction = 1
-        self.last_vertical_direction = 0
-        self.last_search_axis = "horizontal"
         self.last_area_ratio = 0.0
         self.last_bbox: Optional[Tuple[int, int, int, int]] = None
         self.last_frame_size: Tuple[int, int] = (0, 0)
         self.last_command = RCCommand()
         self.area_history: deque[float] = deque(maxlen=4)
         self.close_attempts = 0
+        self.rotation_progress_degrees = 0.0
+        self.rotation_last_yaw: Optional[float] = None
         self._reacquire_tracker = TargetLockTracker(self.reacquire_frames)
 
     @property
@@ -76,8 +103,12 @@ class TargetSearchController:
         self.state = "IDLE"
         self.search_started_at = None
         self.phase_started_at = None
+        self.verification_started_at = None
         self.search_height_cm = None
+        self.layer_index = 0
+        self.has_observed_target = False
         self.close_attempts = 0
+        self._reset_rotation_tracking()
         self._reacquire_tracker.reset()
 
     def observe_target(
@@ -90,21 +121,13 @@ class TargetSearchController:
         """Remember the last trustworthy target pose before it disappears."""
         if not self._fresh_target(result):
             return
+        self.has_observed_target = True
         center = result.get("center")
         if center is not None:
-            x, y = center  # type: ignore[misc]
+            x, _y = center  # type: ignore[misc]
             horizontal_error = int(x) - frame_width // 2
-            vertical_error = int(y) - frame_height // 2
             if horizontal_error:
                 self.last_horizontal_direction = 1 if horizontal_error > 0 else -1
-            if vertical_error:
-                # Target above the image suggests searching upward first.
-                self.last_vertical_direction = 1 if vertical_error < 0 else -1
-            horizontal_ratio = abs(horizontal_error) / max(1, frame_width)
-            vertical_ratio = abs(vertical_error) / max(1, frame_height)
-            self.last_search_axis = (
-                "vertical" if vertical_ratio > horizontal_ratio else "horizontal"
-            )
         frame_area = max(1, frame_width * frame_height)
         area_ratio = float(result.get("area_ratio") or 0.0)
         if area_ratio <= 0:
@@ -123,8 +146,10 @@ class TargetSearchController:
         frame_height: int,
         height_cm: Optional[int],
         now: float,
+        yaw_deg: Optional[int] = None,
     ) -> Optional[SearchDecision]:
-        """Return None for ordinary following, otherwise a bounded search decision."""
+        """Return None for following, otherwise the current bounded search action."""
+        del frame_width, frame_height  # Kept in the shared controller interface.
         if not self.enabled:
             return None
 
@@ -133,7 +158,13 @@ class TargetSearchController:
                 return None
             self._start_search(now, height_cm)
 
+        if self._timed_out(now):
+            self.state = "SEARCH_TIMEOUT_LANDING"
+            return SearchDecision(RCCommand(), "land", self.state, "search timeout")
+
         if self._fresh_target(result):
+            if self.verification_started_at is None:
+                self.verification_started_at = now
             if self._reacquire_tracker.observe(result):
                 self.reset()
                 return SearchDecision(RCCommand(), "reacquired", "TARGET_REACQUIRED")
@@ -143,23 +174,22 @@ class TargetSearchController:
                 "REACQUIRE_VERIFY",
                 f"ReID {self._reacquire_tracker.progress}",
             )
+
+        self._resume_phase_timer_after_verification(now)
         self._reacquire_tracker.reset()
-
-        if self.search_started_at is not None and now - self.search_started_at >= self.total_timeout_seconds:
-            self.state = "SEARCH_TIMEOUT_LANDING"
-            return SearchDecision(RCCommand(), "land", self.state, "search timeout")
-
-        if self.phase_started_at is None:
-            self.phase_started_at = now
-        elapsed = now - self.phase_started_at
+        elapsed = now - (self.phase_started_at if self.phase_started_at is not None else now)
 
         if self.state == "LOST_HOLD":
             if elapsed < self.hold_seconds:
-                return SearchDecision(RCCommand(), "search", self.state, "brief hold")
-            if self._looks_too_close() and self.close_recovery_enabled:
-                self._enter("CLOSE_BACKOFF", now)
+                return self._hover("brief hold")
+            if self.close_recovery_enabled and self._looks_too_close():
+                next_state = "CLOSE_BACKOFF"
+            elif self.has_observed_target:
+                next_state = "SEARCH_LAST_DIRECTION"
             else:
-                self._enter("SEARCH_LAST_DIRECTION", now)
+                self.layer_index = 0
+                next_state = "MOVE_TO_LAYER"
+            self._enter(next_state, now)
             elapsed = 0.0
 
         if self.state == "CLOSE_BACKOFF":
@@ -168,113 +198,135 @@ class TargetSearchController:
                     RCCommand(forward_backward=-self.close_backward_speed),
                     "search",
                     self.state,
-                    "bounded rear-clearance recovery",
+                    "bounded close-target recovery",
                 )
             self._enter("CLOSE_BACKOFF_PAUSE", now)
-            return SearchDecision(RCCommand(), "search", self.state, "recheck target")
+            return self._hover("recheck target")
 
         if self.state == "CLOSE_BACKOFF_PAUSE":
             if elapsed < self.close_pause_seconds:
-                return SearchDecision(RCCommand(), "search", self.state, "recheck target")
+                return self._hover("recheck target")
             self.close_attempts += 1
-            if self.close_attempts < self.close_max_attempts:
-                self._enter("CLOSE_BACKOFF", now)
-            else:
-                self._enter("SEARCH_LAST_DIRECTION", now)
-            return SearchDecision(RCCommand(), "search", self.state)
+            next_state = (
+                "CLOSE_BACKOFF"
+                if self.close_attempts < self.close_max_attempts
+                else "SEARCH_LAST_DIRECTION"
+            )
+            self._enter(next_state, now)
+            return self._hover("close recovery complete")
 
         if self.state == "SEARCH_LAST_DIRECTION":
             if elapsed < self.last_direction_seconds:
-                if self.last_search_axis == "vertical" and self.last_vertical_direction:
-                    return SearchDecision(
-                        RCCommand(up_down=self.vertical_speed * self.last_vertical_direction),
-                        "search",
-                        self.state,
-                        "last vertical direction",
-                    )
                 return SearchDecision(
-                    RCCommand(yaw=self.yaw_speed * self.last_horizontal_direction),
+                    RCCommand(
+                        yaw=self.last_direction_yaw_speed
+                        * self.last_horizontal_direction
+                    ),
                     "search",
                     self.state,
                     "last horizontal direction",
                 )
-            self._enter("SWEEP_CURRENT_SHORT", now)
-            return SearchDecision(RCCommand(), "search", self.state, "start yaw sweep")
+            self.layer_index = 0
+            self._enter("MOVE_TO_LAYER", now)
+            return self._hover("start fixed layer loop")
 
-        if self.state == "SWEEP_CURRENT_SHORT":
-            if elapsed < self.sweep_short_seconds:
-                return self._yaw_decision(-self.last_horizontal_direction)
-            self._enter("SWEEP_CURRENT_LONG", now)
-            return SearchDecision(RCCommand(), "search", self.state, "reverse yaw sweep")
+        if self.state == "MOVE_TO_LAYER":
+            return self._move_to_layer(height_cm, now)
 
-        if self.state == "SWEEP_CURRENT_LONG":
-            if elapsed < self.sweep_long_seconds:
-                return self._yaw_decision(self.last_horizontal_direction)
-            self._enter("MOVE_UP", now)
-            return SearchDecision(RCCommand(), "search", self.state, "move to upper layer")
+        if self.state == "LAYER_SCAN_FULL":
+            direction = self._layer_scan_direction()
+            telemetry_available = self._update_rotation_progress(yaw_deg, direction)
+            rotation_complete = (
+                self.rotation_progress_degrees >= self.full_rotation_degrees
+                if telemetry_available
+                else elapsed >= self.full_rotation_fallback_seconds
+            )
+            if not rotation_complete:
+                progress = (
+                    f"{self.rotation_progress_degrees:.0f}/{self.full_rotation_degrees:.0f} deg"
+                    if telemetry_available
+                    else f"fallback {elapsed:.1f}/{self.full_rotation_fallback_seconds:.1f} s"
+                )
+                return self._yaw_decision(direction, f"full rotation {progress}")
+            self.layer_index = (self.layer_index + 1) % len(self._LAYER_OFFSETS)
+            self._enter("MOVE_TO_LAYER", now)
+            return self._hover("next search layer")
 
-        if self.state == "MOVE_UP":
-            target = min(self.max_height_cm, (self.search_height_cm or 150) + self.height_step_cm)
-            if height_cm is None:
-                return SearchDecision(RCCommand(), "search", self.state, "waiting for TOF")
-            if height_cm < target - 5:
-                return SearchDecision(RCCommand(up_down=self.vertical_speed), "search", self.state)
-            self._enter("SWEEP_UP_SHORT", now)
-            return SearchDecision(RCCommand(), "search", self.state, "upper layer reached")
+        return self._hover("search hold")
 
-        if self.state == "SWEEP_UP_SHORT":
-            if elapsed < self.sweep_short_seconds:
-                return self._yaw_decision(-self.last_horizontal_direction)
-            self._enter("SWEEP_UP_LONG", now)
-            return SearchDecision(RCCommand(), "search", self.state, "reverse yaw sweep")
+    def _move_to_layer(self, height_cm: Optional[int], now: float) -> SearchDecision:
+        target = self._layer_target_cm()
+        if height_cm is None:
+            return self._hover("waiting for TOF")
+        error = target - height_cm
+        if abs(error) <= 5:
+            self._enter("LAYER_SCAN_FULL", now)
+            self._reset_rotation_tracking()
+            return self._hover(f"layer {self.layer_index + 1}/3 ready")
+        direction = 1 if error > 0 else -1
+        return SearchDecision(
+            RCCommand(up_down=self.vertical_speed * direction),
+            "search",
+            self.state,
+            f"move to layer {self.layer_index + 1}/3: {target} cm",
+        )
 
-        if self.state == "SWEEP_UP_LONG":
-            if elapsed < self.sweep_long_seconds:
-                return self._yaw_decision(self.last_horizontal_direction)
-            self._enter("MOVE_DOWN", now)
-            return SearchDecision(RCCommand(), "search", self.state, "move to lower layer")
+    def _layer_target_cm(self) -> int:
+        base = self.search_height_cm if self.search_height_cm is not None else 150
+        offset = self._LAYER_OFFSETS[self.layer_index] * self.height_step_cm
+        return max(self.min_height_cm, min(self.max_height_cm, base + offset))
 
-        if self.state == "MOVE_DOWN":
-            target = max(self.min_height_cm, (self.search_height_cm or 150) - self.height_step_cm)
-            if height_cm is None:
-                return SearchDecision(RCCommand(), "search", self.state, "waiting for TOF")
-            if height_cm > target + 5:
-                return SearchDecision(RCCommand(up_down=-self.vertical_speed), "search", self.state)
-            self._enter("SWEEP_DOWN_SHORT", now)
-            return SearchDecision(RCCommand(), "search", self.state, "lower layer reached")
+    def _layer_scan_direction(self) -> int:
+        """Alternate full-turn direction between adjacent height layers."""
+        base_direction = self.last_horizontal_direction if self.has_observed_target else 1
+        return base_direction if self.layer_index % 2 == 0 else -base_direction
 
-        if self.state == "SWEEP_DOWN_SHORT":
-            if elapsed < self.sweep_short_seconds:
-                return self._yaw_decision(-self.last_horizontal_direction)
-            self._enter("SWEEP_DOWN_LONG", now)
-            return SearchDecision(RCCommand(), "search", self.state, "reverse yaw sweep")
+    def _update_rotation_progress(self, yaw_deg: Optional[int], direction: int) -> bool:
+        """Accumulate commanded yaw through the -180/180 telemetry wrap."""
+        if yaw_deg is None:
+            self.rotation_last_yaw = None
+            return False
+        current = float(yaw_deg)
+        if self.rotation_last_yaw is None:
+            self.rotation_last_yaw = current
+            return True
+        delta = ((current - self.rotation_last_yaw + 180.0) % 360.0) - 180.0
+        self.rotation_last_yaw = current
+        commanded_delta = delta * direction
+        if commanded_delta > 0:
+            self.rotation_progress_degrees += commanded_delta
+        return True
 
-        if self.state == "SWEEP_DOWN_LONG":
-            if elapsed < self.sweep_long_seconds:
-                return self._yaw_decision(self.last_horizontal_direction)
-            self._enter("RETURN_BASE_HEIGHT", now)
-            return SearchDecision(RCCommand(), "search", self.state, "return to search height")
-
-        if self.state == "RETURN_BASE_HEIGHT":
-            target = self.search_height_cm or 150
-            if height_cm is None:
-                return SearchDecision(RCCommand(), "search", self.state, "waiting for TOF")
-            if height_cm < target - 5:
-                return SearchDecision(RCCommand(up_down=self.vertical_speed), "search", self.state)
-            if height_cm > target + 5:
-                return SearchDecision(RCCommand(up_down=-self.vertical_speed), "search", self.state)
-            self._enter("SWEEP_CURRENT_SHORT", now)
-            return SearchDecision(RCCommand(), "search", self.state, "repeat sweep")
-
-        return SearchDecision(RCCommand(), "search", self.state)
+    def _reset_rotation_tracking(self) -> None:
+        self.rotation_progress_degrees = 0.0
+        self.rotation_last_yaw = None
 
     def _start_search(self, now: float, height_cm: Optional[int]) -> None:
+        base_height = 150 if height_cm is None else int(height_cm)
+        self.search_height_cm = max(
+            self.min_height_cm, min(self.max_height_cm, base_height)
+        )
         self.search_started_at = now
         self.phase_started_at = now
-        self.search_height_cm = height_cm
+        self.verification_started_at = None
+        self.layer_index = 0
         self.close_attempts = 0
+        self._reset_rotation_tracking()
         self._reacquire_tracker.reset()
         self.state = "LOST_HOLD"
+
+    def _resume_phase_timer_after_verification(self, now: float) -> None:
+        if self.verification_started_at is None:
+            return
+        if self.phase_started_at is not None:
+            self.phase_started_at += now - self.verification_started_at
+        self.verification_started_at = None
+
+    def _timed_out(self, now: float) -> bool:
+        return (
+            self.search_started_at is not None
+            and now - self.search_started_at >= self.total_timeout_seconds
+        )
 
     def _looks_too_close(self) -> bool:
         growing = (
@@ -282,7 +334,6 @@ class TargetSearchController:
             and self.area_history[-1] > self.area_history[0] * 1.08
         )
         clipped = self._last_bbox_touches_edge()
-        # FollowController 的负前后指令代表它已经判断目标过近并在拉开距离。
         distance_recovery_active = self.last_command.forward_backward < 0
         return (
             self.last_area_ratio >= self.close_very_area_ratio
@@ -308,13 +359,16 @@ class TargetSearchController:
             or y + box_height >= height - margin_y
         )
 
-    def _yaw_decision(self, direction: int) -> SearchDecision:
+    def _yaw_decision(self, direction: int, reason: str) -> SearchDecision:
         return SearchDecision(
             RCCommand(yaw=self.yaw_speed * direction),
             "search",
             self.state,
-            "yaw sweep",
+            reason,
         )
+
+    def _hover(self, reason: str) -> SearchDecision:
+        return SearchDecision(RCCommand(), "search", self.state, reason)
 
     def _enter(self, state: str, now: float) -> None:
         self.state = state

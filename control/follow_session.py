@@ -52,6 +52,7 @@ class FollowSession:
         initial_target_lock_timeout_seconds: float = 30.0,
         pre_takeoff_confirmation: Optional[Callable[[Dict[str, object]], bool]] = None,
         window_takeoff_confirmation: bool = False,
+        enable_target_search: Optional[bool] = None,
     ) -> None:
         self.drone = drone
         self.safety_manager = safety_manager
@@ -98,9 +99,15 @@ class FollowSession:
             min_height_cm=self.safety_manager.config.min_height_cm,
             max_height_cm=self.safety_manager.config.max_height_cm,
         )
-        # 现阶段搜索只用于经过地面 ReID 锁定的任务，避免改变普通颜色/标记跟随。
+        # 默认只为经过地面锁定的旧流程开启搜索；ReID 直接起飞流程可显式开启，
+        # 从而把“是否搜索”与“起飞前是否必须看到目标”彻底解耦。
+        search_requested = (
+            self.initial_target_lock_frames > 0
+            if enable_target_search is None
+            else bool(enable_target_search)
+        )
         self.target_search_enabled = (
-            self.initial_target_lock_frames > 0 and self.target_search.enabled
+            search_requested and self.target_search.enabled
         )
         self.search_reason = ""
 
@@ -114,6 +121,7 @@ class FollowSession:
         self.last_battery: Optional[int] = None
         self.last_height: Optional[int] = None
         self.last_raw_height: Optional[int] = None
+        self.last_yaw: Optional[int] = None
         self._height_samples: deque[int] = deque(maxlen=self.height_filter_window)
         self.last_obstacle_result: Optional[ObstacleResult] = None
         self.last_avoidance_decision: Optional[AvoidanceDecision] = None
@@ -847,6 +855,7 @@ class FollowSession:
         frame_height: int,
         height_cm: Optional[int] = None,
         now: Optional[float] = None,
+        yaw_deg: Optional[int] = None,
     ) -> Tuple[RCCommand, str]:
         """Convert one detection result into a safe command and lost-target action."""
         if self.emergency_stop:
@@ -857,7 +866,7 @@ class FollowSession:
             return self.follow_controller.hover(), "paused"
 
         if self.target_search_enabled:
-            # ReID 搜索状态机自己负责 30 秒超时；持续清掉旧的 8 秒丢失计时，
+            # ReID 搜索状态机自己负责配置的总超时；持续清掉旧的8秒丢失计时，
             # 避免两套计时互相冲突、搜索尚未完成就提前降落。
             self.safety_manager.update_target_lost(True)
             decision = self.target_search.update(
@@ -866,6 +875,7 @@ class FollowSession:
                 frame_height,
                 height_cm,
                 monotonic() if now is None else now,
+                yaw_deg=yaw_deg,
             )
             if decision is not None:
                 self.session_state = decision.state
@@ -1138,12 +1148,14 @@ class FollowSession:
                 sleep(0.05)
                 continue
             detect_failures = 0
+            yaw = self._read_yaw()
             command, lost_action = self.process_detection(
                 target_result,
                 frame_width,
                 frame_height,
                 height_cm=self.last_height,
                 now=monotonic(),
+                yaw_deg=yaw,
             )
             search_motion = lost_action in ("search", "reacquired")
             if (
@@ -1286,6 +1298,7 @@ class FollowSession:
         self._height_samples.clear()
         self.last_height = None
         self.last_raw_height = None
+        self.last_yaw = None
         self.target_search.reset()
         self.search_reason = ""
 
@@ -1307,6 +1320,14 @@ class FollowSession:
             print(f"读取电量失败：{exc}")
             self.last_battery = None
         return self.last_battery
+
+    def _read_yaw(self) -> Optional[int]:
+        """Read cached flight-controller yaw without making it a landing dependency."""
+        try:
+            self.last_yaw = int(self.drone.get_yaw())
+        except RuntimeError:
+            self.last_yaw = None
+        return self.last_yaw
 
     def _read_height(self) -> Optional[int]:
         """Read and median-filter downward TOF ground clearance."""

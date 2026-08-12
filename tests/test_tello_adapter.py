@@ -17,6 +17,9 @@ class RecordingTello:
     def get_height(self) -> int:
         return -20
 
+    def get_yaw(self) -> int:
+        return -173
+
 
 class TelloDroneAdapterTestCase(unittest.TestCase):
     def build_adapter(self) -> tuple[TelloDroneAdapter, RecordingTello]:
@@ -63,6 +66,11 @@ class TelloDroneAdapterTestCase(unittest.TestCase):
 
         self.assertEqual(adapter.get_height(), 147)
         self.assertEqual(adapter.get_estimated_height(), -20)
+
+    def test_yaw_uses_flight_controller_telemetry(self) -> None:
+        adapter, _tello = self.build_adapter()
+
+        self.assertEqual(adapter.get_yaw(), -173)
 
 
 if __name__ == "__main__":

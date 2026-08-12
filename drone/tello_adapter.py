@@ -117,6 +117,14 @@ class TelloDroneAdapter(DroneAdapter):
         except Exception as exc:
             raise RuntimeError("读取飞控估算高度失败：请确认无人机连接正常。") from exc
 
+    def get_yaw(self) -> int:
+        """Return the cached flight-controller yaw angle in degrees."""
+        self._require_connection()
+        try:
+            return int(self._tello.get_yaw())
+        except Exception as exc:
+            raise RuntimeError("读取航向角失败：请确认无人机连接正常。") from exc
+
     def stream_on(self) -> None:
         """Enable the drone camera stream."""
         self._require_connection()

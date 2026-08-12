@@ -372,7 +372,7 @@ def run_reid_demo(
     reference_count: int = 3,
     lock_frames: Optional[int] = None,
 ) -> int:
-    """Enroll a person, lock them on the ground, then follow after confirmation."""
+    """Load a ReID identity, take off on terminal confirmation, then follow/search."""
     selected_profile = str(profile_name or "").strip()
     selected_images: Sequence[Path] = []
     if selected_profile:
@@ -405,27 +405,8 @@ def run_reid_demo(
         print(str(exc))
         return 1
     controller = FollowController.from_config(safety_manager=safety, config=config)
-    configured_lock_frames = int(config.get("reid_lock_stable_frames", 10))
-    required_lock_frames = max(
-        1, configured_lock_frames if lock_frames is None else int(lock_frames)
-    )
-    lock_timeout = max(1.0, float(config.get("reid_lock_timeout_seconds", 30.0)))
-
-    def confirm_takeoff(result: dict[str, object]) -> bool:
-        """Terminal fallback used only when video display is disabled."""
-        similarity = float(result.get("similarity") or 0.0)
-        print(
-            f"地面 ReID 已锁定目标（相似度 {similarity:.3f}）。"
-            "当前未开启视频预览，无法人工目视核对画面；"
-            "请确认目标确为现场录入的人员后再起飞。"
-        )
-        try:
-            answer = input(
-                "确认是现场录入的人员后，输入 YES 起飞跟随："
-            ).strip()
-        except (EOFError, KeyboardInterrupt):
-            return False
-        return answer == "YES"
+    # 保留 --lock-frames 参数以兼容旧命令，但直接起飞流程不再用识别帧数授权起飞。
+    del lock_frames
 
     try:
         if selected_profile:
@@ -453,7 +434,24 @@ def run_reid_demo(
             print("已录入参考照片：")
             for path in selected_images:
                 print(f"- {path}")
-        print("接下来只会在地面开启无人机摄像头进行身份锁定。")
+        print(
+            "无需先识别到目标。确认后无人机将直接起飞到 "
+            f"{int(config.get('base_hover_height_cm', 150))} cm，"
+            "再进入 ReID 跟随；未发现目标时自动执行丢失搜索。"
+        )
+        try:
+            answer = input(
+                "确认周围及后方、上下方净空后，输入 y 起飞："
+            ).strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            answer = ""
+        if answer not in {"y", "yes", "是"}:
+            print("已取消 ReID 演示：未收到起飞确认。")
+            return 0
+
+        authorize_takeoff = getattr(drone, "authorize_next_takeoff", None)
+        if callable(authorize_takeoff):
+            authorize_takeoff()
 
         _, _, motion_arbiter = build_obstacle_modules(config, safety)
 
@@ -468,10 +466,8 @@ def run_reid_demo(
             state_label="REID",
             allow_pause=False,
             motion_arbiter=motion_arbiter,
-            initial_target_lock_frames=required_lock_frames,
-            initial_target_lock_timeout_seconds=lock_timeout,
-            pre_takeoff_confirmation=confirm_takeoff,
-            window_takeoff_confirmation=True,
+            initial_target_lock_frames=0,
+            enable_target_search=True,
         )
         session.run()
         return 0
