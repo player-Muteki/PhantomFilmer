@@ -110,12 +110,10 @@ obstacle:
 lost_target_hover_seconds: 3
 lost_target_land_seconds: 8
 # ReID 丢失目标后的有限搜索。先悬停判断；疑似距离过近时最多做两次短后退，
-# 其他情况只用原地偏航和 TOF 限高内的分层升降搜索，75 秒仍未找回则降落。
+# 其他情况只用原地偏航和 TOF 限高内的分层升降搜索。
 target_search:
   enabled: true
   hold_seconds: 1.0
-  # 三个高度层各完成一整圈需要更长总时限；其他安全保护仍持续生效。
-  total_timeout_seconds: 75.0
   reacquire_frames: 5
   # 丢失后先按最后方向寻找：水平偏航 ±25、上下 ±20。
   last_direction_yaw_speed: 25

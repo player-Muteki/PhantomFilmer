@@ -22,7 +22,7 @@ class TargetSearchController:
     """Run one simple search loop without blind forward or lateral flight.
 
     The fixed flow is: hold -> optional close backoff -> last horizontal
-    direction -> current/upper/lower layer scans -> repeat.
+    direction -> current/upper/lower layer scans -> return to base -> land.
     """
 
     _LAYER_OFFSETS = (0, 1, -1)
@@ -32,9 +32,6 @@ class TargetSearchController:
         cfg = search if isinstance(search, dict) else {}
         self.enabled = bool(cfg.get("enabled", True))
         self.hold_seconds = self._positive_float(cfg.get("hold_seconds"), 1.0)
-        self.total_timeout_seconds = self._positive_float(
-            cfg.get("total_timeout_seconds"), 75.0
-        )
         self.yaw_speed = self._positive_int(cfg.get("yaw_speed"), 20)
         self.last_direction_yaw_speed = self._positive_int(
             cfg.get("last_direction_yaw_speed"), 25
@@ -78,7 +75,6 @@ class TargetSearchController:
         )
 
         self.state = "IDLE"
-        self.search_started_at: Optional[float] = None
         self.phase_started_at: Optional[float] = None
         self.verification_started_at: Optional[float] = None
         self.search_height_cm: Optional[int] = None
@@ -101,7 +97,6 @@ class TargetSearchController:
 
     def reset(self) -> None:
         self.state = "IDLE"
-        self.search_started_at = None
         self.phase_started_at = None
         self.verification_started_at = None
         self.search_height_cm = None
@@ -157,10 +152,6 @@ class TargetSearchController:
             if self._fresh_target(result):
                 return None
             self._start_search(now, height_cm)
-
-        if self._timed_out(now):
-            self.state = "SEARCH_TIMEOUT_LANDING"
-            return SearchDecision(RCCommand(), "land", self.state, "search timeout")
 
         if self._fresh_target(result):
             if self.verification_started_at is None:
@@ -248,9 +239,15 @@ class TargetSearchController:
                     else f"fallback {elapsed:.1f}/{self.full_rotation_fallback_seconds:.1f} s"
                 )
                 return self._yaw_decision(direction, f"full rotation {progress}")
-            self.layer_index = (self.layer_index + 1) % len(self._LAYER_OFFSETS)
-            self._enter("MOVE_TO_LAYER", now)
-            return self._hover("next search layer")
+            if self.layer_index + 1 < len(self._LAYER_OFFSETS):
+                self.layer_index += 1
+                self._enter("MOVE_TO_LAYER", now)
+                return self._hover("next search layer")
+            self._enter("RETURN_TO_BASE", now)
+            return self._hover("full search round complete; return to base")
+
+        if self.state == "RETURN_TO_BASE":
+            return self._return_to_base(height_cm)
 
         return self._hover("search hold")
 
@@ -269,6 +266,27 @@ class TargetSearchController:
             "search",
             self.state,
             f"move to layer {self.layer_index + 1}/3: {target} cm",
+        )
+
+    def _return_to_base(self, height_cm: Optional[int]) -> SearchDecision:
+        target = self.search_height_cm if self.search_height_cm is not None else 150
+        if height_cm is None:
+            return self._hover("waiting for TOF before landing")
+        error = target - height_cm
+        if abs(error) <= 5:
+            self.state = "SEARCH_COMPLETE_LANDING"
+            return SearchDecision(
+                RCCommand(),
+                "land",
+                self.state,
+                "full search round complete",
+            )
+        direction = 1 if error > 0 else -1
+        return SearchDecision(
+            RCCommand(up_down=self.vertical_speed * direction),
+            "search",
+            self.state,
+            f"return to search base height: {target} cm",
         )
 
     def _layer_target_cm(self) -> int:
@@ -306,7 +324,6 @@ class TargetSearchController:
         self.search_height_cm = max(
             self.min_height_cm, min(self.max_height_cm, base_height)
         )
-        self.search_started_at = now
         self.phase_started_at = now
         self.verification_started_at = None
         self.layer_index = 0
@@ -321,12 +338,6 @@ class TargetSearchController:
         if self.phase_started_at is not None:
             self.phase_started_at += now - self.verification_started_at
         self.verification_started_at = None
-
-    def _timed_out(self, now: float) -> bool:
-        return (
-            self.search_started_at is not None
-            and now - self.search_started_at >= self.total_timeout_seconds
-        )
 
     def _looks_too_close(self) -> bool:
         growing = (

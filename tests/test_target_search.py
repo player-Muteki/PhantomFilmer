@@ -38,7 +38,6 @@ class TargetSearchControllerTests(unittest.TestCase):
     def build_controller(self, **overrides):
         search = {
             "hold_seconds": 1.0,
-            "total_timeout_seconds": 30.0,
             "reacquire_frames": 5,
             "last_direction_yaw_speed": 25,
             "yaw_speed": 20,
@@ -159,9 +158,8 @@ class TargetSearchControllerTests(unittest.TestCase):
         self.assertEqual(layer_sweep.command.yaw, 20)
 
     def test_full_rotation_uses_wrapped_yaw_telemetry_until_360_degrees(self):
-        controller = self.build_controller(total_timeout_seconds=100)
+        controller = self.build_controller()
         controller.search_height_cm = 150
-        controller.search_started_at = 0.0
         controller.phase_started_at = 0.0
         controller.state = "LAYER_SCAN_FULL"
         controller.layer_index = 0
@@ -181,9 +179,8 @@ class TargetSearchControllerTests(unittest.TestCase):
         self.assertEqual(completed.command.yaw, 0)
 
     def test_adjacent_layers_reverse_full_rotation_direction(self):
-        controller = self.build_controller(total_timeout_seconds=100)
+        controller = self.build_controller()
         controller.search_height_cm = 150
-        controller.search_started_at = 0.0
         controller.phase_started_at = 0.0
         controller.state = "LAYER_SCAN_FULL"
 
@@ -224,9 +221,8 @@ class TargetSearchControllerTests(unittest.TestCase):
         self.assertEqual(restarted.reason, "ReID 1/5")
 
     def test_failed_reacquisition_preserves_full_rotation_progress(self):
-        controller = self.build_controller(total_timeout_seconds=100)
+        controller = self.build_controller()
         controller.search_height_cm = 150
-        controller.search_started_at = 0.0
         controller.phase_started_at = 0.0
         controller.state = "LAYER_SCAN_FULL"
         controller.update(LOST, 640, 480, 150, now=0.0, yaw_deg=0)
@@ -241,20 +237,18 @@ class TargetSearchControllerTests(unittest.TestCase):
         self.assertEqual(resumed.state, "LAYER_SCAN_FULL")
         self.assertEqual(resumed.command.yaw, 20)
 
-    def test_search_timeout_requests_landing(self):
+    def test_elapsed_time_alone_does_not_end_search(self):
         controller = self.build_controller()
         controller.observe_target(target(), 640, 480, RCCommand())
         controller.update(LOST, 640, 480, 150, now=0.0)
 
-        decision = controller.update(LOST, 640, 480, 150, now=30.01)
+        decision = controller.update(LOST, 640, 480, 150, now=300.0)
 
-        self.assertEqual(decision.action, "land")
-        self.assertEqual(decision.command.as_tuple(), (0, 0, 0, 0))
+        self.assertEqual(decision.action, "search")
 
     def test_layer_targets_are_clamped_to_configured_height_bounds(self):
         controller = self.build_controller(min_height_cm=80, max_height_cm=200)
         controller.search_height_cm = 195
-        controller.search_started_at = 0.0
         controller.phase_started_at = 0.0
         controller.layer_index = 1
         controller.state = "MOVE_TO_LAYER"
@@ -268,11 +262,9 @@ class TargetSearchControllerTests(unittest.TestCase):
 
     def test_fixed_layer_order_is_current_then_upper_then_lower(self):
         controller = self.build_controller(
-            total_timeout_seconds=100,
             full_rotation_fallback_seconds=1.0,
         )
         controller.search_height_cm = 150
-        controller.search_started_at = 0.0
         controller.phase_started_at = 0.0
         controller.layer_index = 0
         controller.state = "MOVE_TO_LAYER"
@@ -292,6 +284,25 @@ class TargetSearchControllerTests(unittest.TestCase):
         self.assertEqual(upper.state, "LAYER_SCAN_FULL")
         self.assertEqual(downward.command.up_down, -20)
         self.assertEqual(lower.state, "LAYER_SCAN_FULL")
+
+    def test_one_complete_round_returns_to_base_then_lands(self):
+        controller = self.build_controller(full_rotation_fallback_seconds=1.0)
+        controller.search_height_cm = 150
+        controller.phase_started_at = 0.0
+        controller.layer_index = 2
+        controller.state = "LAYER_SCAN_FULL"
+
+        controller.update(LOST, 640, 480, 130, now=0.0)
+        round_complete = controller.update(LOST, 640, 480, 130, now=1.01)
+        returning = controller.update(LOST, 640, 480, 130, now=1.02)
+        landing = controller.update(LOST, 640, 480, 150, now=1.03)
+
+        self.assertEqual(round_complete.state, "RETURN_TO_BASE")
+        self.assertEqual(round_complete.command.as_tuple(), (0, 0, 0, 0))
+        self.assertEqual(returning.command.up_down, 20)
+        self.assertEqual(landing.action, "land")
+        self.assertEqual(landing.state, "SEARCH_COMPLETE_LANDING")
+        self.assertEqual(landing.reason, "full search round complete")
 
 
 if __name__ == "__main__":

@@ -1,8 +1,8 @@
 """Search feature: propose the ReID re-acquisition plan when the target is lost.
 
 Wraps TargetSearchController. It is only invoked while the arbitration table
-selects it (target lost + no obstacle + search enabled), so its 30-second
-timeout naturally freezes while preempted by obstacle takeover.
+selects it (target lost + no obstacle + search enabled). Search ends after one
+complete three-layer round rather than after a wall-clock timeout.
 """
 
 from typing import Any, Optional
@@ -28,8 +28,8 @@ class SearchFeature:
         self._follow = follow_controller
 
     def propose(self, ctx: ArbitrationContext, now: float) -> FeatureProposal:
-        # 与旧 process_detection 搜索分支一致：先清掉旧的 8 秒丢失计时，
-        # 避免与搜索自身的 30 秒超时互相打架。
+        # 搜索启用时清掉旧的 8 秒丢失计时，避免安全层
+        # 在三层完整搜索轮次完成前提前触发降落。
         self._safety.update_target_lost(True)
         decision = self._search.update(
             ctx.target_result,

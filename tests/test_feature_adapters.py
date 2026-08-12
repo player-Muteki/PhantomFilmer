@@ -219,25 +219,23 @@ class SearchFeatureTestCase(unittest.TestCase):
         self.assertIn(proposal.state, {"LOST_HOLD", "SEARCH_HOLD", "SEARCH_LAST_DIRECTION"})
         self.assertFalse(proposal.requires_landing)
 
-    def test_timeout_requires_landing_target_lost(self) -> None:
+    def test_completed_round_requires_landing_target_lost(self) -> None:
         safety = build_safety()
-        search = build_search({"total_timeout_seconds": 30.0})
+        search = build_search()
         now = monotonic()
-        search.update(
-            {"found": False, "center": None, "area": 0.0, "bbox": None},
-            640,
-            480,
-            None,
-            now,
-        )
-        search.search_started_at = now - 31.0  # 模拟 30s 超时
+        search.search_height_cm = 150
+        search.phase_started_at = now
+        search.state = "RETURN_TO_BASE"
         feature = SearchFeature(
             target_search=search,
             safety_manager=safety,
             follow_controller=FollowController(safety_manager=safety),
         )
         proposal = feature.propose(
-            build_ctx(target_result={"found": False, "center": None, "area": 0.0, "bbox": None}),
+            build_ctx(
+                target_result={"found": False, "center": None, "area": 0.0, "bbox": None},
+                height_cm=150,
+            ),
             now,
         )
         self.assertTrue(proposal.requires_landing)

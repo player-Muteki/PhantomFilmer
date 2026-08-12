@@ -34,12 +34,12 @@ class ConfigFallbackTestCase(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.yaml"
             path.write_text(
-                "target_search:\n  enabled: true\n  total_timeout_seconds: 30.0\n",
+                "target_search:\n  enabled: true\n  yaw_speed: 20\n",
                 encoding="utf-8",
             )
             config = main._load_config_without_yaml(path)
         self.assertTrue(config["target_search"]["enabled"])
-        self.assertEqual(config["target_search"]["total_timeout_seconds"], 30.0)
+        self.assertEqual(config["target_search"]["yaw_speed"], 20)
 
 
 if __name__ == "__main__":
