@@ -102,12 +102,20 @@ class TelloDroneAdapter(DroneAdapter):
             raise RuntimeError("读取电量失败：请确认无人机连接正常。") from exc
 
     def get_height(self) -> int:
-        """Return current flight height in centimeters."""
+        """Return downward TOF ground clearance in centimeters."""
+        self._require_connection()
+        try:
+            return int(self._tello.get_distance_tof())
+        except Exception as exc:
+            raise RuntimeError("读取 TOF 离地高度失败：请确认无人机连接正常。") from exc
+
+    def get_estimated_height(self) -> int:
+        """Return the flight controller's raw h field for diagnostics only."""
         self._require_connection()
         try:
             return int(self._tello.get_height())
         except Exception as exc:
-            raise RuntimeError("读取高度失败：请确认无人机连接正常。") from exc
+            raise RuntimeError("读取飞控估算高度失败：请确认无人机连接正常。") from exc
 
     def stream_on(self) -> None:
         """Enable the drone camera stream."""

@@ -1,6 +1,8 @@
 """Shared single-drone visual follow session."""
 
+from collections import deque
 from dataclasses import dataclass
+from statistics import median
 from threading import Event, Lock
 from time import monotonic, sleep
 from typing import Any, Callable, Dict, Optional, Tuple
@@ -78,6 +80,16 @@ class FollowSession:
         self._lifecycle_lock = Lock()
         self.display_enabled = bool(config.get("display_console_camera", True))
         self.frame_failure_limit = int(config.get("frame_failure_limit", 30))
+        self.height_failure_limit = max(
+            1, int(config.get("height_failure_limit", 10))
+        )
+        self.height_filter_window = max(
+            1, int(config.get("height_filter_window", 5))
+        )
+        self.height_max_valid_cm = max(
+            self.safety_manager.config.max_height_cm,
+            int(config.get("height_max_valid_cm", 500)),
+        )
         self.control_interval = self._read_control_interval(config)
         self.min_control_hz = float(config.get("min_control_hz", 8.0))
 
@@ -90,6 +102,8 @@ class FollowSession:
         self.last_command = RCCommand()
         self.last_battery: Optional[int] = None
         self.last_height: Optional[int] = None
+        self.last_raw_height: Optional[int] = None
+        self._height_samples: deque[int] = deque(maxlen=self.height_filter_window)
         self.last_obstacle_result: Optional[ObstacleResult] = None
         self.last_avoidance_decision: Optional[AvoidanceDecision] = None
         self.fps = 0.0
@@ -182,18 +196,19 @@ class FollowSession:
                     airborne=self.airborne,
                     streaming=self.streaming,
                 )
-            height = self._read_height()
-            if height is not None and height < 10:
-                print("未检测到起飞高度，跟随任务未启动。")
-                self.session_state = "STOPPED"
+            if not self._verify_takeoff_height():
                 self._safe_zero_output()
-                self._safe_land()
+                if self.airborne:
+                    self._safe_land()
                 return FollowSessionResult(
                     state=self.session_state,
                     airborne=self.airborne,
                     streaming=self.streaming,
                 )
             if not self._reach_base_hover_height():
+                self._safe_zero_output()
+                if self.airborne:
+                    self._safe_land()
                 return FollowSessionResult(
                     state=self.session_state,
                     airborne=self.airborne,
@@ -487,8 +502,89 @@ class FollowSession:
             sleep(self.control_interval)
         return not self.stop_event.is_set()
 
+    def _verify_takeoff_height(self) -> bool:
+        """Confirm takeoff from several telemetry samples instead of one transient value."""
+        timeout = max(
+            0.2,
+            float(self.config.get("takeoff_height_verify_timeout_seconds", 5.0)),
+        )
+        minimum_height = max(
+            10,
+            int(self.config.get("takeoff_height_min_cm", 20)),
+        )
+        required_readings = max(
+            1,
+            int(self.config.get("takeoff_height_stable_readings", 3)),
+        )
+        sample_interval = max(
+            0.05,
+            float(self.config.get("takeoff_height_sample_interval_seconds", 0.2)),
+        )
+        deadline = monotonic() + timeout
+        valid_readings = 0
+        last_height: Optional[int] = None
+        self.session_state = "VERIFYING_TAKEOFF_HEIGHT"
+        print(
+            f"正在确认起飞高度：需要连续 {required_readings} 次达到 "
+            f"{minimum_height} cm。"
+        )
+
+        while monotonic() < deadline and not self.stop_event.is_set():
+            height = self._read_height()
+            last_height = height
+            if height is not None and height >= minimum_height:
+                valid_readings += 1
+            else:
+                valid_readings = 0
+
+            if valid_readings >= required_readings:
+                self.session_state = "TAKEOFF_HEIGHT_READY"
+                print(f"起飞高度确认成功：{height} cm。")
+                return True
+
+            if self.display_enabled:
+                import cv2
+
+                frame = self._read_frame()
+                if frame is not None:
+                    preview = frame
+                    height_text = "N/A" if height is None else str(height)
+                    cv2.putText(
+                        preview,
+                        f"VERIFY HEIGHT {valid_readings}/{required_readings} | {height_text} cm",
+                        (20, max(36, preview.shape[0] - 48)),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.6,
+                        (0, 255, 255),
+                        2,
+                    )
+                    cv2.putText(
+                        preview,
+                        "q: land | e: emergency land",
+                        (20, max(68, preview.shape[0] - 20)),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.55,
+                        (255, 255, 255),
+                        1,
+                    )
+                    cv2.imshow(self.window_name, preview)
+                action = self.handle_key(cv2.waitKey(1) & 0xFF)
+                if action in ("stop", "emergency"):
+                    return False
+            sleep(sample_interval)
+
+        if self.stop_event.is_set():
+            if self.session_state != "EMERGENCY_STOP":
+                self.session_state = "STOPPED"
+        else:
+            shown_height = "N/A" if last_height is None else f"{last_height} cm"
+            print(f"起飞高度确认超时（最后读数：{shown_height}），准备安全降落。")
+            self.session_state = "STOPPED"
+            self._safe_zero_output()
+        return False
+
     def _reach_base_hover_height(self) -> bool:
-        """Reach base altitude while continuously verifying an authorized ReID target."""
+        """Reach base altitude without making climb permission depend on ReID."""
         try:
             target_height = int(self.config.get("base_hover_height_cm", 0))
         except (TypeError, ValueError):
@@ -517,42 +613,29 @@ class FollowSession:
                 abs(int(self.config.get("base_hover_vertical_speed", 20))),
             ),
         )
-        timeout = max(
-            3.0,
-            float(self.config.get("base_hover_timeout_seconds", 12.0)),
-        )
         required_stable_readings = max(
             1,
             int(self.config.get("base_hover_stable_readings", 3)),
         )
-        require_reid_target = self.initial_target_lock_frames > 0
-        reacquire_frames = max(
-            1,
-            int(self.config.get("base_hover_reid_reacquire_frames", 3)),
-        )
-        target_lost_timeout = max(
-            1.0,
-            float(
-                self.config.get(
-                    "base_hover_target_lost_timeout_seconds",
-                    self.safety_manager.config.target_lost_land_seconds,
-                )
-            ),
-        )
-        target_tracker = TargetLockTracker(reacquire_frames)
-        target_ready = not require_reid_target
-        target_lost_since: Optional[float] = None
-        deadline = monotonic() + timeout
+        keep_detecting = self.initial_target_lock_frames > 0
         stable_readings = 0
         height_failures = 0
         frame_failures = 0
         detect_failures = 0
+        next_battery_check = monotonic()
         self.session_state = "REACHING_BASE_HEIGHT"
-        print(f"正在到达基础悬停高度：{target_height} cm。")
-        if require_reid_target:
-            print(f"升高期间持续运行 ReID；目标连续确认 {reacquire_frames} 帧后才允许升高。")
+        print(f"正在到达基础悬停高度：{target_height} cm（不受 ReID 结果和总时限影响）。")
 
-        while monotonic() < deadline and not self.stop_event.is_set():
+        while not self.stop_event.is_set():
+            now = monotonic()
+            if now >= next_battery_check:
+                battery = self._read_battery()
+                next_battery_check = now + 1.0
+                if battery is not None and self.safety_manager.should_land(battery):
+                    print(f"升高阶段电量已降至 {battery}%，准备安全降落。")
+                    self.session_state = "LOW_BATTERY_LANDING"
+                    self._safe_zero_output()
+                    return False
             height = self._read_height()
             if height is None:
                 height_failures += 1
@@ -576,13 +659,10 @@ class FollowSession:
 
             preview = None
             result: Optional[Dict[str, object]] = None
-            if require_reid_target or self.display_enabled:
+            if keep_detecting or self.display_enabled:
                 frame = self._read_frame()
                 if frame is None:
                     frame_failures += 1
-                    if require_reid_target:
-                        target_ready = False
-                        target_tracker.reset()
                     if frame_failures >= self.frame_failure_limit:
                         print("升高阶段连续无法读取视频帧，准备安全降落。")
                         self.session_state = "FRAME_LOST_LANDING"
@@ -593,26 +673,10 @@ class FollowSession:
                     try:
                         result = self.detector.detect(frame)
                         detect_failures = 0
-                        if require_reid_target:
-                            target_ready = target_tracker.observe(result)
-                            target_is_fresh = (
-                                bool(result.get("found"))
-                                and not bool(result.get("is_predicted"))
-                                and not bool(result.get("ambiguous"))
-                            )
-                            if target_is_fresh:
-                                target_lost_since = None
-                            elif target_lost_since is None:
-                                target_lost_since = monotonic()
                         if self.display_enabled:
                             preview = self.detector.draw_debug(frame, result)
                     except Exception as exc:
                         detect_failures += 1
-                        if require_reid_target:
-                            target_ready = False
-                            target_tracker.reset()
-                            if target_lost_since is None:
-                                target_lost_since = monotonic()
                         print(
                             "升高阶段 ReID 检测异常"
                             f"（{detect_failures}/{self.frame_failure_limit}）：{exc}"
@@ -623,21 +687,8 @@ class FollowSession:
                             return False
                         preview = frame
 
-            if (
-                require_reid_target
-                and target_lost_since is not None
-                and monotonic() - target_lost_since >= target_lost_timeout
-            ):
-                print("升高阶段目标持续丢失，准备安全降落。")
-                self.session_state = "TARGET_LOST_LANDING"
-                self._safe_zero_output()
-                return False
-
             height_error = target_height - height
-            if not target_ready:
-                stable_readings = 0
-                command = self.follow_controller.hover()
-            elif abs(height_error) <= tolerance:
+            if abs(height_error) <= tolerance:
                 stable_readings += 1
                 command = self.follow_controller.hover()
             else:
@@ -651,14 +702,15 @@ class FollowSession:
                 import cv2
 
                 if preview is not None:
-                    identity_text = "ReID READY" if target_ready else "ReID WAIT - HOVERING"
+                    identity_found = bool(result and result.get("found"))
+                    identity_text = "ReID FOUND" if identity_found else "ReID NOT FOUND"
                     cv2.putText(
                         preview,
                         f"BASE HEIGHT {height}/{target_height} cm | {identity_text}",
                         (20, max(36, preview.shape[0] - 48)),
                         cv2.FONT_HERSHEY_SIMPLEX,
                         0.6,
-                        (0, 255, 255) if target_ready else (0, 165, 255),
+                        (0, 255, 255) if identity_found else (0, 165, 255),
                         2,
                     )
                     cv2.putText(
@@ -678,7 +730,7 @@ class FollowSession:
             if stable_readings >= required_stable_readings:
                 self._safe_zero_output()
                 self.session_state = "BASE_HEIGHT_READY"
-                print(f"基础悬停高度已稳定且目标身份有效：{height} cm。")
+                print(f"基础悬停高度已稳定：{height} cm。")
                 return True
             sleep(self.control_interval)
 
@@ -686,9 +738,6 @@ class FollowSession:
         if self.stop_event.is_set():
             if self.session_state != "EMERGENCY_STOP":
                 self.session_state = "STOPPED"
-        else:
-            print(f"未能在 {timeout:.1f} 秒内安全到达基础悬停高度，准备降落。")
-            self.session_state = "BASE_HEIGHT_FAILED"
         return False
 
     def _pre_follow_should_abort(self) -> bool:
@@ -906,7 +955,7 @@ class FollowSession:
         cv2.rectangle(debug_frame, (12, 84), (12 + panel_width, 386), (0, 0, 0), -1)
         target_text = "FOUND" if target_result.get("found") else "LOST"
         battery_text = f"{battery}%" if battery is not None else "N/A"
-        height_text = f"{height} cm" if height is not None else "N/A"
+        height_text = f"{height} cm TOF" if height is not None else "N/A"
         lr, fb, ud, yaw = command.as_tuple()
         debug = self.follow_controller.last_debug
         obstacle_text = "DISABLED"
@@ -928,7 +977,7 @@ class FollowSession:
             f"{self.state_label}: {self.session_state}",
             f"TARGET: {target_text}",
             f"BATTERY: {battery_text}",
-            f"HEIGHT: {height_text}",
+            f"GROUND CLEARANCE: {height_text}",
             f"RC: lr={lr} fb={fb} ud={ud} yaw={yaw}",
             f"FPS: {self.fps:.1f}  CTRL_HZ: {self.control_hz:.1f}",
             f"X: {debug.target_center_x}/{debug.frame_center_x} err={debug.horizontal_error} ({debug.horizontal_error_ratio:.2f})",
@@ -958,6 +1007,7 @@ class FollowSession:
 
         frame_failures = 0
         detect_failures = 0
+        height_failures = 0
         stats_started_at = monotonic()
         frame_counter = 0
         command_counter = 0
@@ -971,6 +1021,7 @@ class FollowSession:
                     "HEIGHT_LIMIT_LANDING",
                     "TARGET_LOST_LANDING",
                     "FRAME_LOST_LANDING",
+                    "HEIGHT_SENSOR_LANDING",
                 ):
                     self.session_state = "STOPPED"
                 break
@@ -1028,6 +1079,20 @@ class FollowSession:
 
             battery = self._read_battery()
             height = self._read_height()
+            if height is None:
+                height_failures += 1
+                self._safe_zero_output()
+                print(
+                    "TOF 离地高度无效，正在重试"
+                    f"（{height_failures}/{self.height_failure_limit}）。"
+                )
+                if height_failures >= self.height_failure_limit:
+                    print("连续无法获得有效 TOF 离地高度，准备安全降落。")
+                    self.session_state = "HEIGHT_SENSOR_LANDING"
+                    break
+                sleep(self.control_interval)
+                continue
+            height_failures = 0
             if self.stop_event.is_set():
                 if self.emergency_stop:
                     self.session_state = "EMERGENCY_STOP"
@@ -1036,6 +1101,7 @@ class FollowSession:
                     "HEIGHT_LIMIT_LANDING",
                     "TARGET_LOST_LANDING",
                     "FRAME_LOST_LANDING",
+                    "HEIGHT_SENSOR_LANDING",
                 ):
                     self.session_state = "STOPPED"
                 break
@@ -1126,6 +1192,9 @@ class FollowSession:
                 self.obstacle_planner.reset()
         self.last_obstacle_result = None
         self.last_avoidance_decision = None
+        self._height_samples.clear()
+        self.last_height = None
+        self.last_raw_height = None
 
     def _read_frame(self) -> Any:
         """Read one frame without crashing on a transient failure."""
@@ -1147,11 +1216,21 @@ class FollowSession:
         return self.last_battery
 
     def _read_height(self) -> Optional[int]:
-        """Read height, returning None when unavailable."""
+        """Read and median-filter downward TOF ground clearance."""
         try:
-            self.last_height = self.drone.get_height()
-        except RuntimeError as exc:
-            print(f"读取高度失败：{exc}")
+            raw_height = int(self.drone.get_height())
+            self.last_raw_height = raw_height
+            if raw_height <= 0 or raw_height > self.height_max_valid_cm:
+                print(
+                    f"忽略异常 TOF 离地高度：{raw_height} cm；"
+                    f"有效范围为 1～{self.height_max_valid_cm} cm。"
+                )
+                self.last_height = None
+                return None
+            self._height_samples.append(raw_height)
+            self.last_height = int(round(median(self._height_samples)))
+        except (RuntimeError, TypeError, ValueError) as exc:
+            print(f"读取 TOF 离地高度失败：{exc}")
             self.last_height = None
         return self.last_height
 

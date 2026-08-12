@@ -787,7 +787,6 @@ class ConsoleFollowSessionTestCase(unittest.TestCase):
                 "base_hover_height_cm": 180,
                 "base_hover_height_tolerance_cm": 5,
                 "base_hover_vertical_speed": 20,
-                "base_hover_timeout_seconds": 3,
                 "base_hover_stable_readings": 2,
             },
             mode_label="FAKE",
@@ -826,7 +825,7 @@ class ConsoleFollowSessionTestCase(unittest.TestCase):
 
         self.assertGreater(detector.detect_calls, 0)
 
-    def test_base_height_hovers_until_reid_is_reacquired(self) -> None:
+    def test_base_height_keeps_climbing_while_reid_is_reacquired(self) -> None:
         drone = ClimbingFakeDrone(verbose_rc=False)
         drone.height_cm = 70
         detector = PhaseSequenceDetector([False, False, True, True, True])
@@ -841,10 +840,7 @@ class ConsoleFollowSessionTestCase(unittest.TestCase):
                 "control_interval": 0.02,
                 "base_hover_height_cm": 180,
                 "base_hover_vertical_speed": 20,
-                "base_hover_timeout_seconds": 3,
                 "base_hover_stable_readings": 2,
-                "base_hover_reid_reacquire_frames": 3,
-                "base_hover_target_lost_timeout_seconds": 2,
             },
             mode_label="REID TEST",
             initial_target_lock_frames=1,
@@ -855,12 +851,12 @@ class ConsoleFollowSessionTestCase(unittest.TestCase):
         first_climb_index = next(
             index for index, command in enumerate(drone.rc_history) if command[2] > 0
         )
-        self.assertGreaterEqual(first_climb_index, 4)
+        self.assertEqual(first_climb_index, 0)
         self.assertGreaterEqual(detector.detect_calls, 5)
         self.assertGreaterEqual(drone.height_cm, 175)
         self.assertEqual(session.console_state, "BASE_HEIGHT_READY")
 
-    def test_base_height_never_climbs_without_reid_target(self) -> None:
+    def test_base_height_climbs_without_reid_target(self) -> None:
         drone = ClimbingFakeDrone(verbose_rc=False)
         drone.height_cm = 70
         detector = PhaseSequenceDetector([False])
@@ -874,27 +870,90 @@ class ConsoleFollowSessionTestCase(unittest.TestCase):
                 "display_console_camera": False,
                 "control_interval": 0.02,
                 "base_hover_height_cm": 180,
-                "base_hover_timeout_seconds": 3,
-                "base_hover_target_lost_timeout_seconds": 1,
             },
             mode_label="REID TEST",
             initial_target_lock_frames=1,
         )
         session.camera = FakePhaseCamera(drone)
-        clock = [0.0]
+        self.assertTrue(session._reach_base_hover_height())
 
-        def advance_clock():
-            clock[0] += 0.25
-            return clock[0]
+        self.assertTrue(any(command[2] > 0 for command in drone.rc_history))
+        self.assertGreaterEqual(drone.height_cm, 175)
+        self.assertEqual(session.console_state, "BASE_HEIGHT_READY")
 
-        with patch("control.follow_session.monotonic", side_effect=advance_clock), patch(
-            "control.follow_session.sleep", return_value=None
-        ):
-            self.assertFalse(session._reach_base_hover_height())
+    def test_takeoff_height_ignores_transient_zero_readings(self) -> None:
+        drone = FakeDroneAdapter(verbose_rc=False)
+        safety = build_safety()
+        session = FollowSession(
+            drone=drone,
+            safety_manager=safety,
+            detector=TargetDetector(),
+            follow_controller=FollowController(safety_manager=safety),
+            config={
+                "display_console_camera": False,
+                "takeoff_height_verify_timeout_seconds": 1,
+                "takeoff_height_sample_interval_seconds": 0.05,
+                "takeoff_height_min_cm": 20,
+                "takeoff_height_stable_readings": 3,
+            },
+            mode_label="FAKE",
+        )
+        readings = iter([0, 5, 22, 25, 28, 30])
+        session._read_height = lambda: next(readings)
 
-        self.assertTrue(all(command[2] == 0 for command in drone.rc_history))
-        self.assertEqual(drone.height_cm, 70)
-        self.assertEqual(session.console_state, "TARGET_LOST_LANDING")
+        with patch("control.follow_session.sleep", return_value=None):
+            self.assertTrue(session._verify_takeoff_height())
+
+        self.assertEqual(session.session_state, "TAKEOFF_HEIGHT_READY")
+
+    def test_takeoff_height_sampling_does_not_wait_for_reid(self) -> None:
+        drone = FakeDroneAdapter(verbose_rc=False)
+        safety = build_safety()
+        detector = PhaseSequenceDetector([True])
+        session = FollowSession(
+            drone=drone,
+            safety_manager=safety,
+            detector=detector,
+            follow_controller=FollowController(safety_manager=safety),
+            config={
+                "display_console_camera": False,
+                "takeoff_height_verify_timeout_seconds": 1,
+                "takeoff_height_sample_interval_seconds": 0.05,
+                "takeoff_height_min_cm": 20,
+                "takeoff_height_stable_readings": 3,
+            },
+            mode_label="REID TEST",
+            initial_target_lock_frames=1,
+        )
+        readings = iter([30, 32, 31])
+        session._read_height = lambda: next(readings)
+
+        with patch("control.follow_session.sleep", return_value=None):
+            self.assertTrue(session._verify_takeoff_height())
+
+        self.assertEqual(detector.detect_calls, 0)
+
+    def test_ground_clearance_uses_five_sample_median_and_rejects_negative(self) -> None:
+        drone = FakeDroneAdapter(verbose_rc=False)
+        safety = build_safety()
+        session = FollowSession(
+            drone=drone,
+            safety_manager=safety,
+            detector=TargetDetector(),
+            follow_controller=FollowController(safety_manager=safety),
+            config={
+                "display_console_camera": False,
+                "height_filter_window": 5,
+                "height_max_valid_cm": 500,
+            },
+            mode_label="FAKE",
+        )
+        readings = iter([100, 102, 500, 101, 99, -20])
+        drone.get_height = lambda: next(readings)
+
+        self.assertEqual([session._read_height() for _ in range(5)], [100, 101, 102, 102, 101])
+        self.assertIsNone(session._read_height())
+        self.assertEqual(session.last_raw_height, -20)
 
     def test_rejects_base_hover_height_outside_safety_range(self) -> None:
         drone = FakeDroneAdapter(verbose_rc=False)
@@ -943,7 +1002,11 @@ class ConsoleFollowSessionTestCase(unittest.TestCase):
             safety_manager=safety,
             detector=TargetDetector(),
             follow_controller=FollowController(safety_manager=safety),
-            config={"display_console_camera": False},
+            config={
+                "display_console_camera": False,
+                "takeoff_height_verify_timeout_seconds": 0.2,
+                "takeoff_height_sample_interval_seconds": 0.05,
+            },
             mode_label="FAKE",
         )
 

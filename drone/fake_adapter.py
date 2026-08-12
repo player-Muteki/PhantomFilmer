@@ -87,7 +87,7 @@ class FakeDroneAdapter(DroneAdapter):
         return self.battery_percent
 
     def get_height(self) -> int:
-        """Return current simulated height in centimeters."""
+        """Return simulated downward ground clearance in centimeters."""
         return self.height_cm
 
     def stream_on(self) -> None:

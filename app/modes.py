@@ -38,7 +38,10 @@ def run_status(use_fake: bool = False) -> int:
         height = drone.get_height()
         print("无人机状态：")
         print(f"- 电量：{battery}%")
-        print(f"- 高度：{height} cm")
+        print(f"- TOF 离地高度：{height} cm")
+        estimated_height_reader = getattr(drone, "get_estimated_height", None)
+        if callable(estimated_height_reader):
+            print(f"- 飞控原始 h（仅诊断）：{estimated_height_reader()} cm")
         return 0
     except RuntimeError as exc:
         print(str(exc))
@@ -212,7 +215,7 @@ def run_basic_flight_test() -> int:
         height = drone.get_height()
         print("基础飞行测试状态：")
         print(f"- 当前电量：{battery}%")
-        print(f"- 当前高度：{height} cm")
+        print(f"- 当前 TOF 离地高度：{height} cm")
 
         if not safety.can_takeoff(battery):
             print("电量低于安全起飞阈值，禁止起飞。")

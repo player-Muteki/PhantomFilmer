@@ -8,11 +8,16 @@ min_height_cm: 60
 base_hover_height_cm: 150
 base_hover_height_tolerance_cm: 5
 base_hover_vertical_speed: 20
-base_hover_timeout_seconds: 12
 base_hover_stable_readings: 3
-# ReID 演示升高期间：身份未连续确认时只悬停，不继续上升。
-base_hover_reid_reacquire_frames: 3
-base_hover_target_lost_timeout_seconds: 8
+# 起飞高度使用多次遥测确认，避免刚起飞时偶发的 0 cm 读数导致误判。
+takeoff_height_verify_timeout_seconds: 5
+takeoff_height_min_cm: 20
+takeoff_height_stable_readings: 3
+takeoff_height_sample_interval_seconds: 0.2
+# 底部 TOF 离地高度使用最近 5 次读数的中位数；连续失效则降落。
+height_filter_window: 5
+height_max_valid_cm: 500
+height_failure_limit: 10
 max_rc_speed: 35
 camera_width: 640
 camera_height: 480

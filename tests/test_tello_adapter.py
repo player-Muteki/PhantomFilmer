@@ -11,6 +11,12 @@ class RecordingTello:
     def takeoff(self) -> None:
         self.takeoff_calls += 1
 
+    def get_distance_tof(self) -> int:
+        return 147
+
+    def get_height(self) -> int:
+        return -20
+
 
 class TelloDroneAdapterTestCase(unittest.TestCase):
     def build_adapter(self) -> tuple[TelloDroneAdapter, RecordingTello]:
@@ -51,6 +57,12 @@ class TelloDroneAdapterTestCase(unittest.TestCase):
                 adapter.takeoff()
 
         self.assertEqual(tello.takeoff_calls, 0)
+
+    def test_control_height_uses_downward_tof_not_raw_h(self) -> None:
+        adapter, _tello = self.build_adapter()
+
+        self.assertEqual(adapter.get_height(), 147)
+        self.assertEqual(adapter.get_estimated_height(), -20)
 
 
 if __name__ == "__main__":

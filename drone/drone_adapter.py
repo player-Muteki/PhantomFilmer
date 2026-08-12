@@ -37,7 +37,7 @@ class DroneAdapter(ABC):
 
     @abstractmethod
     def get_height(self) -> int:
-        """Return the current height in centimeters."""
+        """Return downward ground clearance in centimeters."""
 
     @abstractmethod
     def stream_on(self) -> None:
