@@ -108,6 +108,29 @@ obstacle:
   detect_every_n_frames: 2
 lost_target_hover_seconds: 3
 lost_target_land_seconds: 8
+# ReID 丢失目标后的有限搜索。先悬停判断；疑似距离过近时最多做两次短后退，
+# 其他情况只用原地偏航和 TOF 限高内的分层升降搜索，30 秒仍未找回则降落。
+target_search:
+  enabled: true
+  hold_seconds: 1.0
+  total_timeout_seconds: 30.0
+  reacquire_frames: 5
+  yaw_speed: 12
+  vertical_speed: 12
+  last_direction_seconds: 2.0
+  sweep_short_seconds: 1.5
+  sweep_long_seconds: 3.0
+  height_step_cm: 20
+  min_height_cm: 80
+  max_height_cm: 200
+  close_recovery_enabled: true
+  close_area_ratio: 0.30
+  close_very_area_ratio: 0.40
+  close_backward_speed: 10
+  close_pulse_seconds: 0.35
+  close_pause_seconds: 0.50
+  close_max_attempts: 2
+  edge_margin_ratio: 0.03
 llm_enabled: true
 llm_base_url: "https://api.deepseek.com/chat/completions"
 llm_model: "deepseek-chat"

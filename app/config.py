@@ -88,6 +88,11 @@ def _load_config_without_yaml(path: Path) -> dict:
             config["obstacle"] = obstacle
             continue
 
+        if raw.startswith("target_search:"):
+            target_search, index = _parse_flat_block(lines, index + 1)
+            config["target_search"] = target_search
+            continue
+
         if ":" in raw and not raw.startswith(" "):
             key, value = raw.split(":", 1)
             config[key.strip()] = _parse_config_value(value.strip())

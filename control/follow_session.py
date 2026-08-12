@@ -11,6 +11,7 @@ from control.fixed_demo import FixedDemoManeuver, FixedDemoProgress
 from control.follow_control import FollowController, RCCommand
 from control.motion_arbiter import MotionArbiter, MotionContext
 from control.obstacle_avoidance import AvoidanceDecision, ObstacleAvoidancePlanner
+from control.target_search import TargetSearchController
 from drone.drone_adapter import DroneAdapter
 from drone.safety import SafetyManager
 from vision.camera import CameraStream
@@ -92,6 +93,16 @@ class FollowSession:
         )
         self.control_interval = self._read_control_interval(config)
         self.min_control_hz = float(config.get("min_control_hz", 8.0))
+        self.target_search = TargetSearchController(
+            config,
+            min_height_cm=self.safety_manager.config.min_height_cm,
+            max_height_cm=self.safety_manager.config.max_height_cm,
+        )
+        # 现阶段搜索只用于经过地面 ReID 锁定的任务，避免改变普通颜色/标记跟随。
+        self.target_search_enabled = (
+            self.initial_target_lock_frames > 0 and self.target_search.enabled
+        )
+        self.search_reason = ""
 
         self.camera: Optional[CameraStream] = None
         self.session_state = "IDLE"
@@ -834,19 +845,49 @@ class FollowSession:
         target_result: Dict[str, object],
         frame_width: int,
         frame_height: int,
+        height_cm: Optional[int] = None,
+        now: Optional[float] = None,
     ) -> Tuple[RCCommand, str]:
         """Convert one detection result into a safe command and lost-target action."""
-        lost_action = self.safety_manager.update_target_lost(bool(target_result.get("found")))
-        if lost_action == "land":
-            self.session_state = "TARGET_LOST_LANDING"
-            return self.follow_controller.hover(), lost_action
-
         if self.emergency_stop:
             return self.follow_controller.hover(), "emergency"
 
         if self.paused:
             self.session_state = "PAUSED"
             return self.follow_controller.hover(), "paused"
+
+        if self.target_search_enabled:
+            # ReID 搜索状态机自己负责 30 秒超时；持续清掉旧的 8 秒丢失计时，
+            # 避免两套计时互相冲突、搜索尚未完成就提前降落。
+            self.safety_manager.update_target_lost(True)
+            decision = self.target_search.update(
+                target_result,
+                frame_width,
+                frame_height,
+                height_cm,
+                monotonic() if now is None else now,
+            )
+            if decision is not None:
+                self.session_state = decision.state
+                self.search_reason = decision.reason
+                if decision.action == "land":
+                    self.session_state = "TARGET_LOST_LANDING"
+                return decision.command, decision.action
+
+            self.session_state = "FOLLOWING"
+            self.search_reason = ""
+            command = self.follow_controller.compute_command(
+                target_result, frame_width, frame_height
+            )
+            self.target_search.observe_target(
+                target_result, frame_width, frame_height, command
+            )
+            return command, "keep"
+
+        lost_action = self.safety_manager.update_target_lost(bool(target_result.get("found")))
+        if lost_action == "land":
+            self.session_state = "TARGET_LOST_LANDING"
+            return self.follow_controller.hover(), lost_action
 
         if not target_result.get("found") or lost_action == "hover":
             return self.follow_controller.hover(), lost_action
@@ -1022,6 +1063,7 @@ class FollowSession:
             f"X: {debug.target_center_x}/{debug.frame_center_x} err={debug.horizontal_error} ({debug.horizontal_error_ratio:.2f})",
             f"Y: {debug.target_center_y}/{debug.frame_center_y} err={debug.vertical_error} ({debug.vertical_error_ratio:.2f})",
             f"AREA: {debug.area_ratio:.3f}  STATE: {debug.target_state}",
+            f"SEARCH: {self.search_reason or 'inactive'}",
             f"OBSTACLE: {obstacle_text} side={obstacle_side} area={obstacle_area:.3f}",
             f"AVOID: {obstacle_reason}",
             key_text,
@@ -1096,8 +1138,18 @@ class FollowSession:
                 sleep(0.05)
                 continue
             detect_failures = 0
-            command, lost_action = self.process_detection(target_result, frame_width, frame_height)
-            if self.motion_arbiter is not None and not (self.paused or self.emergency_stop):
+            command, lost_action = self.process_detection(
+                target_result,
+                frame_width,
+                frame_height,
+                height_cm=self.last_height,
+                now=monotonic(),
+            )
+            search_motion = lost_action in ("search", "reacquired")
+            if (
+                self.motion_arbiter is not None
+                and not (self.paused or self.emergency_stop or search_motion)
+            ):
                 decision = self.motion_arbiter.decide(
                     desired_command=command,
                     frame=frame,
@@ -1110,7 +1162,7 @@ class FollowSession:
                     self.session_state = "OBSTACLE_FAILSAFE_LANDING"
                     self._safe_zero_output()
                     break
-            elif self.motion_arbiter is None:
+            elif self.motion_arbiter is None and not search_motion:
                 # 仅当没有装配 motion_arbiter 时才使用原始检测器/规划器回退路径。
                 command = self.apply_obstacle_avoidance(command, target_result, frame)
             # 暂停/急停时冻结自主运动：不运行仲裁（既不覆盖指令，也不会在暂停中
@@ -1234,6 +1286,8 @@ class FollowSession:
         self._height_samples.clear()
         self.last_height = None
         self.last_raw_height = None
+        self.target_search.reset()
+        self.search_reason = ""
 
     def _read_frame(self) -> Any:
         """Read one frame without crashing on a transient failure."""

@@ -30,6 +30,17 @@ class ConfigFallbackTestCase(unittest.TestCase):
         self.assertEqual(config["obstacle"]["recovery_clear_frames"], 4)
         self.assertEqual(config["obstacle"]["forward_speed_in_caution_ratio"], 0.25)
 
+    def test_target_search_block_is_available_without_pyyaml(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.yaml"
+            path.write_text(
+                "target_search:\n  enabled: true\n  total_timeout_seconds: 30.0\n",
+                encoding="utf-8",
+            )
+            config = main._load_config_without_yaml(path)
+        self.assertTrue(config["target_search"]["enabled"])
+        self.assertEqual(config["target_search"]["total_timeout_seconds"], 30.0)
+
 
 if __name__ == "__main__":
     unittest.main()
