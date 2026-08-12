@@ -56,18 +56,24 @@ horizontal_dead_zone_ratio: 0.08
 yaw_kp: 160
 minimum_yaw_speed: 20
 maximum_yaw_speed: 35
-# 人物框占画面 0.15–0.30 时保持前后距离，区外调整。
-target_area_ratio_min: 0.15
-target_area_ratio_max: 0.30
+# ArUco 前后距离分区：0.030–0.080 悬停，区外全速调整。
+target_area_ratio_min: 0.030
+target_area_ratio_max: 0.080
+# ReID 人物距离带：仅 reid-demo 运行期覆盖到 shared 配置，不影响默认 ArUco 跟随。
+reid_target_area_ratio_min: 0.15
+reid_target_area_ratio_max: 0.30
 maximum_forward_speed: 35
 forward_speed_while_aligning: 16
 vertical_dead_zone_ratio: 0.10
 vertical_speed: 20
 target_lock_stable_frames: 15
-# 锁定退出面积带比进入带（0.15–0.30）略宽：0.13–0.32 形成面积滞回，
+# 锁定退出面积带比进入带（0.030–0.080）更宽：0.025–0.085 形成面积滞回，
 # 避免面积在中带边界附近波动时反复锁定/解锁。
-target_lock_exit_area_ratio_min: 0.13
-target_lock_exit_area_ratio_max: 0.32
+target_lock_exit_area_ratio_min: 0.025
+target_lock_exit_area_ratio_max: 0.085
+# ReID 锁定退出面积带比进入带（0.15–0.30）略宽：0.13–0.32 形成面积滞回。
+reid_target_lock_exit_area_ratio_min: 0.13
+reid_target_lock_exit_area_ratio_max: 0.32
 target_lock_exit_horizontal_dead_zone_ratio: 0.12
 target_lock_exit_vertical_dead_zone_ratio: 0.15
 control_interval: 0.05

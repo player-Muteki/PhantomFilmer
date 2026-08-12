@@ -416,7 +416,8 @@ def run_reid_demo(
         similarity = float(result.get("similarity") or 0.0)
         print(
             f"地面 ReID 已锁定目标（相似度 {similarity:.3f}）。"
-            "请从预览画面人工核对人物身份。"
+            "当前未开启视频预览，无法人工目视核对画面；"
+            "请确认目标确为现场录入的人员后再起飞。"
         )
         try:
             answer = input(

@@ -266,6 +266,7 @@ class FollowSession:
         tracker = TargetLockTracker(self.initial_target_lock_frames)
         started_at = monotonic()
         frame_failures = 0
+        detect_failures = 0
         self.session_state = "GROUND_TARGET_LOCK"
         print(
             "无人机保持在地面，正在从摄像头画面识别目标人物。"
@@ -292,8 +293,17 @@ class FollowSession:
             try:
                 result = self.detector.detect(frame)
             except Exception as exc:
-                print(f"地面 ReID 检测失败，未起飞：{exc}")
-                return {}
+                detect_failures += 1
+                print(
+                    "地面 ReID 检测异常"
+                    f"（{detect_failures}/{self.frame_failure_limit}）：{exc}"
+                )
+                if detect_failures >= self.frame_failure_limit:
+                    print("地面 ReID 检测器连续异常，未起飞。")
+                    return {}
+                sleep(self.control_interval)
+                continue
+            detect_failures = 0
 
             locked = tracker.observe(result)
             if self.display_enabled:
@@ -476,9 +486,14 @@ class FollowSession:
                             self.session_state = "FRAME_LOST_LANDING"
                             return False
                 if self.display_enabled:
+                    overlay_text = (
+                        "TAKING OFF - ReID remains active"
+                        if keep_detecting
+                        else "TAKING OFF"
+                    )
                     cv2.putText(
                         preview,
-                        "TAKING OFF - ReID remains active",
+                        overlay_text,
                         (20, max(36, preview.shape[0] - 48)),
                         cv2.FONT_HERSHEY_SIMPLEX,
                         0.6,
@@ -659,6 +674,7 @@ class FollowSession:
 
             preview = None
             result: Optional[Dict[str, object]] = None
+            frame = None
             if keep_detecting or self.display_enabled:
                 frame = self._read_frame()
                 if frame is None:
@@ -696,6 +712,29 @@ class FollowSession:
                 command = RCCommand(
                     up_down=vertical_speed if height_error > 0 else -vertical_speed
                 )
+            if self.motion_arbiter is not None and not (self.paused or self.emergency_stop):
+                arbiter_frame = frame
+                if arbiter_frame is None:
+                    arbiter_frame = self._read_frame()
+                if arbiter_frame is None:
+                    self._safe_zero_output()
+                else:
+                    decision = self.motion_arbiter.decide(
+                        desired_command=command,
+                        frame=arbiter_frame,
+                        context=MotionContext(
+                            mode=self.mode_label,
+                            target_result={"found": False},
+                        ),
+                    )
+                    self.last_obstacle_result = decision.observation
+                    self.last_avoidance_decision = decision
+                    command = decision.command
+                    if decision.requires_landing:
+                        print("升高阶段检测到持续障碍，准备安全降落。")
+                        self.session_state = "OBSTACLE_FAILSAFE_LANDING"
+                        self._safe_zero_output()
+                        return False
             self.send_command(command)
 
             if self.display_enabled:
