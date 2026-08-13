@@ -12,9 +12,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from console.console_controller import ConsoleController
-from console.command_parser import CommandParser
 from console.commands import ConsoleCommand
-from console.llm_client import LLMClient
 
 
 class StubParser:
@@ -55,7 +53,7 @@ class StubTools:
         self.calls.append("emergency_stop")
 
 
-class ConsoleControllerLLMTestCase(unittest.TestCase):
+class ConsoleControllerTestCase(unittest.TestCase):
     """Verify controller dispatch remains inside safety-wrapped tools."""
 
     def test_unknown_command_does_not_call_tools(self) -> None:
@@ -99,21 +97,6 @@ class ConsoleControllerLLMTestCase(unittest.TestCase):
 
         self.assertEqual(result, 0)
         self.assertEqual(tools.calls, ["emergency_stop", "close"])
-
-    def test_missing_llm_key_prints_local_only_hint(self) -> None:
-        tools = StubTools()
-        llm_client = LLMClient(enabled=True, api_key="")
-        controller = ConsoleController(
-            tools=tools,
-            parser=CommandParser(llm_client=llm_client),
-            llm_client=llm_client,
-        )
-
-        with patch("builtins.input", side_effect=["退出"]), patch("sys.stdout", new=StringIO()) as stdout:
-            result = controller.run()
-
-        self.assertEqual(result, 0)
-        self.assertIn("未检测到 LLM_API_KEY", stdout.getvalue())
 
 
 if __name__ == "__main__":

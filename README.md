@@ -54,7 +54,7 @@ python3 -m venv .venv
 | `follow-dry-run` | 只计算理论控制量和避障结果，不起飞、不发送 RC | 是 |
 | `follow-test` | 测试 FollowController 方向逻辑 | 否 |
 | `fixed-demo` | 固定航线（左移 3s -> 前进 2s -> 右移 3s）后自动跟随，同样经过避障仲裁 | 是 |
-| `console` | 自然语言控制台，支持本地规则和 LLM 回退 | 是 |
+| `console` | 自然语言控制台，本地规则解析 | 是 |
 | `basic-flight-test` | 用户确认后起飞、悬停 5s、降落 | 否 |
 | `safety-test` | 测试电量、限速、高度和目标丢失逻辑 | 否 |
 
@@ -213,11 +213,9 @@ MPLCONFIGDIR=.matplotlib YOLO_CONFIG_DIR=.ultralytics \
 .venv/bin/python main.py --mode console --fake
 ```
 
-自然语言控制台先使用本地规则，无法确定时可调用 OpenAI 兼容接口做白名单动作分类。所有结果只会映射为 `GET_STATUS`、`START_FOLLOW`、`STOP_TASK`、`EMERGENCY_STOP`、`EXIT` 或 `UNKNOWN`。
+自然语言控制台使用本地规则解析，所有输入只会映射为 `GET_STATUS`、`START_FOLLOW`、`STOP_TASK`、`EMERGENCY_STOP`、`EXIT` 或 `UNKNOWN`。
 
 控制台只能通过 `ConsoleTools` 调用任务级工具，底层输出必须经过 `SafetyManager`。跟随任务在后台线程运行，停止、急停和退出命令会清零输出并等待降落清理完成。
-
-启用 LLM 分类需在配置中设置 `llm_enabled: true`，并提供环境变量 `LLM_API_KEY`；未设置密钥时自动退回本地规则。
 
 ## Fake 模式
 
