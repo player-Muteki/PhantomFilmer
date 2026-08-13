@@ -147,6 +147,24 @@ class FollowSessionCompatTestCase(unittest.TestCase):
         session.session_state = "TARGET_LOST_LANDING"
         self.assertEqual(session._display_state(), "LANDING")
 
+    def test_display_state_uses_chinese_labels(self) -> None:
+        self.assertEqual(FollowSession._display_state_chinese("FOLLOW"), "跟随")
+        self.assertEqual(FollowSession._display_state_chinese("SEARCH"), "搜索")
+        self.assertEqual(FollowSession._display_state_chinese("OBSTACLE"), "避障")
+        self.assertEqual(FollowSession._display_state_chinese("HOVER"), "悬停")
+        self.assertEqual(FollowSession._display_state_chinese("PAUSED"), "暂停")
+        self.assertEqual(FollowSession._display_state_chinese("LANDING"), "降落")
+
+    def test_state_label_is_drawn_only_near_top_right(self) -> None:
+        session = self.build_session()
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+
+        rendered = session._draw_state_label(frame, "STATE: 跟随", (0, 255, 0))
+
+        self.assertTrue(np.any(rendered[:80, 360:] != 0))
+        self.assertFalse(np.any(rendered[:80, :240] != 0))
+        self.assertFalse(np.any(rendered[360:, 400:] != 0))
+
     def test_feature_exception_triggers_failsafe_then_lands(self) -> None:
         drone = FakeDroneAdapter(verbose_rc=False)
         session = self.build_session(

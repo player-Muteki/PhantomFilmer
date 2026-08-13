@@ -2,6 +2,7 @@
 
 from collections import deque
 from dataclasses import dataclass
+from pathlib import Path
 from statistics import median
 from threading import Event, Lock
 from time import monotonic, sleep
@@ -145,6 +146,7 @@ class FollowSession:
         self.fps = 0.0
         self.control_hz = 0.0
         self._control_rate_warning_shown = False
+        self._state_label_font = None
         self._features = build_features(
             follow_controller=self.follow_controller,
             safety_manager=self.safety_manager,
@@ -884,11 +886,10 @@ class FollowSession:
             cv2.line(debug_frame, frame_center, (int(tx), int(ty)), (0, 255, 255), 2)
 
         # Keep the camera image uncluttered: detector annotations, guide lines,
-        # and the single bottom-right STATE label remain; the former black
+        # and the single top-right STATE label remain; the former black
         # telemetry/parameter panel is intentionally removed.
         del command, battery, height
         display_state = self._display_state()
-        state_text = f"STATE: {display_state}"
         state_colors = {
             "FOLLOW": (0, 255, 0),
             "SEARCH": (0, 255, 255),
@@ -897,37 +898,65 @@ class FollowSession:
             "LANDING": (0, 0, 255),
             "PAUSED": (160, 160, 160),
         }
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        font_scale = 0.70
-        thickness = 2
-        (text_width, text_height), baseline = cv2.getTextSize(
-            state_text, font, font_scale, thickness
-        )
-        text_origin = (
-            max(8, frame_width - text_width - 12),
-            max(text_height + 8, frame_height - baseline - 12),
-        )
-        # 黑色描边只用于保证右下角文字在复杂背景上仍清晰，
-        # 不增加面板，也不改动现有画面布局。
-        cv2.putText(
+        return self._draw_state_label(
             debug_frame,
-            state_text,
-            text_origin,
-            font,
-            font_scale,
-            (0, 0, 0),
-            thickness + 2,
-        )
-        cv2.putText(
-            debug_frame,
-            state_text,
-            text_origin,
-            font,
-            font_scale,
+            f"STATE: {self._display_state_chinese(display_state)}",
             state_colors[display_state],
-            thickness,
         )
-        return debug_frame
+
+    @staticmethod
+    def _display_state_chinese(display_state: str) -> str:
+        """Translate the stable internal state key for the camera overlay."""
+        return {
+            "FOLLOW": "跟随",
+            "SEARCH": "搜索",
+            "OBSTACLE": "避障",
+            "HOVER": "悬停",
+            "LANDING": "降落",
+            "PAUSED": "暂停",
+        }.get(display_state, "悬停")
+
+    def _draw_state_label(
+        self, frame: Any, text: str, bgr_color: Tuple[int, int, int]
+    ) -> Any:
+        """Draw one larger Chinese-capable state label at the top-right."""
+        import numpy as np
+        from PIL import Image, ImageDraw, ImageFont
+
+        if self._state_label_font is None:
+            candidates = (
+                "/System/Library/Fonts/STHeiti Medium.ttc",
+                "/System/Library/Fonts/PingFang.ttc",
+                "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+                "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+                "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+            )
+            font_path = next((path for path in candidates if Path(path).is_file()), None)
+            if font_path is not None:
+                self._state_label_font = ImageFont.truetype(font_path, 30)
+            else:
+                # The fallback keeps the flight UI alive on an unexpected host;
+                # production macOS uses STHeiti and therefore renders Chinese.
+                self._state_label_font = ImageFont.load_default()
+
+        rgb = frame[:, :, ::-1].copy()
+        image = Image.fromarray(rgb)
+        draw = ImageDraw.Draw(image)
+        red, green, blue = bgr_color[2], bgr_color[1], bgr_color[0]
+        left, _top, right, _bottom = draw.textbbox(
+            (0, 0), text, font=self._state_label_font, stroke_width=3
+        )
+        text_width = right - left
+        text_x = max(12, image.width - text_width - 16)
+        draw.text(
+            (text_x, 12),
+            text,
+            font=self._state_label_font,
+            fill=(red, green, blue),
+            stroke_width=3,
+            stroke_fill=(0, 0, 0),
+        )
+        return np.asarray(image)[:, :, ::-1].copy()
 
     def _display_state(self) -> str:
         """Return the single user-facing state that currently owns the aircraft."""
