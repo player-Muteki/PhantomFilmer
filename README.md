@@ -46,6 +46,7 @@ python3 -m venv .venv
 |------|------|-------------|
 | `demo`（默认） | 显示系统描述 | 是 |
 | `status` | 连接无人机，读取电量与高度 | 是 |
+| `connection-test` | 只验证 `command -> ok` 和 `battery?`，不飞行、不打开摄像头 | 是 |
 | `camera` | 开启视频流与目标检测画面 | 是 |
 | `camera-debug` | 显示 BGR 原图、通道互换和红色掩膜，不发送 RC | 是 |
 | `follow` | 起飞并目标跟随，支持按次选择是否开启避障 | 是 |
@@ -57,6 +58,15 @@ python3 -m venv .venv
 | `console` | 自然语言控制台，支持本地规则和 LLM 回退 | 是 |
 | `basic-flight-test` | 用户确认后起飞、悬停 5s、降落 | 否 |
 | `safety-test` | 测试电量、限速、高度和目标丢失逻辑 | 否 |
+
+连接 `RMTT-XXXXXX` 后，可先独立验证 SDK UDP 通信：
+
+```bash
+.venv/bin/python main.py --mode connection-test
+```
+
+真机固定使用 `192.168.10.1:8889`。该模式只发送 SDK 握手和电量查询，
+不会起飞、开启视频流或启动跟随控制。
 
 ### follow 窗口按键
 

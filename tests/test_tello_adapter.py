@@ -1,6 +1,9 @@
 import unittest
+from contextlib import redirect_stdout
+from io import StringIO
 from unittest.mock import patch
 
+from app.modes import run_connection_test
 from drone.tello_adapter import TelloDroneAdapter
 
 
@@ -8,6 +11,10 @@ class RecordingTello:
     def __init__(self) -> None:
         self.takeoff_calls = 0
         self.read_response = "tof 600"
+        self.responses = {
+            "command": "ok",
+            "battery?": "87",
+        }
 
     def takeoff(self) -> None:
         self.takeoff_calls += 1
@@ -22,9 +29,39 @@ class RecordingTello:
         return -173
 
     def send_command_with_return(self, command: str, timeout: float = 0.0) -> str:
+        if not isinstance(timeout, int):
+            raise TypeError("timeout must be int")
         self.last_read_command = command
         self.last_read_timeout = timeout
-        return self.read_response
+        if command == "EXT tof?":
+            return self.read_response
+        response = self.responses[command]
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+
+class ConnectionTestDrone:
+    def __init__(self) -> None:
+        self.connect_calls = 0
+        self.battery_calls = 0
+        self.stop_calls = 0
+
+    def connect(self) -> None:
+        self.connect_calls += 1
+
+    def get_battery(self) -> int:
+        self.battery_calls += 1
+        return 91
+
+    def stop(self) -> None:
+        self.stop_calls += 1
+
+    def takeoff(self) -> None:
+        raise AssertionError("connection-test must not take off")
+
+    def stream_on(self) -> None:
+        raise AssertionError("connection-test must not start the camera")
 
 
 class TelloDroneAdapterTestCase(unittest.TestCase):
@@ -34,6 +71,98 @@ class TelloDroneAdapterTestCase(unittest.TestCase):
         adapter._tello = tello
         adapter.connected = True
         return adapter, tello
+
+    def test_connect_requires_ok_and_verifies_battery(self) -> None:
+        adapter = TelloDroneAdapter()
+        tello = RecordingTello()
+
+        with patch.object(adapter, "_create_tello", return_value=tello), redirect_stdout(
+            StringIO()
+        ) as output:
+            adapter.connect()
+
+        self.assertTrue(adapter.connected)
+        self.assertEqual(adapter.last_connection_battery, 87)
+        self.assertIn("Connecting to 192.168.10.1:8889", output.getvalue())
+        self.assertIn("Received: ok", output.getvalue())
+        self.assertIn("Connection verified, battery=87%", output.getvalue())
+
+    def test_connect_reports_udp_timeout(self) -> None:
+        adapter = TelloDroneAdapter()
+        tello = RecordingTello()
+        tello.responses["command"] = (
+            "Aborting command 'command'. Did not receive a response after 5 seconds"
+        )
+
+        with patch.object(adapter, "_create_tello", return_value=tello):
+            with self.assertRaisesRegex(RuntimeError, "UDP timeout"):
+                adapter.connect()
+
+        self.assertFalse(adapter.connected)
+
+    def test_connect_rejects_unexpected_response(self) -> None:
+        adapter = TelloDroneAdapter()
+        tello = RecordingTello()
+        tello.responses["command"] = "hello"
+
+        with patch.object(adapter, "_create_tello", return_value=tello):
+            with self.assertRaisesRegex(RuntimeError, "unexpected response"):
+                adapter.connect()
+
+        self.assertFalse(adapter.connected)
+
+    def test_connect_reports_sdk_rejection(self) -> None:
+        adapter = TelloDroneAdapter()
+        tello = RecordingTello()
+        tello.responses["command"] = "error"
+
+        with patch.object(adapter, "_create_tello", return_value=tello):
+            with self.assertRaisesRegex(RuntimeError, "SDK command rejected"):
+                adapter.connect()
+
+    def test_connect_keeps_sdk_connection_when_battery_query_fails(self) -> None:
+        adapter = TelloDroneAdapter()
+        tello = RecordingTello()
+        tello.responses["battery?"] = (
+            "Aborting command 'battery?'. Did not receive a response after 5 seconds"
+        )
+
+        with patch.object(adapter, "_create_tello", return_value=tello), redirect_stdout(
+            StringIO()
+        ) as output:
+            adapter.connect()
+
+        self.assertTrue(adapter.connected)
+        self.assertIsNone(adapter.last_connection_battery)
+        self.assertIn("WARNING", output.getvalue())
+
+    def test_connect_reports_socket_error(self) -> None:
+        adapter = TelloDroneAdapter()
+        tello = RecordingTello()
+        tello.responses["command"] = OSError("network unreachable")
+
+        with patch.object(adapter, "_create_tello", return_value=tello):
+            with self.assertRaisesRegex(RuntimeError, "socket error"):
+                adapter.connect()
+
+    def test_get_battery_uses_command_response_instead_of_state_cache(self) -> None:
+        adapter, tello = self.build_adapter()
+
+        self.assertEqual(adapter.get_battery(), 87)
+        self.assertEqual(tello.last_read_command, "battery?")
+
+    def test_connection_mode_only_connects_queries_battery_and_stops(self) -> None:
+        drone = ConnectionTestDrone()
+
+        with patch("app.modes.create_drone_adapter", return_value=drone), redirect_stdout(
+            StringIO()
+        ):
+            result = run_connection_test(use_fake=False)
+
+        self.assertEqual(result, 0)
+        self.assertEqual(drone.connect_calls, 1)
+        self.assertEqual(drone.battery_calls, 1)
+        self.assertEqual(drone.stop_calls, 1)
 
     def test_authorization_skips_one_takeoff_prompt(self) -> None:
         adapter, tello = self.build_adapter()
@@ -84,11 +213,12 @@ class TelloDroneAdapterTestCase(unittest.TestCase):
         self.assertEqual(adapter.get_front_distance_cm(), 60.0)
         self.assertEqual(tello.last_read_command, "EXT tof?")
 
-    def test_front_tof_8192_means_out_of_range(self) -> None:
+    def test_front_tof_8190_through_8192_mean_out_of_range(self) -> None:
         adapter, tello = self.build_adapter()
-        tello.read_response = "tof 8192"
-
-        self.assertIsNone(adapter.get_front_distance_cm())
+        for sentinel in (8190, 8191, 8192):
+            with self.subTest(sentinel=sentinel):
+                tello.read_response = f"tof {sentinel}"
+                self.assertIsNone(adapter.get_front_distance_cm())
 
     def test_front_tof_rejects_malformed_response(self) -> None:
         adapter, tello = self.build_adapter()

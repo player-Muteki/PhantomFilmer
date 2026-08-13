@@ -103,6 +103,7 @@ class ObstacleCliDispatchTestCase(unittest.TestCase):
     def test_unrelated_modes_do_not_prompt(self) -> None:
         cases = (
             ("status", "run_status"),
+            ("connection-test", "run_connection_test"),
             ("camera", "run_camera"),
         )
         for mode, runner_name in cases:

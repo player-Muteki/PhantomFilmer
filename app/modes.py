@@ -55,6 +55,24 @@ def run_status(use_fake: bool = False) -> int:
         drone.stop()
 
 
+def run_connection_test(use_fake: bool = False) -> int:
+    """Verify SDK command/response communication without camera or flight."""
+    drone = create_drone_adapter(use_fake)
+    try:
+        print("正在运行无人机连接测试（不会起飞、不会开启摄像头）...")
+        drone.connect()
+        battery = getattr(drone, "last_connection_battery", None)
+        if battery is None:
+            battery = drone.get_battery()
+        print(f"连接测试成功：battery={battery}%")
+        return 0
+    except RuntimeError as exc:
+        print(f"连接测试失败：{exc}")
+        return 1
+    finally:
+        drone.stop()
+
+
 def run_console(
     use_fake: bool = False,
     obstacle_enabled: Optional[bool] = None,

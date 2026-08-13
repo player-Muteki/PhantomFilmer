@@ -29,6 +29,7 @@ from app.modes import (
     run_camera,
     run_camera_debug,
     run_console,
+    run_connection_test,
     run_fixed_demo,
     run_follow,
     run_follow_dry_run,
@@ -48,6 +49,7 @@ def parse_args() -> argparse.Namespace:
         choices=(
             "demo",
             "status",
+            "connection-test",
             "safety-test",
             "follow-test",
             "follow-dry-run",
@@ -129,6 +131,8 @@ def main() -> int:
 
     if args.mode == "status":
         return run_status(use_fake=args.fake)
+    if args.mode == "connection-test":
+        return run_connection_test(use_fake=args.fake)
     if args.mode == "safety-test":
         return run_safety_test()
     if args.mode == "follow-test":
