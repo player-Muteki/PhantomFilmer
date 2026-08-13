@@ -1,7 +1,7 @@
 min_battery_takeoff: 30
 low_battery_land: 20
-# 高度安全范围：飞行高度超出 [min_height_cm, max_height_cm] 会触发自动降落，
-# 真机调参时按试飞场地重新标定。
+# 飞行高度超过 max_height_cm 会触发自动降落；低高度不触发自动迫降。
+# min_height_cm 仍用于基础悬停高度配置和搜索高度下限。
 max_height_cm: 220
 min_height_cm: 60
 # 起飞后先到达 1.5 m 基础悬停高度，再进入自动跟随。

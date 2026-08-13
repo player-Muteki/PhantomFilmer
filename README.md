@@ -200,7 +200,7 @@ MPLCONFIGDIR=.matplotlib YOLO_CONFIG_DIR=.ultralytics \
 
 - 起飞前电量低于 `min_battery_takeoff` 禁止起飞
 - 飞行中电量低于 `low_battery_land` 建议降落
-- 飞行高度超出 `[min_height_cm, max_height_cm]` 时立即清零并降落
+- 飞行高度超过 `max_height_cm` 时立即清零并降落；低于 `min_height_cm` 不再自动迫降
 - 自动跟随会话会先用一个不到约 1 秒、无需等待 ReID 推理的快速 TOF 采样确认已经起飞，再闭环到达 `base_hover_height_cm`（当前为 150 cm）；升高过程继续显示 ReID，但升高许可不依赖识别结果且没有总时限，测高、视频、识别连续异常或越过安全高度时仍会降落
 - 飞行控制高度统一采用底部 TOF 到正下方表面的离地距离，并使用最近 5 次有效读数的中位数；飞控原始 `h` 只用于状态诊断，不参与升降控制
 - `limit_rc_command` 将每个通道限制在 `[-max_rc_speed, max_rc_speed]`

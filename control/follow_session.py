@@ -1087,9 +1087,8 @@ class FollowSession:
 
             if height is not None and not self.safety_manager.check_height(height):
                 print(
-                    f"飞行高度 {height} cm 超出安全范围 "
-                    f"[{self.safety_manager.config.min_height_cm}, "
-                    f"{self.safety_manager.config.max_height_cm}] cm，准备安全降落。"
+                    f"飞行高度 {height} cm 已超过安全上限 "
+                    f"{self.safety_manager.config.max_height_cm} cm，准备安全降落。"
                 )
                 self.session_state = "HEIGHT_LIMIT_LANDING"
                 self._safe_zero_output()

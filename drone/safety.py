@@ -74,9 +74,9 @@ class SafetyManager:
         )
 
     def check_height(self, height: int) -> bool:
-        """Return True when height is inside the configured safe range."""
-        # 缩比原型限制在低空范围内，过低或过高都视为不安全。
-        return self.config.min_height_cm <= height <= self.config.max_height_cm
+        """Return True unless height exceeds the configured upper limit."""
+        # 低高度不再触发自动迫降；最高高度保护仍然保留。
+        return height <= self.config.max_height_cm
 
     def update_target_lost(self, found: bool) -> str:
         """Update target-lost timer and return keep, hover, or land."""
