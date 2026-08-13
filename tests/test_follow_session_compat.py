@@ -14,8 +14,10 @@ import numpy as np
 from control.follow_control import FollowController, RCCommand
 from control.follow_session import FollowSession, FollowSessionResult
 from control.kernel.session import KernelSession
+from control.obstacle_avoidance import AvoidanceDecision
 from drone.fake_adapter import FakeDroneAdapter
 from drone.safety import SafetyConfig, SafetyManager
+from vision.obstacle_detect import ObstacleResult
 
 
 class LostTargetDetector:
@@ -119,6 +121,31 @@ class FollowSessionCompatTestCase(unittest.TestCase):
         session.emergency_stop = True
         session.send_command(RCCommand(50, 30, 20, 10))
         self.assertEqual(drone.last_rc_command, (0, 0, 0, 0))
+
+    def test_display_state_reports_only_current_control_owner(self) -> None:
+        session = self.build_session()
+        session.session_state = "FOLLOWING"
+        self.assertEqual(session._display_state(), "FOLLOW")
+
+        session.target_search.state = "LAYER_SCAN_FULL"
+        self.assertEqual(session._display_state(), "SEARCH")
+
+        session.last_avoidance_decision = AvoidanceDecision(
+            command=RCCommand(),
+            state="AVOIDING",
+            action="AVOID_RIGHT",
+            reason="blocked",
+            confidence=1.0,
+            plan_id="test",
+            observation=ObstacleResult(state="BLOCKED"),
+        )
+        self.assertEqual(session._display_state(), "OBSTACLE")
+
+        session.paused = True
+        self.assertEqual(session._display_state(), "PAUSED")
+
+        session.session_state = "TARGET_LOST_LANDING"
+        self.assertEqual(session._display_state(), "LANDING")
 
     def test_feature_exception_triggers_failsafe_then_lands(self) -> None:
         drone = FakeDroneAdapter(verbose_rc=False)

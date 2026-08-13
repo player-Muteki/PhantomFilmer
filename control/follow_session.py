@@ -939,7 +939,76 @@ class FollowSession:
                 (255, 255, 255),
                 1,
             )
+        display_state = self._display_state()
+        state_text = f"STATE: {display_state}"
+        state_colors = {
+            "FOLLOW": (0, 255, 0),
+            "SEARCH": (0, 255, 255),
+            "OBSTACLE": (0, 165, 255),
+            "HOVER": (255, 160, 0),
+            "LANDING": (0, 0, 255),
+            "PAUSED": (160, 160, 160),
+        }
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 0.70
+        thickness = 2
+        (text_width, text_height), baseline = cv2.getTextSize(
+            state_text, font, font_scale, thickness
+        )
+        text_origin = (
+            max(8, frame_width - text_width - 12),
+            max(text_height + 8, frame_height - baseline - 12),
+        )
+        # 黑色描边只用于保证右下角文字在复杂背景上仍清晰，
+        # 不增加面板，也不改动现有画面布局。
+        cv2.putText(
+            debug_frame,
+            state_text,
+            text_origin,
+            font,
+            font_scale,
+            (0, 0, 0),
+            thickness + 2,
+        )
+        cv2.putText(
+            debug_frame,
+            state_text,
+            text_origin,
+            font,
+            font_scale,
+            state_colors[display_state],
+            thickness,
+        )
         return debug_frame
+
+    def _display_state(self) -> str:
+        """Return the single user-facing state that currently owns the aircraft."""
+        session_state = str(self.session_state or "").upper()
+        if "LANDING" in session_state or session_state in {
+            "EMERGENCY_STOP",
+            "FAILSAFE",
+        }:
+            return "LANDING"
+        if self.paused or session_state == "PAUSED":
+            return "PAUSED"
+
+        avoidance_state = str(
+            getattr(self.last_avoidance_decision, "state", "") or ""
+        ).upper()
+        if session_state == "OBSTACLE_FIRST" or avoidance_state in {
+            "BRAKING",
+            "CAUTION",
+            "SCAN",
+            "AVOIDING",
+            "RECOVERING",
+            "FAILSAFE",
+        }:
+            return "OBSTACLE"
+        if self.target_search.searching:
+            return "SEARCH"
+        if session_state == "FOLLOWING":
+            return "FOLLOW"
+        return "HOVER"
 
     def _loop(self) -> None:
         """Run the real-time visual follow loop."""
