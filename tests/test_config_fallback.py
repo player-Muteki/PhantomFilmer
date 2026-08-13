@@ -22,13 +22,13 @@ class ConfigFallbackTestCase(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.yaml"
             path.write_text(
-                "obstacle:\n  enabled: true\n  recovery_clear_frames: 4\n  forward_speed_in_caution_ratio: 0.25\n",
+                "obstacle:\n  enabled: true\n  recovery_clear_frames: 4\n  maximum_forward_speed_in_caution: 20\n",
                 encoding="utf-8",
             )
             config = main._load_config_without_yaml(path)
         self.assertTrue(config["obstacle"]["enabled"])
         self.assertEqual(config["obstacle"]["recovery_clear_frames"], 4)
-        self.assertEqual(config["obstacle"]["forward_speed_in_caution_ratio"], 0.25)
+        self.assertEqual(config["obstacle"]["maximum_forward_speed_in_caution"], 20)
 
     def test_target_search_block_is_available_without_pyyaml(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

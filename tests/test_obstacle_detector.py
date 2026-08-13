@@ -43,6 +43,17 @@ class ObstacleDetectorTestCase(unittest.TestCase):
         self.assertEqual(result.state, "BLOCKED")
         self.assertEqual(result.side, "center")
 
+    def test_smaller_valid_object_remains_caution(self) -> None:
+        frame = self.frame()
+        frame[80:120, 130:170] = 255
+
+        result = self.build_detector().detect(
+            frame, {"found": False, "bbox": None}
+        )
+
+        self.assertTrue(result.found)
+        self.assertEqual(result.state, "CAUTION")
+
     def test_small_object_below_threshold_is_clear(self) -> None:
         frame = self.frame()
         frame[95:105, 145:155] = 255

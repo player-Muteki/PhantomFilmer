@@ -623,6 +623,7 @@ def run_follow_dry_run(
     controller = FollowController.from_config(safety_manager=safety, config=config)
     _, _, motion_arbiter = build_obstacle_modules(config, safety)
     control_interval = read_control_interval(config)
+    last_command = controller.hover()
     # 与生产路径共用同一仲裁引擎与 feature 注册表，保证 dry-run 决策逐帧一致。
     engine = ArbitrationEngine(
         features=build_features(
@@ -671,9 +672,11 @@ def run_follow_dry_run(
                     emergency=False,
                     stop_requested=False,
                     now=monotonic(),
+                    extra={"last_command": last_command},
                 )
             )
             command = outcome.command
+            last_command = command
             obstacle_result = outcome.obstacle_observation
             avoidance_decision = outcome.avoidance_decision
             debug = controller.last_debug

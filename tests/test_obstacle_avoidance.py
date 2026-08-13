@@ -20,17 +20,31 @@ class ObstacleAvoidancePlannerTestCase(unittest.TestCase):
         self.assertEqual(decision.command.as_tuple(), command.as_tuple())
         self.assertEqual(decision.state, "CLEAR")
 
-    def test_caution_reduces_forward_speed(self) -> None:
-        planner = ObstacleAvoidancePlanner(build_safety(), forward_speed_in_caution_ratio=0.25)
+    def test_caution_caps_forward_speed_at_twenty(self) -> None:
+        planner = ObstacleAvoidancePlanner(
+            build_safety(), maximum_forward_speed_in_caution=20
+        )
         decision = planner.plan(
-            RCCommand(0, 20, 0, 6),
+            RCCommand(0, 25, 0, 6),
             ObstacleResult(found=True, state="CAUTION", side="center"),
         )
-        self.assertEqual(decision.command.as_tuple(), (0, 5, 0, 6))
+        self.assertEqual(decision.command.as_tuple(), (0, 20, 0, 6))
         self.assertEqual(decision.state, "CAUTION")
 
+    def test_caution_does_not_accelerate_slower_forward_command(self) -> None:
+        planner = ObstacleAvoidancePlanner(
+            build_safety(), maximum_forward_speed_in_caution=20
+        )
+        decision = planner.plan(
+            RCCommand(0, 16, 0, 6),
+            ObstacleResult(found=True, state="CAUTION", side="center"),
+        )
+        self.assertEqual(decision.command.as_tuple(), (0, 16, 0, 6))
+
     def test_caution_does_not_reduce_backward_speed(self) -> None:
-        planner = ObstacleAvoidancePlanner(build_safety(), forward_speed_in_caution_ratio=0.25)
+        planner = ObstacleAvoidancePlanner(
+            build_safety(), maximum_forward_speed_in_caution=20
+        )
         decision = planner.plan(
             RCCommand(0, -20, 0, 6),
             ObstacleResult(found=True, state="CAUTION", side="center"),

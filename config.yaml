@@ -65,7 +65,7 @@ target_area_ratio_max: 0.080
 # 仅 reid-demo 运行期覆盖到 shared 配置，不影响默认 ArUco 跟随。
 reid_target_area_ratio_min: 0.22
 reid_target_area_ratio_max: 0.31
-maximum_forward_speed: 35
+maximum_forward_speed: 25
 forward_speed_while_aligning: 16
 vertical_dead_zone_ratio: 0.10
 vertical_speed: 20
@@ -96,7 +96,8 @@ obstacle:
   avoidance_lateral_speed: 12
   max_avoidance_seconds: 5.0
   recovery_clear_frames: 10
-  forward_speed_in_caution_ratio: 0.35
+  # CLEAR 直行最高 25；CAUTION 保留跟随，但正向前进最高限制为 20。
+  maximum_forward_speed_in_caution: 20
   temporal_window_frames: 5
   detect_confirm_frames: 3
   clear_confirm_frames: 5
@@ -129,6 +130,16 @@ occlusion_recovery:
   occlusion_overlap_ratio: 0.25
   occluder_iou_threshold: 0.15
   occlusion_confirm_frames: 3
+  # 目标丢失先判断是否沿画面左右边缘离开：边缘位置、持续向外漂移、
+  # 无人机偏航已接近上限但误差仍增大，都作为出画证据。确认出画直接搜索；
+  # 只是可疑时最多悬停 0.8 秒也强制搜索，禁止把人背后背景当成遮挡横移。
+  unknown_loss_hover_seconds: 0.8
+  exit_edge_margin_ratio: 0.15
+  exit_history_frames: 8
+  exit_min_displacement_ratio: 0.02
+  exit_min_velocity_ratio_per_second: 0.15
+  exit_time_to_edge_seconds: 1.2
+  exit_yaw_saturation_ratio: 0.85
   # 已确认遮挡但左右均不安全时悬停等待，禁止退回 360° 搜索；超时后降落。
   no_safe_route_seconds: 3.0
   prediction_margin_ratio: 0.20

@@ -52,7 +52,7 @@ class ObstacleAvoidancePlanner:
         recovery_clear_frames: int = 10,
         detect_confirm_frames: int = 1,
         clear_confirm_frames: Optional[int] = None,
-        forward_speed_in_caution_ratio: float = 0.35,
+        maximum_forward_speed_in_caution: int = 20,
         scan_yaw_speed: int = 8,
         min_free_space_score: float = 0.22,
         timeout_action: str = "land",
@@ -65,8 +65,8 @@ class ObstacleAvoidancePlanner:
         self.detect_confirm_frames = self._positive_int(detect_confirm_frames, 1)
         configured_clear_frames = recovery_clear_frames if clear_confirm_frames is None else clear_confirm_frames
         self.clear_confirm_frames = self._positive_int(configured_clear_frames, 1)
-        self.forward_speed_in_caution_ratio = self._clamp_float(
-            forward_speed_in_caution_ratio, 0.0, 1.0, 0.35
+        self.maximum_forward_speed_in_caution = self._non_negative_int(
+            maximum_forward_speed_in_caution, 20
         )
         self.scan_yaw_speed = self._non_negative_int(scan_yaw_speed, 8)
         self.min_free_space_score = self._clamp_float(min_free_space_score, 0.0, 1.0, 0.22)
@@ -96,8 +96,8 @@ class ObstacleAvoidancePlanner:
             recovery_clear_frames=cls._config_int(obstacle, "recovery_clear_frames", 10),
             detect_confirm_frames=cls._config_int(obstacle, "detect_confirm_frames", 3),
             clear_confirm_frames=cls._config_int(obstacle, "clear_confirm_frames", 5),
-            forward_speed_in_caution_ratio=cls._config_float(
-                obstacle, "forward_speed_in_caution_ratio", 0.35
+            maximum_forward_speed_in_caution=cls._config_int(
+                obstacle, "maximum_forward_speed_in_caution", 20
             ),
             scan_yaw_speed=cls._config_int(obstacle, "scan_yaw_speed", 8),
             min_free_space_score=cls._config_float(obstacle, "min_free_space_score", 0.22),
@@ -281,9 +281,10 @@ class ObstacleAvoidancePlanner:
         return direction, 1.0, False
 
     def _caution_command(self, follow_command: RCCommand) -> RCCommand:
+        """Cap positive forward motion at the configured CAUTION speed."""
         forward = follow_command.forward_backward
         if forward > 0:
-            forward = int(forward * self.forward_speed_in_caution_ratio)
+            forward = min(forward, self.maximum_forward_speed_in_caution)
         return self._limited_command(
             follow_command.left_right,
             forward,

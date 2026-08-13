@@ -12,7 +12,14 @@ from control.kernel.phases import KernelPhase
 from vision.obstacle_detect import ObstacleResult
 
 
-def context(found: bool, *, bbox=(280, 160, 80, 180), now=0.0, yaw_deg=None):
+def context(
+    found: bool,
+    *,
+    bbox=(280, 160, 80, 180),
+    now=0.0,
+    yaw_deg=None,
+    last_command=None,
+):
     target = {
         "found": found,
         "is_predicted": False,
@@ -29,6 +36,7 @@ def context(found: bool, *, bbox=(280, 160, 80, 180), now=0.0, yaw_deg=None):
         frame_height=480,
         yaw_deg=yaw_deg,
         now=now,
+        extra={"last_command": last_command} if last_command is not None else {},
     )
 
 
@@ -106,6 +114,61 @@ class OcclusionRecoveryFeatureTestCase(unittest.TestCase):
         self.assertEqual(config.local_scan_degrees, 30.0)
         self.assertEqual(config.local_scan_yaw_speed, 20)
         self.assertEqual(config.local_scan_fallback_seconds, 1.5)
+        self.assertEqual(config.unknown_loss_hover_seconds, 0.8)
+        self.assertEqual(config.exit_edge_margin_ratio, 0.15)
+        self.assertEqual(config.exit_history_frames, 8)
+        self.assertEqual(config.exit_time_to_edge_seconds, 1.2)
+
+    def test_outward_edge_exit_skips_overlapping_background_bypass(self):
+        feature = OcclusionRecoveryFeature(config=recovery_config())
+        feature.propose(context(True, bbox=(280, 160, 80, 180), now=0.0), None, 0.0)
+        feature.propose(context(True, bbox=(280, 160, 80, 180), now=0.1), None, 0.1)
+        for now, x in ((0.2, 250), (0.3, 210), (0.4, 160), (0.5, 100), (0.6, 40)):
+            feature.propose(context(True, bbox=(x, 160, 80, 180), now=now), None, now)
+
+        proposal = feature.propose(
+            context(False, now=0.7),
+            blocked(bbox=(0, 140, 260, 220)),
+            0.7,
+        )
+
+        self.assertIsNone(proposal)
+        self.assertEqual(feature.state, "FALLBACK_SEARCH")
+        self.assertEqual(feature.last_loss_cause, "EXIT_FOV")
+        self.assertEqual(feature._lateral_pulses, 0)
+
+    def test_edge_loss_without_motion_holds_then_forces_search(self):
+        feature = OcclusionRecoveryFeature(config=recovery_config())
+        edge_target = (20, 160, 80, 180)
+        feature.propose(context(True, bbox=edge_target, now=0.0), None, 0.0)
+        feature.propose(context(True, bbox=edge_target, now=0.1), None, 0.1)
+        background = blocked(bbox=(0, 140, 220, 220))
+
+        hold = feature.propose(context(False, now=0.2), background, 0.2)
+        fallback = feature.propose(context(False, now=1.01), background, 1.01)
+
+        self.assertEqual(hold.state, "LOSS_UNCERTAIN_HOLD")
+        self.assertEqual(hold.command.as_tuple(), (0, 0, 0, 0))
+        self.assertIn("loss_cause=EXIT_POSSIBLE", hold.reason)
+        self.assertIsNone(fallback)
+        self.assertEqual(feature.state, "FALLBACK_SEARCH")
+        self.assertEqual(feature._lateral_pulses, 0)
+
+    def test_saturated_yaw_and_growing_error_trigger_search_away_from_edge(self):
+        feature = OcclusionRecoveryFeature(config=recovery_config())
+        feature.propose(context(True, bbox=(280, 160, 80, 180), now=0.0), None, 0.0)
+        feature.propose(context(True, bbox=(280, 160, 80, 180), now=0.1), None, 0.1)
+        feature.propose(context(True, bbox=(295, 160, 80, 180), now=1.0), None, 1.0)
+
+        proposal = feature.propose(
+            context(False, now=1.1, last_command=RCCommand(yaw=25)),
+            blocked(),
+            1.1,
+        )
+
+        self.assertIsNone(proposal)
+        self.assertEqual(feature.state, "FALLBACK_SEARCH")
+        self.assertEqual(feature.last_loss_cause, "EXIT_FOV")
 
     def test_never_locked_target_allows_yaw_only_even_with_obstacle(self):
         feature = OcclusionRecoveryFeature(config=recovery_config())

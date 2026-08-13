@@ -106,6 +106,23 @@ class TargetSearchController:
         self._reset_rotation_tracking()
         self._reacquire_tracker.reset()
 
+    def start_last_direction_search(
+        self, now: float, height_cm: Optional[int]
+    ) -> None:
+        """Start an already-justified search without another stationary hold.
+
+        Occlusion recovery calls this only after confirming an image-edge exit or
+        after completing its own bounded uncertainty hold.  The ordinary target
+        loss path still starts with ``LOST_HOLD``.
+        """
+        if not self.enabled:
+            return
+        self._start_search(now, height_cm)
+        next_state = (
+            "SEARCH_LAST_DIRECTION" if self.has_observed_target else "MOVE_TO_LAYER"
+        )
+        self._enter(next_state, now)
+
     def observe_target(
         self,
         result: Dict[str, object],

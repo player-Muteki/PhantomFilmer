@@ -117,6 +117,7 @@ class ArbitrationEngine:
                 )
             # 无障碍 → 配方 4/5（搜索透传 / 丢失悬停），obstacle 本 tick 只做探测。
             tracking = self._lost_tracking(ctx)
+            tracking = self._annotate_loss_cause(tracking)
             tracking = self._gate_lost_search(tracking, observation)
             return self._finish(
                 tracking,
@@ -148,6 +149,7 @@ class ArbitrationEngine:
         # 无 obstacle feature（避障关闭）→ 直接 follow / search / lost。
         if not ctx.target_result.get("found"):
             tracking = self._lost_tracking(ctx)
+            tracking = self._annotate_loss_cause(tracking)
             return self._finish(tracking)
         follow = self._follow.propose(ctx, ctx.now)
         return self._finish(follow)
@@ -197,6 +199,25 @@ class ArbitrationEngine:
         if self._search is not None:
             return self._search.propose(ctx, ctx.now)  # 配方 4
         return self._safety.lost_hover(ctx, ctx.now)  # 配方 5
+
+    def _annotate_loss_cause(self, proposal: FeatureProposal) -> FeatureProposal:
+        """Expose the recovery classifier's decision in mission state output."""
+        cause = getattr(self._occlusion, "last_loss_cause", "NONE")
+        if cause in {"", "NONE", "PENDING"}:
+            return proposal
+        prefix = f"loss_cause={cause}"
+        reason = proposal.reason
+        if prefix in reason:
+            return proposal
+        return FeatureProposal(
+            command=proposal.command,
+            state=proposal.state,
+            reason=f"{prefix}; {reason}" if reason else prefix,
+            feature=proposal.feature,
+            active=proposal.active,
+            requires_landing=proposal.requires_landing,
+            landing_kind=proposal.landing_kind,
+        )
 
     def _finish(
         self,

@@ -93,6 +93,17 @@ class TargetSearchControllerTests(unittest.TestCase):
         self.assertEqual(turn.command.left_right, 0)
         self.assertEqual(turn.command.forward_backward, 0)
 
+    def test_confirmed_exit_starts_last_direction_without_second_hold(self):
+        controller = self.build_controller()
+        result = target(center=(100, 240), area_ratio=0.20)
+        controller.observe_target(result, 640, 480, RCCommand(yaw=-25))
+
+        controller.start_last_direction_search(now=2.0, height_cm=150)
+        turn = controller.update(LOST, 640, 480, 150, now=2.0)
+
+        self.assertEqual(turn.state, "SEARCH_LAST_DIRECTION")
+        self.assertEqual(turn.command.as_tuple(), (0, 0, 0, -25))
+
     def test_vertical_position_does_not_create_a_separate_vertical_branch(self):
         controller = self.build_controller()
         result = target(center=(100, 80), area_ratio=0.20)

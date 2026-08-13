@@ -1018,6 +1018,7 @@ class FollowSession:
                         emergency=self.emergency_stop,
                         stop_requested=self.stop_event.is_set(),
                         now=monotonic(),
+                        extra={"last_command": self.last_command},
                     )
                 )
             except Exception as exc:

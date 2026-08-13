@@ -13,8 +13,9 @@ commands forward/backward, vertical, and yaw motion during that peek.
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
-from typing import Dict, Optional, Tuple
+from typing import Deque, Dict, Optional, Tuple
 
 from control.follow_control import RCCommand
 from control.kernel.features import ArbitrationContext, FeatureProposal
@@ -22,6 +23,24 @@ from vision.obstacle_detect import ObstacleResult
 
 
 Box = Tuple[int, int, int, int]
+
+
+@dataclass(frozen=True)
+class TargetMotionSample:
+    """One trustworthy target position retained for field-of-view exit checks."""
+
+    timestamp: float
+    center_x: float
+    center_y: float
+    bbox: Box
+
+
+@dataclass(frozen=True)
+class ExitAssessment:
+    """Classification result produced before obstacle-linked recovery is allowed."""
+
+    classification: str
+    reason: str
 
 
 @dataclass(frozen=True)
@@ -40,6 +59,14 @@ class OcclusionRecoveryConfig:
     occlusion_overlap_ratio: float = 0.25
     occluder_iou_threshold: float = 0.15
     occlusion_confirm_frames: int = 3
+    unknown_loss_hover_seconds: float = 0.8
+    exit_edge_margin_ratio: float = 0.15
+    exit_history_frames: int = 8
+    exit_min_displacement_ratio: float = 0.02
+    exit_min_velocity_ratio_per_second: float = 0.15
+    exit_time_to_edge_seconds: float = 1.2
+    exit_yaw_saturation_ratio: float = 0.85
+    maximum_yaw_speed: int = 25
     no_safe_route_seconds: float = 3.0
     prediction_margin_ratio: float = 0.20
     lateral_speed: int = 25
@@ -90,6 +117,31 @@ class OcclusionRecoveryConfig:
             ),
             occlusion_confirm_frames=cls._positive_int(
                 cfg.get("occlusion_confirm_frames"), 3
+            ),
+            unknown_loss_hover_seconds=cls._positive_float(
+                cfg.get("unknown_loss_hover_seconds"), 0.8
+            ),
+            exit_edge_margin_ratio=cls._ratio(
+                cfg.get("exit_edge_margin_ratio"), 0.15
+            ),
+            exit_history_frames=cls._positive_int(
+                cfg.get("exit_history_frames"), 8
+            ),
+            exit_min_displacement_ratio=cls._ratio(
+                cfg.get("exit_min_displacement_ratio"), 0.02
+            ),
+            exit_min_velocity_ratio_per_second=cls._positive_float(
+                cfg.get("exit_min_velocity_ratio_per_second"), 0.15
+            ),
+            exit_time_to_edge_seconds=cls._positive_float(
+                cfg.get("exit_time_to_edge_seconds"), 1.2
+            ),
+            exit_yaw_saturation_ratio=cls._ratio(
+                cfg.get("exit_yaw_saturation_ratio"), 0.85
+            ),
+            maximum_yaw_speed=cls._positive_int(
+                config.get("maximum_yaw_speed") if isinstance(config, dict) else None,
+                25,
             ),
             no_safe_route_seconds=cls._positive_float(
                 cfg.get("no_safe_route_seconds"), 3.0
@@ -167,6 +219,7 @@ class OcclusionRecoveryFeature:
         "OCCLUSION_LOCAL_SCAN_OUT",
         "OCCLUSION_LOCAL_SCAN_HOLD",
         "OCCLUSION_LOCAL_SCAN_RETURN",
+        "LOSS_UNCERTAIN_HOLD",
         "REACQUIRE_VERIFY",
         "FALLBACK_SEARCH",
     }
@@ -192,6 +245,11 @@ class OcclusionRecoveryFeature:
         self._last_target_center_at: Optional[float] = None
         self._velocity_x = 0.0
         self._velocity_y = 0.0
+        self._target_history: Deque[TargetMotionSample] = deque(
+            maxlen=self.config.exit_history_frames
+        )
+        self.last_loss_cause = "NONE"
+        self.last_loss_reason = ""
         self._phase_started_at: Optional[float] = None
         self._initial_scan_started_at: Optional[float] = None
         self._initial_scan_active_seconds = 0.0
@@ -328,6 +386,25 @@ class OcclusionRecoveryFeature:
             )
 
         if self.state == "TRACKING":
+            assessment = self._assess_exit_fov(ctx)
+            if assessment.classification == "EXIT_FOV":
+                self.last_loss_cause = "EXIT_FOV"
+                self.last_loss_reason = assessment.reason
+                self._start_last_direction_search(ctx, now)
+                self.state = "FALLBACK_SEARCH"
+                self._clear_occlusion_evidence()
+                return None
+            if assessment.classification == "EXIT_POSSIBLE":
+                self.last_loss_cause = "EXIT_POSSIBLE"
+                self.last_loss_reason = assessment.reason
+                self._enter("LOSS_UNCERTAIN_HOLD", now)
+                self._clear_occlusion_evidence()
+                return self._hover(
+                    self.state,
+                    f"loss_cause=EXIT_POSSIBLE; {assessment.reason}",
+                )
+            self.last_loss_cause = "PENDING"
+            self.last_loss_reason = assessment.reason
             self._enter("OCCLUSION_CHECK", now)
             self._clear_occlusion_evidence()
         elif self.state == "REACQUIRE_VERIFY":
@@ -338,6 +415,17 @@ class OcclusionRecoveryFeature:
                 "OCCLUSION_SETTLE" if self._lateral_pulses else "OCCLUSION_CHECK"
             )
             self._enter(next_state, now)
+
+        if self.state == "LOSS_UNCERTAIN_HOLD":
+            if self._elapsed(now) < self.config.unknown_loss_hover_seconds:
+                return self._hover(
+                    self.state,
+                    f"loss_cause={self.last_loss_cause}; "
+                    f"waiting for bounded fallback search",
+                )
+            self.state = "FALLBACK_SEARCH"
+            self._start_last_direction_search(ctx, now)
+            return None
 
         if self.state == "OCCLUSION_CHECK":
             predicted = self.predicted_target_bbox(
@@ -353,6 +441,10 @@ class OcclusionRecoveryFeature:
             if self._occlusion_frames >= self.config.occlusion_confirm_frames:
                 direction = self._choose_bypass_direction(observation, predicted)
                 if direction is not None:
+                    self.last_loss_cause = "OCCLUSION"
+                    self.last_loss_reason = (
+                        "persistent obstacle overlaps the predicted target"
+                    )
                     self._bypass_direction = direction
                     self._lateral_pulses = 1
                     self._enter("OCCLUSION_BYPASS", now)
@@ -363,13 +455,20 @@ class OcclusionRecoveryFeature:
                     "target-linked occluder confirmed; no safe lateral sector",
                 )
 
-            if self._elapsed(now) < self.config.occlusion_check_seconds:
+            hold_limit = min(
+                self.config.occlusion_check_seconds,
+                self.config.unknown_loss_hover_seconds,
+            )
+            if self._elapsed(now) < hold_limit:
                 progress = (
                     f"occluder {self._occlusion_frames}/"
                     f"{self.config.occlusion_confirm_frames}"
                 )
                 return self._hover(self.state, progress)
+            self.last_loss_cause = "UNKNOWN"
+            self.last_loss_reason = "no high-confidence occluder before timeout"
             self.state = "FALLBACK_SEARCH"
+            self._start_last_direction_search(ctx, now)
             return None
 
         if self.state == "OCCLUSION_NO_SAFE_ROUTE":
@@ -479,6 +578,20 @@ class OcclusionRecoveryFeature:
             min(height, max(1, frame_height)),
         )
         center = (bbox[0] + bbox[2] / 2.0, bbox[1] + bbox[3] / 2.0)
+        if (
+            self._target_history
+            and now - self._target_history[-1].timestamp
+            > self.config.occlusion_max_age_seconds
+        ):
+            self._target_history.clear()
+        self._target_history.append(
+            TargetMotionSample(
+                timestamp=now,
+                center_x=center[0],
+                center_y=center[1],
+                bbox=bbox,
+            )
+        )
         if self._last_target_center is not None and self._last_target_center_at is not None:
             dt = now - self._last_target_center_at
             if 0.01 <= dt <= self.config.occlusion_max_age_seconds:
@@ -494,6 +607,97 @@ class OcclusionRecoveryFeature:
         self.last_target_seen_at = now
         self._last_target_center = center
         self._last_target_center_at = now
+
+    def _assess_exit_fov(self, ctx: ArbitrationContext) -> ExitAssessment:
+        """Classify a loss before any target-linked lateral bypass is authorized.
+
+        A target need not be running quickly in world coordinates.  Being near a
+        horizontal image edge is enough to inhibit lateral recovery; consistent
+        outward image motion, an increasing tracking error, or saturated yaw can
+        promote that conservative hold to an immediate last-direction search.
+        """
+        if not self._target_history or ctx.frame_width <= 0:
+            return ExitAssessment("NONE", "insufficient target trajectory")
+
+        latest = self._target_history[-1]
+        oldest = self._target_history[0]
+        frame_width = float(ctx.frame_width)
+        margin = frame_width * self.config.exit_edge_margin_ratio
+        left_near = latest.bbox[0] <= margin
+        right_near = latest.bbox[0] + latest.bbox[2] >= frame_width - margin
+        horizontal_edge_near = left_near or right_near
+
+        direction = -1 if latest.center_x < frame_width / 2.0 else 1
+        displacement = latest.center_x - oldest.center_x
+        outward_displacement = displacement * direction
+        minimum_displacement = max(
+            2.0, frame_width * self.config.exit_min_displacement_ratio
+        )
+        outward_trend = outward_displacement >= minimum_displacement
+
+        elapsed = latest.timestamp - oldest.timestamp
+        velocity = displacement / elapsed if elapsed >= 0.05 else 0.0
+        outward_velocity = velocity * direction
+        fast_outward = (
+            outward_velocity / frame_width
+            >= self.config.exit_min_velocity_ratio_per_second
+        )
+        distance_to_edge = (
+            latest.center_x if direction < 0 else frame_width - latest.center_x
+        )
+        time_to_edge = (
+            distance_to_edge / outward_velocity
+            if outward_velocity > 1e-6
+            else float("inf")
+        )
+        edge_arrival_soon = time_to_edge <= self.config.exit_time_to_edge_seconds
+
+        old_error = abs(oldest.center_x - frame_width / 2.0)
+        new_error = abs(latest.center_x - frame_width / 2.0)
+        error_growing = new_error - old_error >= minimum_displacement
+        last_yaw = self._last_yaw_command(ctx)
+        yaw_threshold = max(
+            1.0,
+            self.config.maximum_yaw_speed
+            * self.config.exit_yaw_saturation_ratio,
+        )
+        yaw_saturated_outward = (
+            abs(last_yaw) >= yaw_threshold and last_yaw * direction > 0
+        )
+
+        confirmed = (
+            (horizontal_edge_near and outward_trend)
+            or (yaw_saturated_outward and error_growing)
+            or (outward_trend and fast_outward and edge_arrival_soon)
+        )
+        evidence = (
+            f"edge={horizontal_edge_near}, outward={outward_trend}, "
+            f"yaw_saturated={yaw_saturated_outward}, "
+            f"error_growing={error_growing}, t_edge={time_to_edge:.2f}s"
+        )
+        if confirmed:
+            return ExitAssessment("EXIT_FOV", evidence)
+        if horizontal_edge_near or outward_trend or yaw_saturated_outward:
+            return ExitAssessment("EXIT_POSSIBLE", evidence)
+        return ExitAssessment("NONE", evidence)
+
+    @staticmethod
+    def _last_yaw_command(ctx: ArbitrationContext) -> int:
+        """Read the previous emitted yaw command from optional kernel context."""
+        command = ctx.extra.get("last_command")
+        if isinstance(command, RCCommand):
+            return int(command.yaw)
+        if isinstance(command, dict):
+            try:
+                return int(command.get("yaw", 0))
+            except (TypeError, ValueError):
+                return 0
+        if isinstance(command, (tuple, list)) and len(command) == 4:
+            try:
+                return int(command[3])
+            except (TypeError, ValueError):
+                return 0
+        return 0
 
     def _match_occluder(
         self,
@@ -804,6 +1008,16 @@ class OcclusionRecoveryFeature:
         reset = getattr(self._target_search, "reset", None)
         if callable(reset):
             reset()
+
+    def _start_last_direction_search(
+        self, ctx: ArbitrationContext, now: float
+    ) -> None:
+        """Prime target search after this feature has already performed a hold."""
+        start = getattr(self._target_search, "start_last_direction_search", None)
+        if not callable(start):
+            return
+        height_cm = int(ctx.height_cm) if ctx.height_cm is not None else None
+        start(now, height_cm)
 
     @staticmethod
     def _fresh_target(result: Dict[str, object]) -> bool:

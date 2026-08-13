@@ -4,7 +4,7 @@ Wraps MotionArbiter. It has two modes the kernel selects between:
   - own():        recipe 3 — target lost, obstacle probes for takeover, so a
                   confirmed block yields active avoidance instead of a hover.
   - arbitrate():  recipe 6 / climb / pre-follow — gate a desired command through
-                  the normal avoidance pipeline (CLEAR pass / CAUTION scale /
+                  the normal avoidance pipeline (CLEAR pass / CAUTION cap /
                   BLOCKED brake → avoid).
 """
 
