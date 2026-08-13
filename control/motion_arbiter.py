@@ -22,6 +22,7 @@ class MotionContext:
 
     mode: str
     target_result: Dict[str, object]
+    yaw_deg: Optional[int] = None
 
 
 class MotionArbiter:
@@ -57,6 +58,16 @@ class MotionArbiter:
             "front_tof_blocked_distance_cm", 60.0
         )
         self._front_tof_provider: Optional[Callable[[], FrontToFSnapshot]] = None
+        self._target_seen = False
+        self._target_was_found = False
+        self._lost_episode_counter = 0
+        self._active_lost_episode_id: Optional[int] = None
+        self._lost_tof_failure_limit = max(
+            1, self._config_int("lost_tof_failure_limit", 5)
+        )
+        self._lost_tof_failures = 0
+        self._latest_front_sequence = -1
+        self._last_failed_front_sequence = -1
 
     def reset(self, mode: str = "unknown") -> None:
         """Start a fresh planning and logging session."""
@@ -70,6 +81,13 @@ class MotionArbiter:
         self.last_latency_ms = 0.0
         self._detect_counter = 1
         self._detector_ran = False
+        self._target_seen = False
+        self._target_was_found = False
+        self._lost_episode_counter = 0
+        self._active_lost_episode_id = None
+        self._lost_tof_failures = 0
+        self._latest_front_sequence = -1
+        self._last_failed_front_sequence = -1
         self._active = True
         if self._log_enabled:
             self._writer = _JsonlEventWriter(self._session_log_path())
@@ -89,6 +107,20 @@ class MotionArbiter:
         """
         if not self._active:
             self.reset(context.mode)
+        fresh_target = (
+            bool(context.target_result.get("found"))
+            and not bool(context.target_result.get("is_predicted"))
+            and not bool(context.target_result.get("ambiguous"))
+        )
+        if fresh_target:
+            self._target_seen = True
+            self._target_was_found = True
+            self._active_lost_episode_id = None
+            self.planner.cancel_lost_target_recovery()
+        elif self._target_was_found:
+            self._target_was_found = False
+            self._lost_episode_counter += 1
+            self._active_lost_episode_id = self._lost_episode_counter
         started_at = monotonic()
         try:
             self._detect_counter += 1
@@ -107,9 +139,28 @@ class MotionArbiter:
                         consecutive_found_frames=observation.consecutive_found_frames + 1,
                     )
             observation = self._fuse_front_tof(observation)
-            decision = self.planner.plan(desired_command, observation, obstacle_priority)
+            self._lost_tof_failures = 0
+            self._last_failed_front_sequence = -1
+            decision = self.planner.plan(
+                desired_command,
+                observation,
+                obstacle_priority,
+                lost_episode_id=(
+                    self._active_lost_episode_id
+                    if obstacle_priority and self._target_seen
+                    else None
+                ),
+                yaw_deg=context.yaw_deg,
+            )
             self.last_observation = observation
         except Exception as exc:
+            if obstacle_priority and self._active_lost_episode_id is not None:
+                if self._latest_front_sequence != self._last_failed_front_sequence:
+                    self._lost_tof_failures += 1
+                    self._last_failed_front_sequence = self._latest_front_sequence
+            else:
+                self._lost_tof_failures = 0
+            should_land = self._lost_tof_failures >= self._lost_tof_failure_limit
             observation = ObstacleResult(
                 state="UNKNOWN",
                 data_quality="planner_error",
@@ -118,10 +169,17 @@ class MotionArbiter:
             decision = AvoidanceDecision(
                 command=self._zero_command(),
                 state="FAILSAFE",
-                action="HOVER",
-                reason=f"obstacle pipeline error: {type(exc).__name__}",
+                action="LAND" if should_land else "HOVER",
+                reason=(
+                    f"front ToF unavailable {self._lost_tof_failures}/"
+                    f"{self._lost_tof_failure_limit}: {type(exc).__name__}"
+                    if obstacle_priority and self._active_lost_episode_id is not None
+                    else f"obstacle pipeline error: {type(exc).__name__}"
+                ),
                 confidence=0.0,
                 plan_id="error",
+                requires_landing=should_land,
+                owns_motion=True,
                 observation=observation,
             )
             # 失败时不缓存错误观测：跳过帧若复用它，会把它当作"未发现障碍"，
@@ -147,12 +205,14 @@ class MotionArbiter:
         if self._front_tof_provider is None:
             raise RuntimeError("front ToF provider is not attached")
         sample = self._front_tof_provider()
+        self._latest_front_sequence = sample.sequence
         if sample.status not in {"valid", "out_of_range"}:
             raise RuntimeError(f"front ToF sample is {sample.status}")
         updates: Dict[str, object] = {
             "front_distance_cm": sample.distance_cm,
             "front_distance_status": sample.status,
             "front_distance_age_seconds": round(sample.age_seconds, 3),
+            "front_distance_sequence": sample.sequence,
         }
         if (
             sample.distance_cm is not None

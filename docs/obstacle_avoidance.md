@@ -8,7 +8,7 @@ PhantomFilmer uses a deterministic local planner for online obstacle avoidance. 
 
 1. Read the cached top/front ToF distance (camera pixels are not inspected for obstacles).
 2. Build a distance-only obstacle observation.
-3. Select a bounded local action from `CLEAR`, `BRAKING`, `SIDE_STEP_OUT`, `FORWARD_120CM`, `SIDE_STEP_RETURN`, and `FAILSAFE`.
+3. Select a bounded lateral/yaw action from `CLEAR`, `BRAKING`, `SIDE_STEP_OUT`, `POST_BYPASS_LEFT_TURN`, and `FAILSAFE`. Avoidance never emits forward motion.
 4. Apply safety limits and send RC through the existing drone adapter.
 
 `follow`, `follow-dry-run`, `console`, and `fixed-demo` all use this path. The fixed-demo route is no longer a bypass: each preset RC segment is treated as a desired command and may be interrupted by obstacle avoidance. While an obstacle is visible, the fixed-demo route timer pauses so the remaining route time is not silently consumed during detour or scan behavior.

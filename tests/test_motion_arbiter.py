@@ -41,13 +41,16 @@ class StubDetector:
 
 class MotionArbiterTestCase(unittest.TestCase):
     @staticmethod
-    def front_sample(distance_cm: Optional[float], *, status: str = "valid", count: int = 3):
+    def front_sample(
+        distance_cm: Optional[float], *, status: str = "valid", count: int = 3,
+        sequence: int = 1,
+    ):
         return FrontToFSnapshot(
             distance_cm=distance_cm,
             status=status,
             timestamp=1.0,
             age_seconds=0.01,
-            sequence=1,
+            sequence=sequence,
             consecutive_blocked=count,
         )
 
@@ -218,6 +221,100 @@ class MotionArbiterTestCase(unittest.TestCase):
         self.assertEqual(decision.state, "FAILSAFE")
         self.assertEqual(decision.command.as_tuple(), (0, 0, 0, 0))
         self.assertEqual(decision.observation.data_quality, "planner_error")
+
+    def test_lost_target_tof_failure_hovers_then_requests_landing(self) -> None:
+        safety = build_safety()
+        current = self.front_sample(90, sequence=1)
+        arbiter = MotionArbiter(
+            detector=StubDetector(ObstacleResult(found=False, state="CLEAR")),
+            planner=ObstacleAvoidancePlanner(safety_manager=safety),
+            config={
+                "obstacle": {
+                    "front_tof_enabled": True,
+                    "lost_tof_failure_limit": 3,
+                }
+            },
+        )
+        arbiter.set_front_tof_provider(lambda: current)
+        # Establish that the target was previously visible.
+        arbiter.decide(
+            RCCommand(), object(), MotionContext("test", {"found": True})
+        )
+        failures = iter(
+            self.front_sample(None, status="stale", count=0, sequence=sequence)
+            for sequence in (2, 3, 4)
+        )
+        arbiter.set_front_tof_provider(lambda: next(failures))
+
+        decisions = []
+        for _ in range(3):
+            decisions.append(
+                arbiter.decide(
+                    RCCommand(), object(), MotionContext("test", {"found": False}),
+                    obstacle_priority=True,
+                )
+            )
+
+        self.assertEqual([item.command.as_tuple() for item in decisions], [(0, 0, 0, 0)] * 3)
+        self.assertFalse(decisions[0].requires_landing)
+        self.assertFalse(decisions[1].requires_landing)
+        self.assertTrue(decisions[2].requires_landing)
+        self.assertEqual(decisions[2].action, "LAND")
+
+    def test_repeated_same_failed_tof_sample_does_not_reach_landing_limit(self) -> None:
+        safety = build_safety()
+        current = self.front_sample(90, sequence=1)
+        arbiter = MotionArbiter(
+            detector=StubDetector(ObstacleResult(found=False, state="CLEAR")),
+            planner=ObstacleAvoidancePlanner(safety_manager=safety),
+            config={
+                "obstacle": {
+                    "front_tof_enabled": True,
+                    "lost_tof_failure_limit": 3,
+                }
+            },
+        )
+        arbiter.set_front_tof_provider(lambda: current)
+        arbiter.decide(RCCommand(), object(), MotionContext("test", {"found": True}))
+        current = self.front_sample(None, status="error", count=0, sequence=2)
+
+        decisions = [
+            arbiter.decide(
+                RCCommand(), object(), MotionContext("test", {"found": False}),
+                obstacle_priority=True,
+            )
+            for _ in range(10)
+        ]
+
+        self.assertTrue(all(not item.requires_landing for item in decisions))
+
+    def test_fresh_reid_target_immediately_cancels_post_bypass_turn(self) -> None:
+        safety = build_safety()
+        arbiter = MotionArbiter(
+            detector=StubDetector(ObstacleResult(found=False, state="CLEAR")),
+            planner=ObstacleAvoidancePlanner(safety_manager=safety),
+            config={"obstacle": {"front_tof_enabled": True}},
+        )
+        arbiter.set_front_tof_provider(
+            lambda: self.front_sample(100.0, count=0, sequence=8)
+        )
+        arbiter.reset("test")
+        arbiter.planner._dynamic_lost_bypass = True
+        arbiter.planner._bypass_phase = "POST_BYPASS_LEFT_TURN"
+        arbiter.planner._phase_started_at = 0.0
+        arbiter.planner._turn_last_yaw = 30.0
+
+        desired = RCCommand(0, 18, 0, 7)
+        decision = arbiter.decide(
+            desired,
+            object(),
+            MotionContext("test", {"found": True}, yaw_deg=25),
+            obstacle_priority=True,
+        )
+
+        self.assertEqual(decision.command, desired)
+        self.assertEqual(decision.action, "FOLLOW")
+        self.assertIsNone(arbiter.planner._bypass_phase)
 
     def test_error_observation_is_not_reused_by_sub_sampling(self) -> None:
         safety = build_safety()

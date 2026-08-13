@@ -75,6 +75,7 @@ class ObstacleResult:
     front_distance_cm: Optional[float] = None
     front_distance_status: str = "disabled"
     front_distance_age_seconds: Optional[float] = None
+    front_distance_sequence: int = 0
 
     def to_observation(self, frame_width: int, frame_height: int) -> Dict[str, object]:
         return {
@@ -100,6 +101,7 @@ class ObstacleResult:
             "front_distance_cm": self.front_distance_cm,
             "front_distance_status": self.front_distance_status,
             "front_distance_age_seconds": self.front_distance_age_seconds,
+            "front_distance_sequence": self.front_distance_sequence,
         }
 
 

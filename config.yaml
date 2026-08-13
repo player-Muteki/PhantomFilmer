@@ -63,7 +63,7 @@ target_area_ratio_max: 0.080
 # 仅 reid-demo 运行期覆盖到 shared 配置，不影响默认 ArUco 跟随。
 reid_target_area_ratio_min: 0.25
 reid_target_area_ratio_max: 0.35
-maximum_forward_speed: 35
+maximum_forward_speed: 25
 forward_speed_while_aligning: 16
 vertical_dead_zone_ratio: 0.10
 vertical_speed: 20
@@ -87,16 +87,24 @@ obstacle:
   # RoboMaster TT 顶部扩展红外 ToF：有效距离 <= 60 cm 时进入 BLOCKED。
   front_tof_enabled: true
   front_tof_blocked_distance_cm: 60
-  # BLOCKED 绕行：固定向右平移至 >70 cm，再前进约 1.2 m，最后按等时反向平移。
+  # BLOCKED 避障：固定向右约1m，再以-12左转90度；全程绝不前进。
   front_tof_clear_distance_cm: 70
   front_tof_poll_interval_seconds: 0.2
   front_tof_max_age_seconds: 0.8
   avoidance_lateral_speed: 20
   bypass_lateral_direction: right
-  bypass_forward_distance_cm: 120
-  bypass_forward_speed: 35
-  # 一直无法获得 >70 cm 前向净空时的单侧平移安全上限。
+  # Tello无横向里程计：用速度20持续约5秒估算右移100cm。
+  bypass_lateral_distance_cm: 100
+  # 固定右移阶段的安全时间上限。
   bypass_max_sidestep_seconds: 10
+  # 目标曾被识别后突然丢失：悬停收集5个新鲜ToF样本；量程内才启动右移观察。
+  lost_tof_sample_count: 5
+  # 目标丢失调查期间ToF连续异常：先悬停，第5次请求安全降落。
+  lost_tof_failure_limit: 5
+  # 普通避障和目标丢失遮挡路线固定右移约1m后，都以-12左转90度寻找目标。
+  post_bypass_turn_degrees: 90
+  post_bypass_turn_speed: 12
+  post_bypass_turn_timeout_seconds: 15
   recovery_clear_frames: 10
   detect_confirm_frames: 3
   clear_confirm_frames: 5

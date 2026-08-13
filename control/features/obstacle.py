@@ -33,7 +33,11 @@ class ObstacleFeature:
         return self._arbiter.last_decision
 
     def _context(self, ctx: ArbitrationContext) -> MotionContext:
-        return MotionContext(mode=self._mode_label, target_result=ctx.target_result)
+        return MotionContext(
+            mode=self._mode_label,
+            target_result=ctx.target_result,
+            yaw_deg=int(ctx.yaw_deg) if ctx.yaw_deg is not None else None,
+        )
 
     def own(self, ctx: ArbitrationContext, desired: RCCommand, now: float) -> FeatureProposal:
         """Target lost: probe for a block; if present, take over and avoid."""

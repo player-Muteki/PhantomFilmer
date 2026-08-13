@@ -138,7 +138,7 @@ class FollowSessionObstaclePriorityTestCase(unittest.TestCase):
         # 障碍存在期间不调用 target_search.update，搜索被暂停。
         self.assertFalse(session.target_search.searching)
 
-    def test_target_loss_detours_then_searches_after_obstacle_clears(self) -> None:
+    def test_target_loss_detours_then_turns_left_after_obstacle_clears(self) -> None:
         drone = RecordingFakeDrone(verbose_rc=False)
         drone.height_cm = 70
         clear = ObstacleResult(
@@ -154,16 +154,19 @@ class FollowSessionObstaclePriorityTestCase(unittest.TestCase):
             patch("control.follow_session.sleep", return_value=None),
             patch(
                 "control.obstacle_avoidance.monotonic",
-                side_effect=[0.0, 1.0, 1.0 + 120 / 35, 2.0 + 120 / 35],
+                # This fixture constructs the planner at lateral speed 12, so
+                # an estimated 100 cm completes after about 8.33 seconds.
+                side_effect=[0.0, 2.0, 4.0, 6.0, 8.0, 9.0],
             ),
         ):
             session._loop()
 
         self.assertGreater(drone.rc_history[0][0], 0)  # 向右侧移
-        self.assertGreater(drone.rc_history[1][1], 0)  # 前进约 1.2 m
-        self.assertLess(drone.rc_history[2][0], 0)  # 等时向左返回
-        self.assertEqual(drone.rc_history[3], (0, 0, 0, 0))  # 路线完成停一帧
-        self.assertEqual(drone.rc_history[4], (0, 0, 0, 0))  # 恢复找人
+        self.assertTrue(all(command[1] == 0 for command in drone.rc_history))
+        self.assertTrue(all(command[0] > 0 for command in drone.rc_history[:-1]))
+        self.assertEqual(drone.rc_history[-1], (0, 0, 0, -12))
+        # 搜索状态机可能在首个无障碍观测时已创建，但避障接管期间不再推进它；
+        # 最终飞行指令仍由右移/左转避障独占。
         self.assertTrue(session.target_search.searching)
 
 
