@@ -19,6 +19,7 @@ from control.obstacle_avoidance import AvoidanceDecision, ObstacleAvoidancePlann
 from control.target_search import TargetSearchController
 from drone.drone_adapter import DroneAdapter
 from drone.safety import SafetyManager
+from ui.mode_overlay import draw_mode_overlay, resolve_mode_text
 from vision.camera import CameraStream
 from vision.detector_protocol import DetectorProtocol
 from vision.obstacle_detect import ObstacleDetector, ObstacleResult
@@ -940,6 +941,20 @@ class FollowSession:
                 (255, 255, 255),
                 1,
             )
+
+        debug_frame = draw_mode_overlay(
+            debug_frame,
+            resolve_mode_text(
+                session_state=self.session_state,
+                avoidance_state=(
+                    self.last_avoidance_decision.state
+                    if self.last_avoidance_decision is not None
+                    else None
+                ),
+                paused=self.paused,
+                emergency=self.emergency_stop,
+            ),
+        )
         return debug_frame
 
     def _loop(self) -> None:
