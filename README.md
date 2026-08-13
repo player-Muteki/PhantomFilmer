@@ -162,8 +162,8 @@ MPLCONFIGDIR=.matplotlib YOLO_CONFIG_DIR=.ultralytics \
 
 1. 连接无人机前加载 YOLO、OSNet 和已校验的人物档案（或现场参考照片）。
 2. 连接并检查电量后，不要求地面画面先识别到目标；操作者在命令行输入 `y` 直接授权起飞。
-3. 无人机先使用 TOF 闭环到达 150 cm 基础悬停高度，再进入 ReID 跟随程序。
-4. 进入跟随后若从未发现目标，直接从当前高度开始固定三层扫描；若跟随中途丢失，则可先利用最后水平方向。看到候选目标后连续通过 5 帧身份确认才恢复跟随。
+3. 无人机先使用底部离地 TOF 闭环到达 150 cm 基础悬停高度；这一阶段完全忽略顶部前向 ToF 避障，不会因前方测距而横移或转向。
+4. 进入跟随后若从未发现目标，直接从当前高度开始固定三层扫描，首次搜索同样不受顶部前向 ToF 避障影响；完整搜索一轮仍未找到就降落。人物通过连续 5 帧身份确认并首次进入正常跟随后，才启用现有顶部 ToF 避障。此后跟随中途丢失，继续沿用原来的避障、过近后退、遮挡恢复和最后方向搜索逻辑。
 5. 目标丢失时先悬停 1 秒；疑似过近时以 `-35` 后退 1.5 秒、停顿 0.5 秒，最多两次。之后只按最后水平方向以 `±25` 偏航，再按“当前高度 → 上方 20 cm → 下方 20 cm”的固定顺序分层搜索。每层以 `±20` 偏航，并根据飞控 yaw 累计完整旋转 360°；相邻层反向旋转。三层完整搜索一轮后返回起始高度，仍未找回则清零并降落，不再使用总时间限制。
 
 比赛前详细演练清单见 [`docs/reid_demo_runbook.md`](docs/reid_demo_runbook.md)。
@@ -186,7 +186,9 @@ MPLCONFIGDIR=.matplotlib YOLO_CONFIG_DIR=.ultralytics \
 
 ## 障碍避让
 
-`follow`、`follow-dry-run`、`console` 和 `fixed-demo` 启动时会询问本次是否开启避障，默认值来自 `config.yaml` 的 `obstacle.enabled`。避障只读取 RoboMaster TT 顶部扩展前向 ToF：有效距离小于等于 `front_tof_blocked_distance_cm`（当前 60 cm）时输出 `BLOCKED`，大于阈值或超量程时不增加风险。摄像头只用于目标识别与跟随，不参与障碍判断。所有自动运动路径都经过同一个 `MotionArbiter`，最终命令仍经过 `SafetyManager`。
+当前完整中文流程、优先级、参数和异常保护见 [`docs/避障逻辑说明.md`](docs/避障逻辑说明.md)。
+
+`follow`、`follow-dry-run`、`console` 和 `fixed-demo` 启动时会询问本次是否开启避障，默认值来自 `config.yaml` 的 `obstacle.enabled`。避障只读取 RoboMaster TT 顶部扩展前向 ToF：有效距离小于等于 `front_tof_blocked_distance_cm`（当前 60 cm）时输出 `BLOCKED`，大于阈值或超量程时不增加风险。摄像头只用于目标识别与跟随，不参与障碍判断。ReID 首次确认目标后，跟随和后续丢失恢复才经过 `MotionArbiter`；起飞爬升与首次搜索明确绕过前向 ToF 避障。所有最终命令仍经过 `SafetyManager`。
 
 在线避障决策完全不依赖远程大模型，只使用确定性算法，避免网络延迟、超时和不可复现指令。每次观测和决策会异步写入 `logs/avoidance/*.jsonl`，格式可离线交给 LLM 或分析工具阅读，但不会被用于实时飞控。
 
@@ -202,10 +204,11 @@ MPLCONFIGDIR=.matplotlib YOLO_CONFIG_DIR=.ultralytics \
 
 `SafetyManager` 负责单机安全检查：
 
-- 起飞前电量低于 `min_battery_takeoff` 禁止起飞
-- 飞行中电量低于 `low_battery_land` 建议降落
-- 飞行高度超出 `[min_height_cm, max_height_cm]` 时立即清零并降落
-- 自动跟随会话会先用一个不到约 1 秒、无需等待 ReID 推理的快速 TOF 采样确认已经起飞，再闭环到达 `base_hover_height_cm`（当前为 150 cm）；升高过程继续显示 ReID，但升高许可不依赖识别结果且没有总时限，测高、视频、识别连续异常或越过安全高度时仍会降落
+- 起飞前电量低于 `min_battery_takeoff`（当前 20%）禁止起飞
+- 飞行中电量达到或低于 `low_battery_land`（当前 5%）强制降落
+- 起飞后的独立离地高度确认默认关闭；稳定完成后直接进入 150 cm 基础高度控制
+- 飞行高度超过 `max_height_cm` 时立即清零并降落；低离地高度本身不再触发迫降
+- 自动跟随会话稳定后直接使用底部 TOF 闭环到达 `base_hover_height_cm`（当前为 150 cm）；升高过程继续显示 ReID，但升高许可不依赖识别结果、没有总时限，并且不执行顶部前向 ToF 避障。底部测高、视频、识别连续异常或越过安全高度时仍会降落
 - 飞行控制高度统一采用底部 TOF 到正下方表面的离地距离，并使用最近 5 次有效读数的中位数；飞控原始 `h` 只用于状态诊断，不参与升降控制
 - `limit_rc_command` 将每个通道限制在 `[-max_rc_speed, max_rc_speed]`
 - ReID 身份歧义或刚丢失时先产生零控制输出；随后只允许配置限定的低速后退、原地偏航和上下分层搜索。外部停止请求始终优先清零

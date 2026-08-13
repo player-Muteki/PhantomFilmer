@@ -630,29 +630,8 @@ class FollowSession:
                 command = RCCommand(
                     up_down=vertical_speed if height_error > 0 else -vertical_speed
                 )
-            if self.motion_arbiter is not None and not (self.paused or self.emergency_stop):
-                arbiter_frame = frame
-                if arbiter_frame is None:
-                    arbiter_frame = self._read_frame()
-                if arbiter_frame is None:
-                    self._safe_zero_output()
-                else:
-                    decision = self.motion_arbiter.decide(
-                        desired_command=command,
-                        frame=arbiter_frame,
-                        context=MotionContext(
-                            mode=self.mode_label,
-                            target_result={"found": False},
-                        ),
-                    )
-                    self.last_obstacle_result = decision.observation
-                    self.last_avoidance_decision = decision
-                    command = decision.command
-                    if decision.requires_landing:
-                        print("升高阶段检测到持续障碍，准备安全降落。")
-                        self.session_state = "OBSTACLE_FAILSAFE_LANDING"
-                        self._safe_zero_output()
-                        return False
+            # 基础高度爬升只执行垂直控制。首次可靠识别目标之前，顶部前向
+            # ToF 不参与运动仲裁，避免在起飞阶段触发横移或转向。
             self.send_command(command)
 
             if self.display_enabled:
@@ -904,58 +883,10 @@ class FollowSession:
             tx, ty = target_center  # type: ignore[misc]
             cv2.line(debug_frame, frame_center, (int(tx), int(ty)), (0, 255, 255), 2)
 
-        panel_width = min(frame_width - 24, 520)
-        cv2.rectangle(debug_frame, (12, 84), (12 + panel_width, 386), (0, 0, 0), -1)
-        target_text = "FOUND" if target_result.get("found") else "LOST"
-        battery_text = f"{battery}%" if battery is not None else "N/A"
-        height_text = f"{height} cm TOF" if height is not None else "N/A"
-        lr, fb, ud, yaw = command.as_tuple()
-        debug = self.follow_controller.last_debug
-        obstacle_text = "DISABLED"
-        obstacle_side = "none"
-        obstacle_area = 0.0
-        front_tof_text = "N/A"
-        obstacle_reason = ""
-        if self.last_obstacle_result is not None:
-            obstacle_text = self.last_obstacle_result.state
-            obstacle_side = self.last_obstacle_result.side
-            obstacle_area = self.last_obstacle_result.area_ratio
-            if self.last_obstacle_result.front_distance_cm is not None:
-                front_tof_text = f"{self.last_obstacle_result.front_distance_cm:.1f}cm"
-            else:
-                front_tof_text = self.last_obstacle_result.front_distance_status
-        if self.last_avoidance_decision is not None:
-            obstacle_text = self.last_avoidance_decision.state
-            obstacle_reason = self.last_avoidance_decision.reason
-        key_text = "KEYS: p pause/resume, q stop+land, e emergency"
-        if not self.allow_pause:
-            key_text = "KEYS: q stop+land, e emergency"
-        lines = (
-            f"MODE: {self.mode_label}",
-            f"{self.state_label}: {self.session_state}",
-            f"TARGET: {target_text}",
-            f"BATTERY: {battery_text}",
-            f"GROUND CLEARANCE: {height_text}",
-            f"RC: lr={lr} fb={fb} ud={ud} yaw={yaw}",
-            f"FPS: {self.fps:.1f}  CTRL_HZ: {self.control_hz:.1f}",
-            f"X: {debug.target_center_x}/{debug.frame_center_x} err={debug.horizontal_error} ({debug.horizontal_error_ratio:.2f})",
-            f"Y: {debug.target_center_y}/{debug.frame_center_y} err={debug.vertical_error} ({debug.vertical_error_ratio:.2f})",
-            f"AREA: {debug.area_ratio:.3f}  STATE: {debug.target_state}",
-            f"SEARCH: {self.search_reason or 'inactive'}",
-            f"OBSTACLE: {obstacle_text} side={obstacle_side} area={obstacle_area:.3f} front={front_tof_text}",
-            f"AVOID: {obstacle_reason}",
-            key_text,
-        )
-        for index, line in enumerate(lines):
-            cv2.putText(
-                debug_frame,
-                line,
-                (20, 108 + index * 20),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.52,
-                (255, 255, 255),
-                1,
-            )
+        # Keep the camera image uncluttered: detector annotations, guide lines,
+        # and the single bottom-right STATE label remain; the former black
+        # telemetry/parameter panel is intentionally removed.
+        del command, battery, height
         display_state = self._display_state()
         state_text = f"STATE: {display_state}"
         state_colors = {
@@ -1171,9 +1102,8 @@ class FollowSession:
 
             if height is not None and not self.safety_manager.check_height(height):
                 print(
-                    f"飞行高度 {height} cm 超出安全范围 "
-                    f"[{self.safety_manager.config.min_height_cm}, "
-                    f"{self.safety_manager.config.max_height_cm}] cm，准备安全降落。"
+                    f"飞行高度 {height} cm 已超过安全上限 "
+                    f"{self.safety_manager.config.max_height_cm} cm，准备安全降落。"
                 )
                 self.session_state = "HEIGHT_LIMIT_LANDING"
                 self._safe_zero_output()
@@ -1271,6 +1201,7 @@ class FollowSession:
         self.last_raw_height = None
         self.last_yaw = None
         self.target_search.reset()
+        self._arbitration.reset()
         self.search_reason = ""
 
     def _read_frame(self) -> Any:

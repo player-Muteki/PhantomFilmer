@@ -60,6 +60,7 @@ class BaseSession:
         self.verify_height_ok = True
         self.climb_ok = True
         self.maneuver_completed = True
+        self.config = {"takeoff_height_verify_enabled": False}
 
     def _safe_zero_output(self) -> None:
         self.safe_zero_calls += 1
@@ -167,10 +168,16 @@ class PostTakeoffHandlersTestCase(unittest.TestCase):
     def test_phase_chain_advances_to_follow(self) -> None:
         ctx = LifecycleContext()
         session = BaseSession()
-        self.assertEqual(StabilizeHandler().run(session, ctx), KernelPhase.HEIGHT_VERIFY)
-        self.assertEqual(HeightVerifyHandler().run(session, ctx), KernelPhase.CLIMB)
+        self.assertEqual(StabilizeHandler().run(session, ctx), KernelPhase.CLIMB)
         self.assertEqual(ClimbHandler().run(session, ctx), KernelPhase.PRE_FOLLOW)
         self.assertEqual(PreFollowHandler().run(session, ctx), KernelPhase.FOLLOW)
+
+    def test_height_verify_can_be_explicitly_reenabled(self) -> None:
+        ctx = LifecycleContext()
+        session = BaseSession()
+        session.config["takeoff_height_verify_enabled"] = True
+        self.assertEqual(StabilizeHandler().run(session, ctx), KernelPhase.HEIGHT_VERIFY)
+        self.assertEqual(HeightVerifyHandler().run(session, ctx), KernelPhase.CLIMB)
 
     def test_stabilize_failure_aborts(self) -> None:
         ctx = LifecycleContext()

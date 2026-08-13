@@ -1,7 +1,7 @@
-min_battery_takeoff: 30
-low_battery_land: 20
-# 高度安全范围：飞行高度超出 [min_height_cm, max_height_cm] 会触发自动降落，
-# 真机调参时按试飞场地重新标定。
+min_battery_takeoff: 20
+low_battery_land: 5
+# 高度保护只在超过 max_height_cm 时触发自动降落；低离地高度不再迫降。
+# min_height_cm 仅用于搜索/爬升目标范围，不作为飞行中迫降阈值。
 max_height_cm: 220
 min_height_cm: 60
 # 起飞后先到达 1.5 m 基础悬停高度，再进入自动跟随。
@@ -9,7 +9,9 @@ base_hover_height_cm: 150
 base_hover_height_tolerance_cm: 5
 base_hover_vertical_speed: 20
 base_hover_stable_readings: 3
-# 起飞高度使用多次遥测确认，避免刚起飞时偶发的 0 cm 读数导致误判。
+# 跳过起飞后的离地高度确认，起飞稳定后直接进入基础悬停高度控制。
+takeoff_height_verify_enabled: false
+# 以下参数仅在重新开启离地高度确认时生效。
 takeoff_height_verify_timeout_seconds: 5
 takeoff_height_min_cm: 20
 takeoff_height_stable_readings: 3

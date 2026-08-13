@@ -1,8 +1,8 @@
 """CLIMB handler: reach the base hover height before following.
 
-Climb commands go through the obstacle feature when arbitration is enabled.
-Aborts (returns None) with zero output and a landing on any safety check
-failure (height sensor, battery, over-limit altitude, persistent obstacle).
+Climb commands are vertical-only and deliberately ignore front-ToF avoidance
+until the first target has been accepted. Aborts (returns None) with zero output
+and a landing on height-sensor, battery, or over-limit-altitude failures.
 """
 
 from typing import Any, Optional

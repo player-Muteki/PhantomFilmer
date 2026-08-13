@@ -97,6 +97,18 @@ class CountingSearch:
         pass
 
 
+class LandingSearch(CountingSearch):
+    def propose(self, ctx, now):
+        self.calls += 1
+        return FeatureProposal(
+            RCCommand(),
+            state="TARGET_LOST_LANDING",
+            feature="search",
+            requires_landing=True,
+            landing_kind="target_lost",
+        )
+
+
 class FollowFeatureTestCase(unittest.TestCase):
     def test_found_target_proposes_follow_command(self) -> None:
         safety = build_safety()
@@ -271,7 +283,7 @@ class SafetyFeatureTestCase(unittest.TestCase):
 class EngineRecipeIsolationTestCase(unittest.TestCase):
     """Recipe 3 (obstacle takeover) must not invoke the search feature."""
 
-    def build_engine(self, obstacle_sequence, search_feature):
+    def build_engine(self, obstacle_sequence, search_feature, *, target_acquired=True):
         safety = build_safety()
         planner = ObstacleAvoidancePlanner(
             safety_manager=safety,
@@ -290,7 +302,63 @@ class EngineRecipeIsolationTestCase(unittest.TestCase):
             "search": search_feature,
             "obstacle": ObstacleFeature(arbiter=arbiter, mode_label="TEST"),
         }
-        return ArbitrationEngine(features=features, follow_controller=follow, mode_label="TEST")
+        engine = ArbitrationEngine(features=features, follow_controller=follow, mode_label="TEST")
+        engine._target_ever_acquired = target_acquired
+        return engine
+
+    def test_initial_search_ignores_blocked_obstacle_until_first_target(self) -> None:
+        blocked = ObstacleResult(
+            found=True, state="BLOCKED", side="center", consecutive_found_frames=3
+        )
+        search = CountingSearch()
+        engine = self.build_engine([blocked], search, target_acquired=False)
+
+        initial_lost = engine.arbitrate(
+            build_ctx(target_result={"found": False, "center": None, "area": 0.0, "bbox": None})
+        )
+
+        self.assertEqual(search.calls, 1)
+        self.assertEqual(initial_lost.state, "SEARCH_HOLD")
+        self.assertEqual(engine._obstacle._arbiter.detector.reads, 0)
+        self.assertFalse(engine.target_ever_acquired)
+
+    def test_initial_search_completion_lands_without_running_obstacle(self) -> None:
+        blocked = ObstacleResult(
+            found=True, state="BLOCKED", side="center", consecutive_found_frames=3
+        )
+        search = LandingSearch()
+        engine = self.build_engine([blocked], search, target_acquired=False)
+
+        outcome = engine.arbitrate(
+            build_ctx(target_result={"found": False, "center": None, "area": 0.0, "bbox": None})
+        )
+
+        self.assertEqual(search.calls, 1)
+        self.assertTrue(outcome.lost_land)
+        self.assertEqual(engine._obstacle._arbiter.detector.reads, 0)
+
+    def test_obstacle_activates_after_first_target_enters_following(self) -> None:
+        blocked = ObstacleResult(
+            found=True, state="BLOCKED", side="center", consecutive_found_frames=3
+        )
+        search = CountingSearch()
+        engine = self.build_engine([blocked], search, target_acquired=False)
+
+        first_target = engine.arbitrate(build_ctx(target_result=found_result()))
+        post_acquisition = engine.arbitrate(build_ctx(target_result=found_result()))
+
+        self.assertEqual(first_target.state, "FOLLOWING")
+        self.assertTrue(engine.target_ever_acquired)
+        self.assertEqual(engine._obstacle._arbiter.detector.reads, 1)
+        self.assertTrue(post_acquisition.obstacle_ran)
+
+    def test_reset_requires_a_new_first_acquisition(self) -> None:
+        clear = ObstacleResult(found=False, state="CLEAR")
+        engine = self.build_engine([clear], CountingSearch(), target_acquired=True)
+
+        engine.reset()
+
+        self.assertFalse(engine.target_ever_acquired)
 
     def test_obstacle_takeover_freezes_search(self) -> None:
         blocked = ObstacleResult(found=True, state="BLOCKED", side="left", consecutive_found_frames=3)

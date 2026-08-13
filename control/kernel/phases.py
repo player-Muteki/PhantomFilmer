@@ -3,7 +3,8 @@
 The kernel runs a small phase FSM extracted from FollowSession.run(). Each phase is
 owned by one PhaseHandler; a handler returns the next phase to enter, or None to
 stay in place. RC emission only happens inside FOLLOW (via the arbitration table),
-CLIMB and PRE_FOLLOW (via the obstacle feature), and during fail-safe cleanup.
+CLIMB (vertical-only), PRE_FOLLOW (via the obstacle feature), and during fail-safe
+cleanup.
 """
 
 from enum import Enum

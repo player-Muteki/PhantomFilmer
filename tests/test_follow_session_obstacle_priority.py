@@ -108,6 +108,9 @@ class FollowSessionObstaclePriorityTestCase(unittest.TestCase):
             motion_arbiter=arbiter,
         )
         session.camera = ScriptedCamera(session, len(obstacle_sequence))
+        # These cases exercise post-acquisition target loss.  Initial search
+        # now intentionally ignores obstacles until a target has been accepted.
+        session._arbitration._target_ever_acquired = True
         return session
 
     @staticmethod

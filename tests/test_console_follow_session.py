@@ -802,6 +802,16 @@ class ConsoleFollowSessionTestCase(unittest.TestCase):
         self.assertEqual(session.console_state, "HEIGHT_LIMIT_LANDING")
         self.assertEqual(drone.last_rc_command, (0, 0, 0, 0))
 
+    def test_low_positive_ground_clearance_does_not_force_landing(self) -> None:
+        drone = FakeDroneAdapter(verbose_rc=False)
+        drone.height_cm = 20
+        safety = build_safety()
+        session = build_session(drone, safety)
+        session.stop_event.set()
+
+        self.assertTrue(safety.check_height(drone.height_cm))
+        self.assertNotEqual(session.console_state, "HEIGHT_LIMIT_LANDING")
+
     def test_reaches_configured_base_hover_height_before_follow(self) -> None:
         drone = ClimbingFakeDrone(verbose_rc=False)
         drone.height_cm = 70
@@ -1034,6 +1044,7 @@ class ConsoleFollowSessionTestCase(unittest.TestCase):
             follow_controller=FollowController(safety_manager=safety),
             config={
                 "display_console_camera": False,
+                "takeoff_height_verify_enabled": True,
                 "takeoff_height_verify_timeout_seconds": 0.2,
                 "takeoff_height_sample_interval_seconds": 0.05,
             },

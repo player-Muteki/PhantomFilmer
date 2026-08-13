@@ -71,6 +71,15 @@ class ImportTestCase(unittest.TestCase):
         safety = SafetyManager(config)
         self.assertTrue(safety.can_takeoff(30))
         self.assertFalse(safety.can_takeoff(29))
+        self.assertTrue(safety.should_land(20))
+        self.assertFalse(safety.should_land(21))
+
+        defaults = SafetyConfig.from_dict({})
+        self.assertEqual(defaults.min_battery_takeoff, 20)
+        self.assertEqual(defaults.low_battery_land, 5)
+        self.assertTrue(safety.check_height(20))
+        self.assertTrue(safety.check_height(150))
+        self.assertFalse(safety.check_height(151))
         self.assertEqual(safety.limit_rc_command(-100, -30, 0, 88), (-25, -25, 0, 25))
 
 

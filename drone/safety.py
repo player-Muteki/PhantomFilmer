@@ -21,8 +21,8 @@ class SafetyConfig:
     def from_dict(cls, data: dict) -> "SafetyConfig":
         """Build safety settings from a configuration dictionary."""
         return cls(
-            min_battery_takeoff=int(data.get("min_battery_takeoff", 30)),
-            low_battery_land=int(data.get("low_battery_land", 20)),
+            min_battery_takeoff=int(data.get("min_battery_takeoff", 20)),
+            low_battery_land=int(data.get("low_battery_land", 5)),
             max_height_cm=int(data.get("max_height_cm", 150)),
             min_height_cm=int(data.get("min_height_cm", 60)),
             max_rc_speed=int(data.get("max_rc_speed", 25)),
@@ -55,7 +55,7 @@ class SafetyManager:
     def should_land(self, battery: int) -> bool:
         """Return True when battery is low enough to recommend landing."""
         # 飞行中低于保护电量时建议立即降落。
-        return battery < self.config.low_battery_land
+        return battery <= self.config.low_battery_land
 
     def limit_rc_command(
         self,
@@ -74,9 +74,12 @@ class SafetyManager:
         )
 
     def check_height(self, height: int) -> bool:
-        """Return True when height is inside the configured safe range."""
-        # 缩比原型限制在低空范围内，过低或过高都视为不安全。
-        return self.config.min_height_cm <= height <= self.config.max_height_cm
+        """Return True unless altitude exceeds the configured upper limit.
+
+        Low positive ground-clearance readings no longer request an automatic
+        landing; ``min_height_cm`` remains available to search/climb planning.
+        """
+        return height <= self.config.max_height_cm
 
     def update_target_lost(self, found: bool) -> str:
         """Update target-lost timer and return keep, hover, or land."""

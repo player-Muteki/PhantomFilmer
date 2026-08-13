@@ -56,6 +56,20 @@ class ArbitrationEngine:
         self._safety = features.get("safety")
         self._follow_controller = follow_controller
         self._mode_label = mode_label
+        # Top/front ToF avoidance stays inactive until this independent task
+        # has completed the normal ReID acceptance path and entered FOLLOWING.
+        # Non-search modes keep their historical obstacle behavior.  The gate
+        # applies to ReID tasks that actually have a bounded search feature.
+        self._target_ever_acquired = self._search is None
+
+    @property
+    def target_ever_acquired(self) -> bool:
+        """Whether this task has entered normal following at least once."""
+        return self._target_ever_acquired
+
+    def reset(self) -> None:
+        """Reset the first-acquisition gate for an independent flight task."""
+        self._target_ever_acquired = self._search is None
 
     def arbitrate(self, ctx: ArbitrationContext) -> FollowTickOutcome:
         hover = self._follow_controller.hover()
@@ -65,6 +79,17 @@ class ArbitrationEngine:
             return FollowTickOutcome(
                 command=hover, state="PAUSED" if ctx.paused else ""
             )
+
+        # Before the first accepted target, ToF must not influence motion: a
+        # missing target goes directly to the bounded search, while a visible
+        # candidate is handled only by the existing ReID verification path.
+        if not self._target_ever_acquired:
+            if not ctx.target_result.get("found"):
+                return self._finish(self._lost_tracking(ctx))
+            first_target = self._follow.propose(ctx, ctx.now)
+            if first_target.state == "FOLLOWING":
+                self._target_ever_acquired = True
+            return self._finish(first_target)
 
         # 唯一高于避障的目标丢失动作：视觉历史明确表明人物贴得太近时，
         # 先完成有界后退/停顿。其他所有搜索动作仍保持避障优先。
