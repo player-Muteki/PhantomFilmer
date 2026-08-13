@@ -84,29 +84,28 @@ detector_min_area_ratio: 0.002
 detector_min_area: 500
 obstacle:
   enabled: false
-  risk_zone_width_ratio: 0.55
-  risk_zone_height_ratio: 0.65
-  risk_zone_vertical_offset_ratio: 0.05
-  minimum_obstacle_area: 1500
-  caution_area_ratio: 0.08
-  blocked_area_ratio: 0.18
-  avoidance_yaw_speed: 18
-  avoidance_lateral_speed: 12
-  max_avoidance_seconds: 5.0
+  # RoboMaster TT 顶部扩展红外 ToF：有效距离 <= 60 cm 时进入 BLOCKED。
+  front_tof_enabled: true
+  front_tof_blocked_distance_cm: 60
+  # BLOCKED 绕行：固定向右平移至 >70 cm，再前进约 1.2 m，最后按等时反向平移。
+  front_tof_clear_distance_cm: 70
+  front_tof_poll_interval_seconds: 0.2
+  front_tof_max_age_seconds: 0.8
+  avoidance_lateral_speed: 20
+  bypass_lateral_direction: right
+  bypass_forward_distance_cm: 120
+  bypass_forward_speed: 35
+  # 一直无法获得 >70 cm 前向净空时的单侧平移安全上限。
+  bypass_max_sidestep_seconds: 10
   recovery_clear_frames: 10
-  forward_speed_in_caution_ratio: 0.35
-  temporal_window_frames: 5
   detect_confirm_frames: 3
   clear_confirm_frames: 5
-  sector_count: 5
-  scan_yaw_speed: 8
-  min_free_space_score: 0.22
   timeout_action: land
   log_enabled: true
   log_dir: logs/avoidance
   log_every_n_frames: 2
-  # 每 N 帧重新跑一次避障检测（配合风险区裁剪，减少 CV 开销），中间帧复用上次观测。
-  detect_every_n_frames: 2
+  # 距离融合不分析视频像素，每帧只读取后台缓存的最新 ToF 样本。
+  detect_every_n_frames: 1
 lost_target_hover_seconds: 3
 lost_target_land_seconds: 8
 # ReID 丢失目标后的有限搜索。先悬停判断；疑似距离过近时最多做两次短后退，

@@ -1,4 +1,4 @@
-"""Deterministic local route planning for visual obstacle observations."""
+"""Deterministic three-stage bypass planning for front-ToF observations."""
 
 from dataclasses import dataclass, field
 from time import monotonic
@@ -20,6 +20,7 @@ class AvoidanceDecision:
     confidence: float = 1.0
     plan_id: str = "0"
     requires_landing: bool = False
+    owns_motion: bool = False
     observation: Optional[ObstacleResult] = field(default=None, repr=False)
 
     def to_dict(self) -> Dict[str, object]:
@@ -31,6 +32,7 @@ class AvoidanceDecision:
             "confidence": round(self.confidence, 4),
             "plan_id": self.plan_id,
             "requires_landing": self.requires_landing,
+            "owns_motion": self.owns_motion,
             "command": {
                 "left_right": self.command.left_right,
                 "forward_backward": self.command.forward_backward,
@@ -56,27 +58,38 @@ class ObstacleAvoidancePlanner:
         scan_yaw_speed: int = 8,
         min_free_space_score: float = 0.22,
         timeout_action: str = "land",
+        clearance_distance_cm: float = 70.0,
+        bypass_forward_distance_cm: float = 120.0,
+        bypass_forward_speed: int = 35,
+        bypass_lateral_direction: str = "right",
+        max_sidestep_seconds: float = 10.0,
     ) -> None:
         self.safety_manager = safety_manager
-        self.avoidance_yaw_speed = self._non_negative_int(avoidance_yaw_speed, 18)
+        # The following legacy keyword arguments remain accepted so external test
+        # harnesses do not break; distance-only routing never reads them.
+        del avoidance_yaw_speed, max_avoidance_seconds
+        del forward_speed_in_caution_ratio, scan_yaw_speed, min_free_space_score
         self.avoidance_lateral_speed = self._non_negative_int(avoidance_lateral_speed, 0)
-        self.max_avoidance_seconds = self._positive_float(max_avoidance_seconds, 5.0)
         self.recovery_clear_frames = self._positive_int(recovery_clear_frames, 10)
         self.detect_confirm_frames = self._positive_int(detect_confirm_frames, 1)
         configured_clear_frames = recovery_clear_frames if clear_confirm_frames is None else clear_confirm_frames
         self.clear_confirm_frames = self._positive_int(configured_clear_frames, 1)
-        self.forward_speed_in_caution_ratio = self._clamp_float(
-            forward_speed_in_caution_ratio, 0.0, 1.0, 0.35
-        )
-        self.scan_yaw_speed = self._non_negative_int(scan_yaw_speed, 8)
-        self.min_free_space_score = self._clamp_float(min_free_space_score, 0.0, 1.0, 0.22)
         normalized_timeout = str(timeout_action).strip().lower()
         self.timeout_action = normalized_timeout if normalized_timeout in {"land", "hover"} else "land"
+        self.clearance_distance_cm = self._positive_float(clearance_distance_cm, 70.0)
+        self.bypass_forward_distance_cm = self._positive_float(bypass_forward_distance_cm, 120.0)
+        self.bypass_forward_speed = self._positive_int(bypass_forward_speed, 35)
+        self.bypass_lateral_direction = (
+            "left" if str(bypass_lateral_direction).strip().lower() == "left" else "right"
+        )
+        self.max_sidestep_seconds = self._positive_float(max_sidestep_seconds, 10.0)
         self.state = "CLEAR"
         self._clear_frames = 0
-        self._avoidance_started_at: Optional[float] = None
-        self._last_direction = "right"
         self._plan_counter = 0
+        self._bypass_phase: Optional[str] = None
+        self._phase_started_at: Optional[float] = None
+        self._bypass_lateral_seconds = 0.0
+        self._bypass_forward_seconds = 0.0
 
     @classmethod
     def from_config(
@@ -90,18 +103,22 @@ class ObstacleAvoidancePlanner:
             obstacle = {}
         return cls(
             safety_manager=safety_manager,
-            avoidance_yaw_speed=cls._config_int(obstacle, "avoidance_yaw_speed", 18),
             avoidance_lateral_speed=cls._config_int(obstacle, "avoidance_lateral_speed", 12),
-            max_avoidance_seconds=cls._config_float(obstacle, "max_avoidance_seconds", 5.0),
             recovery_clear_frames=cls._config_int(obstacle, "recovery_clear_frames", 10),
             detect_confirm_frames=cls._config_int(obstacle, "detect_confirm_frames", 3),
             clear_confirm_frames=cls._config_int(obstacle, "clear_confirm_frames", 5),
-            forward_speed_in_caution_ratio=cls._config_float(
-                obstacle, "forward_speed_in_caution_ratio", 0.35
-            ),
-            scan_yaw_speed=cls._config_int(obstacle, "scan_yaw_speed", 8),
-            min_free_space_score=cls._config_float(obstacle, "min_free_space_score", 0.22),
             timeout_action=str(obstacle.get("timeout_action", "land")),
+            clearance_distance_cm=cls._config_float(
+                obstacle, "front_tof_clear_distance_cm", 70.0
+            ),
+            bypass_forward_distance_cm=cls._config_float(
+                obstacle, "bypass_forward_distance_cm", 120.0
+            ),
+            bypass_forward_speed=cls._config_int(obstacle, "bypass_forward_speed", 35),
+            bypass_lateral_direction=str(obstacle.get("bypass_lateral_direction", "right")),
+            max_sidestep_seconds=cls._config_float(
+                obstacle, "bypass_max_sidestep_seconds", 10.0
+            ),
         )
 
     def plan(
@@ -110,45 +127,16 @@ class ObstacleAvoidancePlanner:
         obstacle_result: ObstacleResult,
         obstacle_priority: bool = False,
     ) -> AvoidanceDecision:
-        """Return one bounded action after applying obstacle priority rules.
-
-        obstacle_priority 用于目标丢失场景：即使期望指令全零，也要对已确认的
-        阻挡障碍主动绕行，而不是只刹车悬停（后者会让"被障碍挡住的目标"期间
-        原地等待，直到超时降落）。障碍存在时仍先做时间确认再绕行，前进恒为 0。
-        """
+        """Run/continue the bypass route independently of target tracking."""
+        del obstacle_priority
         self._plan_counter += 1
         plan_id = str(self._plan_counter)
+        if self._bypass_phase is not None:
+            return self._plan_active_bypass(follow_command, obstacle_result, plan_id)
         if not obstacle_result.found:
             return self._plan_clear(follow_command, plan_id)
 
         self._clear_frames = 0
-        if obstacle_result.side in ("left", "right"):
-            self._last_direction = "right" if obstacle_result.side == "left" else "left"
-
-        if not obstacle_priority and not any(follow_command.as_tuple()):
-            self.state = "BRAKING"
-            return self._decision(
-                self._limited_command(0, 0, follow_command.up_down, 0),
-                state=self.state,
-                action="BRAKE",
-                reason="obstacle detected while command is already stationary",
-                confidence=obstacle_result.confidence,
-                plan_id=plan_id,
-                observation=obstacle_result,
-            )
-
-        if obstacle_result.state == "CAUTION":
-            self.state = "CAUTION"
-            return self._decision(
-                self._caution_command(follow_command),
-                state=self.state,
-                action="SLOW_FOLLOW",
-                reason="obstacle caution",
-                confidence=obstacle_result.confidence,
-                plan_id=plan_id,
-                observation=obstacle_result,
-            )
-
         if (
             obstacle_result.consecutive_found_frames
             and obstacle_result.consecutive_found_frames < self.detect_confirm_frames
@@ -162,20 +150,20 @@ class ObstacleAvoidancePlanner:
                 confidence=obstacle_result.confidence,
                 plan_id=plan_id,
                 observation=obstacle_result,
+                owns_motion=True,
             )
 
-        return self._plan_blocked(follow_command, obstacle_result, plan_id)
+        return self._start_bypass(follow_command, obstacle_result, plan_id)
 
     def reset(self) -> None:
         """Clear planner state for a new autonomous session."""
         self.state = "CLEAR"
         self._clear_frames = 0
-        self._avoidance_started_at = None
-        self._last_direction = "right"
         self._plan_counter = 0
+        self._reset_bypass()
 
     def _plan_clear(self, follow_command: RCCommand, plan_id: str) -> AvoidanceDecision:
-        if self.state in {"BLOCKED", "AVOIDING", "RECOVERING", "CAUTION", "SCAN", "BRAKING"}:
+        if self.state in {"AVOIDING", "RECOVERING", "BRAKING"}:
             self._clear_frames += 1
             if self._clear_frames < max(self.recovery_clear_frames, self.clear_confirm_frames):
                 self.state = "RECOVERING"
@@ -190,7 +178,6 @@ class ObstacleAvoidancePlanner:
 
         self.state = "CLEAR"
         self._clear_frames = 0
-        self._avoidance_started_at = None
         return self._decision(
             self._limit(follow_command),
             state=self.state,
@@ -200,103 +187,145 @@ class ObstacleAvoidancePlanner:
             plan_id=plan_id,
         )
 
-    def _plan_blocked(
+    def _start_bypass(
+        self,
+        follow_command: RCCommand,
+        obstacle_result: ObstacleResult,
+        plan_id: str,
+    ) -> AvoidanceDecision:
+        self._bypass_phase = "SIDE_STEP_OUT"
+        self._phase_started_at = monotonic()
+        self._bypass_lateral_seconds = 0.0
+        self._bypass_forward_seconds = 0.0
+        self.state = "AVOIDING"
+        return self._route_decision(
+            follow_command, plan_id, "SIDE_STEP_OUT", "moving sideways until front ToF > 70 cm", obstacle_result
+        )
+
+    def _plan_active_bypass(
         self,
         follow_command: RCCommand,
         obstacle_result: ObstacleResult,
         plan_id: str,
     ) -> AvoidanceDecision:
         now = monotonic()
-        if self._avoidance_started_at is None:
-            self._avoidance_started_at = now
-        elapsed = now - self._avoidance_started_at
-        if elapsed > self.max_avoidance_seconds:
-            self.state = "FAILSAFE"
+        phase_started = self._phase_started_at if self._phase_started_at is not None else now
+        elapsed = max(0.0, now - phase_started)
+
+        if self._bypass_phase == "FAILSAFE":
+            return self._route_failsafe(follow_command, obstacle_result, plan_id)
+
+        if self._bypass_phase == "SIDE_STEP_OUT":
+            if self._front_is_clear(obstacle_result):
+                self._bypass_lateral_seconds += elapsed
+                self._bypass_phase = "FORWARD_BYPASS"
+                self._phase_started_at = now
+                return self._route_decision(
+                    follow_command, plan_id, "FORWARD_120CM", "front clear; advancing 1.2 m", obstacle_result
+                )
+            if self._bypass_lateral_seconds + elapsed >= self.max_sidestep_seconds:
+                return self._route_failsafe(follow_command, obstacle_result, plan_id)
+            return self._route_decision(
+                follow_command, plan_id, "SIDE_STEP_OUT", "moving sideways until front ToF > 70 cm", obstacle_result
+            )
+
+        if self._bypass_phase == "FORWARD_BYPASS":
+            if not self._front_is_clear(obstacle_result):
+                self._bypass_forward_seconds += elapsed
+                self._bypass_phase = "SIDE_STEP_OUT"
+                self._phase_started_at = now
+                return self._route_decision(
+                    follow_command, plan_id, "SIDE_STEP_OUT", "front distance fell to 70 cm; widening bypass", obstacle_result
+                )
+            forward_seconds = self._forward_duration_seconds()
+            if self._bypass_forward_seconds + elapsed >= forward_seconds:
+                self._bypass_forward_seconds = forward_seconds
+                self._bypass_phase = "SIDE_STEP_RETURN"
+                self._phase_started_at = now
+                return self._route_decision(
+                    follow_command, plan_id, "SIDE_STEP_RETURN", "returning by equal lateral time", obstacle_result
+                )
+            return self._route_decision(
+                follow_command, plan_id, "FORWARD_120CM", "advancing 1.2 m", obstacle_result
+            )
+
+        if elapsed >= self._bypass_lateral_seconds:
+            self._reset_bypass()
+            self.state = "CLEAR"
             return self._decision(
                 self._limited_command(0, 0, follow_command.up_down, 0),
-                state=self.state,
-                action="LAND" if self.timeout_action == "land" else "HOVER",
-                reason="avoidance timeout; no safe local route confirmed",
-                confidence=obstacle_result.confidence,
-                plan_id=plan_id,
-                requires_landing=self.timeout_action == "land",
-                observation=obstacle_result,
-            )
-
-        direction, direction_score, used_free_space = self._choose_direction(obstacle_result)
-        if used_free_space and direction_score < self.min_free_space_score:
-            self.state = "SCAN"
-            direction = self._last_direction
-            yaw = self.scan_yaw_speed if direction == "right" else -self.scan_yaw_speed
-            return self._decision(
-                self._limited_command(0, 0, follow_command.up_down, yaw),
-                state=self.state,
-                action="SCAN_RIGHT" if direction == "right" else "SCAN_LEFT",
-                reason="all local sectors are uncertain or blocked",
-                confidence=obstacle_result.confidence,
+                state="CLEAR",
+                action="BYPASS_COMPLETE",
+                reason="bypass complete; lateral position restored by dead reckoning",
                 plan_id=plan_id,
                 observation=obstacle_result,
+                owns_motion=True,
             )
+        return self._route_decision(
+            follow_command, plan_id, "SIDE_STEP_RETURN", "returning by equal lateral time", obstacle_result
+        )
 
+    def _route_decision(
+        self, follow_command: RCCommand, plan_id: str, action: str, reason: str,
+        observation: Optional[ObstacleResult] = None,
+    ) -> AvoidanceDecision:
+        lateral_sign = 1 if self.bypass_lateral_direction == "right" else -1
+        if action == "SIDE_STEP_OUT":
+            command = self._limited_command(
+                lateral_sign * self.avoidance_lateral_speed, 0, follow_command.up_down, 0
+            )
+        elif action == "FORWARD_120CM":
+            command = self._limited_command(0, self.bypass_forward_speed, follow_command.up_down, 0)
+        else:
+            command = self._limited_command(
+                -lateral_sign * self.avoidance_lateral_speed, 0, follow_command.up_down, 0
+            )
         self.state = "AVOIDING"
-        lateral = self.avoidance_lateral_speed if direction == "right" else -self.avoidance_lateral_speed
-        yaw = self.avoidance_yaw_speed if direction == "right" else -self.avoidance_yaw_speed
         return self._decision(
-            self._limited_command(lateral, 0, follow_command.up_down, yaw),
+            command,
             state=self.state,
-            action="DETOUR_RIGHT" if direction == "right" else "DETOUR_LEFT",
-            reason=f"avoiding {direction}; free-space score={direction_score:.2f}",
-            confidence=obstacle_result.confidence,
+            action=action,
+            reason=reason,
+            confidence=1.0,
             plan_id=plan_id,
+            owns_motion=True,
+            observation=observation,
+        )
+
+    def _route_failsafe(
+        self, follow_command: RCCommand, obstacle_result: ObstacleResult, plan_id: str
+    ) -> AvoidanceDecision:
+        self._bypass_phase = "FAILSAFE"
+        self.state = "FAILSAFE"
+        return self._decision(
+            self._limited_command(0, 0, follow_command.up_down, 0),
+            state=self.state,
+            action="LAND" if self.timeout_action == "land" else "HOVER",
+            reason="front clearance did not exceed 70 cm within side-step safety limit",
+            confidence=1.0,
+            plan_id=plan_id,
+            requires_landing=self.timeout_action == "land",
             observation=obstacle_result,
+            owns_motion=True,
         )
 
-    def _choose_direction(self, result: ObstacleResult) -> tuple[str, float, bool]:
-        if result.free_space:
-            left_values = [value for key, value in result.free_space.items() if key in {"far_left", "left"}]
-            right_values = [value for key, value in result.free_space.items() if key in {"right", "far_right"}]
-            if not left_values and not right_values:
-                # 通用命名（sector_0..sector_{N-1}）按数值索引对称分半：
-                # 左半、右半各取一半扇区，奇数时中间扇区不参与两侧评分。
-                indexed = sorted(
-                    (int("".join(ch for ch in key if ch.isdigit())), value)
-                    for key, value in result.free_space.items()
-                    if any(ch.isdigit() for ch in key)
-                )
-                if indexed:
-                    count = len(indexed)
-                    left_values = [value for index, value in indexed if index < count // 2]
-                    right_values = [value for index, value in indexed if index >= count - count // 2]
-            left_score = sum(left_values) / len(left_values) if left_values else 0.0
-            right_score = sum(right_values) / len(right_values) if right_values else 0.0
-            if right_score > left_score:
-                direction = "right"
-            elif left_score > right_score:
-                direction = "left"
-            else:
-                direction = self._last_direction
-            self._last_direction = direction
-            return direction, max(left_score, right_score), True
-        direction = self._avoidance_direction(result.side)
-        return direction, 1.0, False
-
-    def _caution_command(self, follow_command: RCCommand) -> RCCommand:
-        forward = follow_command.forward_backward
-        if forward > 0:
-            forward = int(forward * self.forward_speed_in_caution_ratio)
-        return self._limited_command(
-            follow_command.left_right,
-            forward,
-            follow_command.up_down,
-            follow_command.yaw,
+    def _front_is_clear(self, result: ObstacleResult) -> bool:
+        if result.front_distance_status == "out_of_range":
+            return True
+        return (
+            result.front_distance_cm is not None
+            and result.front_distance_cm > self.clearance_distance_cm
         )
 
-    def _avoidance_direction(self, side: str) -> str:
-        if side == "left":
-            self._last_direction = "right"
-        elif side == "right":
-            self._last_direction = "left"
-        return self._last_direction
+    def _forward_duration_seconds(self) -> float:
+        limited_speed = abs(self._limited_command(0, self.bypass_forward_speed, 0, 0).forward_backward)
+        return self.bypass_forward_distance_cm / max(1, limited_speed)
+
+    def _reset_bypass(self) -> None:
+        self._bypass_phase = None
+        self._phase_started_at = None
+        self._bypass_lateral_seconds = 0.0
+        self._bypass_forward_seconds = 0.0
 
     def _decision(self, command: RCCommand, **kwargs: object) -> AvoidanceDecision:
         return AvoidanceDecision(command=command, **kwargs)  # type: ignore[arg-type]

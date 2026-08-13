@@ -47,4 +47,7 @@ class TakeoffHandler:
                     authorize_takeoff()
             session.drone.takeoff()
             session.airborne = True
+            start_front_tof = getattr(session, "_start_front_tof", None)
+            if callable(start_front_tof):
+                start_front_tof()
         return KernelPhase.STABILIZING

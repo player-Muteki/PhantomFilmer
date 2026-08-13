@@ -11,6 +11,7 @@ from control.follow_control import RCCommand
 from control.motion_arbiter import MotionArbiter, MotionContext
 from control.obstacle_avoidance import ObstacleAvoidancePlanner
 from drone.safety import SafetyManager
+from drone.front_tof import FrontToFSnapshot
 from vision.obstacle_detect import ObstacleResult
 
 
@@ -39,6 +40,71 @@ class StubDetector:
 
 
 class MotionArbiterTestCase(unittest.TestCase):
+    @staticmethod
+    def front_sample(distance_cm: Optional[float], *, status: str = "valid", count: int = 3):
+        return FrontToFSnapshot(
+            distance_cm=distance_cm,
+            status=status,
+            timestamp=1.0,
+            age_seconds=0.01,
+            sequence=1,
+            consecutive_blocked=count,
+        )
+
+    def test_front_tof_at_60_cm_overrides_visual_clear_as_blocked(self) -> None:
+        safety = build_safety()
+        arbiter = MotionArbiter(
+            detector=StubDetector(ObstacleResult(found=False, state="CLEAR")),
+            planner=ObstacleAvoidancePlanner(safety_manager=safety),
+            config={"obstacle": {"front_tof_enabled": True, "front_tof_blocked_distance_cm": 60}},
+        )
+        arbiter.set_front_tof_provider(lambda: self.front_sample(60.0))
+
+        decision = arbiter.decide(
+            RCCommand(0, 20, 0, 0), object(), MotionContext("test", {"found": True})
+        )
+
+        self.assertTrue(decision.observation.found)
+        self.assertEqual(decision.observation.state, "BLOCKED")
+        self.assertEqual(decision.observation.front_distance_cm, 60.0)
+        self.assertIn(decision.state, {"AVOIDING", "SCAN"})
+
+    def test_front_tof_above_60_cm_does_not_increase_visual_risk(self) -> None:
+        safety = build_safety()
+        arbiter = MotionArbiter(
+            detector=StubDetector(ObstacleResult(found=False, state="CLEAR")),
+            planner=ObstacleAvoidancePlanner(safety_manager=safety),
+            config={"obstacle": {"front_tof_enabled": True, "front_tof_blocked_distance_cm": 60}},
+        )
+        arbiter.set_front_tof_provider(lambda: self.front_sample(60.1, count=0))
+
+        decision = arbiter.decide(
+            RCCommand(0, 20, 0, 0), object(), MotionContext("test", {"found": True})
+        )
+
+        self.assertIsNotNone(arbiter.last_observation)
+        self.assertFalse(arbiter.last_observation.found)
+        self.assertEqual(decision.state, "CLEAR")
+        self.assertEqual(decision.command.forward_backward, 20)
+
+    def test_front_tof_stale_sample_fails_safe_to_hover(self) -> None:
+        safety = build_safety()
+        arbiter = MotionArbiter(
+            detector=StubDetector(ObstacleResult(found=False, state="CLEAR")),
+            planner=ObstacleAvoidancePlanner(safety_manager=safety),
+            config={"obstacle": {"front_tof_enabled": True}},
+        )
+        arbiter.set_front_tof_provider(
+            lambda: self.front_sample(None, status="stale", count=0)
+        )
+
+        decision = arbiter.decide(
+            RCCommand(0, 20, 0, 0), object(), MotionContext("test", {"found": True})
+        )
+
+        self.assertEqual(decision.state, "FAILSAFE")
+        self.assertEqual(decision.command.as_tuple(), (0, 0, 0, 0))
+
     def test_decide_returns_planner_command_and_observation(self) -> None:
         safety = build_safety()
         result = ObstacleResult(
@@ -64,7 +130,7 @@ class MotionArbiterTestCase(unittest.TestCase):
 
         self.assertEqual(decision.observation, result)
         self.assertEqual(decision.state, "AVOIDING")
-        self.assertLess(decision.command.left_right, 0)
+        self.assertGreater(decision.command.left_right, 0)
         self.assertEqual(decision.command.forward_backward, 0)
         self.assertGreater(decision.confidence, 0.0)
 
@@ -127,9 +193,9 @@ class MotionArbiterTestCase(unittest.TestCase):
             obstacle_priority=True,
         )
 
-        # 目标丢失（全零期望指令）时默认仍刹车；obstacle_priority 让规划器主动绕行。
-        self.assertEqual(stationary_brake.state, "BRAKING")
-        self.assertEqual(stationary_brake.command.as_tuple(), (0, 0, 0, 0))
+        # 距离避障独立于跟随期望指令；即使当前悬停也会开始绕行。
+        self.assertEqual(stationary_brake.state, "AVOIDING")
+        self.assertNotEqual(stationary_brake.command.left_right, 0)
         self.assertEqual(detour.state, "AVOIDING")
         self.assertEqual(detour.command.forward_backward, 0)
         self.assertNotEqual(detour.command.left_right, 0)
@@ -252,237 +318,6 @@ class MotionArbiterTestCase(unittest.TestCase):
             self.assertEqual(payload["mode"], "test")
             self.assertEqual(payload["decision"]["state"], decision.state)
             self.assertEqual(payload["observation"]["state"], "CAUTION")
-
-
-class PlannerFreeSpaceTestCase(unittest.TestCase):
-    def test_chooses_free_space_direction(self) -> None:
-        planner = ObstacleAvoidancePlanner(
-            safety_manager=build_safety(),
-            avoidance_lateral_speed=12,
-        )
-        decision = planner.plan(
-            RCCommand(0, 20, 0, 0),
-            ObstacleResult(
-                found=True,
-                state="BLOCKED",
-                side="right",
-                free_space={"left": 0.8, "right": 0.1},
-                consecutive_found_frames=3,
-            ),
-        )
-        self.assertEqual(decision.state, "AVOIDING")
-        self.assertLess(decision.command.left_right, 0)
-
-    def test_blocked_candidate_brakes_until_temporal_confirmation(self) -> None:
-        planner = ObstacleAvoidancePlanner(
-            safety_manager=build_safety(),
-            detect_confirm_frames=3,
-        )
-        first = planner.plan(
-            RCCommand(0, 20, 0, 0),
-            ObstacleResult(
-                found=True,
-                state="BLOCKED",
-                side="center",
-                consecutive_found_frames=1,
-            ),
-        )
-        confirmed = planner.plan(
-            RCCommand(0, 20, 0, 0),
-            ObstacleResult(
-                found=True,
-                state="BLOCKED",
-                side="center",
-                free_space={"left": 0.6, "right": 0.4},
-                consecutive_found_frames=3,
-            ),
-        )
-        self.assertEqual(first.state, "BRAKING")
-        self.assertEqual(first.command.forward_backward, 0)
-        self.assertIn(confirmed.state, {"AVOIDING", "SCAN"})
-
-    def test_scan_when_all_sectors_are_blocked(self) -> None:
-        planner = ObstacleAvoidancePlanner(
-            safety_manager=build_safety(),
-            scan_yaw_speed=8,
-        )
-        decision = planner.plan(
-            RCCommand(0, 20, 0, 0),
-            ObstacleResult(
-                found=True,
-                state="BLOCKED",
-                side="center",
-                free_space={"left": 0.0, "center": 0.0, "right": 0.0},
-                consecutive_found_frames=3,
-            ),
-        )
-        self.assertEqual(decision.state, "SCAN")
-        self.assertEqual(decision.command.forward_backward, 0)
-        self.assertNotEqual(decision.command.yaw, 0)
-
-    def test_avoidance_timeout_requests_landing(self) -> None:
-        planner = ObstacleAvoidancePlanner(
-            safety_manager=build_safety(),
-            max_avoidance_seconds=5.0,
-            timeout_action="land",
-        )
-        blocked = ObstacleResult(
-            found=True,
-            state="BLOCKED",
-            side="center",
-            free_space={"left": 0.5, "right": 0.5},
-            consecutive_found_frames=3,
-        )
-        with patch("control.obstacle_avoidance.monotonic", side_effect=[1.0, 6.5, 7.0]):
-            first = planner.plan(RCCommand(0, 20, 0, 0), blocked)
-            timed_out = planner.plan(RCCommand(0, 20, 0, 0), blocked)
-            still_failsafe = planner.plan(RCCommand(0, 20, 0, 0), blocked)
-
-        self.assertEqual(first.state, "AVOIDING")
-        self.assertFalse(first.requires_landing)
-        self.assertEqual(timed_out.state, "FAILSAFE")
-        self.assertEqual(timed_out.action, "LAND")
-        self.assertTrue(timed_out.requires_landing)
-        self.assertEqual(timed_out.command.forward_backward, 0)
-        # 超时后只要障碍仍可见就持续 FAILSAFE，不会自行恢复前进。
-        self.assertEqual(still_failsafe.state, "FAILSAFE")
-        self.assertTrue(still_failsafe.requires_landing)
-
-    def test_avoidance_timeout_hover_mode_does_not_land(self) -> None:
-        planner = ObstacleAvoidancePlanner(
-            safety_manager=build_safety(),
-            max_avoidance_seconds=5.0,
-            timeout_action="hover",
-        )
-        blocked = ObstacleResult(
-            found=True,
-            state="BLOCKED",
-            side="center",
-            free_space={"left": 0.5, "right": 0.5},
-            consecutive_found_frames=3,
-        )
-        with patch("control.obstacle_avoidance.monotonic", side_effect=[1.0, 6.5]):
-            planner.plan(RCCommand(0, 20, 0, 0), blocked)
-            timed_out = planner.plan(RCCommand(0, 20, 0, 0), blocked)
-
-        self.assertEqual(timed_out.state, "FAILSAFE")
-        self.assertEqual(timed_out.action, "HOVER")
-        self.assertFalse(timed_out.requires_landing)
-        self.assertEqual(timed_out.command.as_tuple(), (0, 0, 0, 0))
-
-    def test_clear_after_timeout_resets_avoidance(self) -> None:
-        planner = ObstacleAvoidancePlanner(
-            safety_manager=build_safety(),
-            max_avoidance_seconds=5.0,
-            timeout_action="land",
-        )
-        blocked = ObstacleResult(
-            found=True,
-            state="BLOCKED",
-            side="center",
-            free_space={"left": 0.5, "right": 0.5},
-            consecutive_found_frames=3,
-        )
-        with patch("control.obstacle_avoidance.monotonic", side_effect=[1.0, 6.5]):
-            planner.plan(RCCommand(0, 20, 0, 0), blocked)
-            timed_out = planner.plan(RCCommand(0, 20, 0, 0), blocked)
-        self.assertEqual(timed_out.state, "FAILSAFE")
-
-        cleared = planner.plan(RCCommand(0, 20, 0, 0), ObstacleResult(found=False))
-        self.assertEqual(cleared.state, "CLEAR")
-        self.assertEqual(cleared.action, "FOLLOW")
-        # 障碍再次出现时从零开始计时，不再立即 FAILSAFE。
-        with patch("control.obstacle_avoidance.monotonic", return_value=2.0):
-            retry = planner.plan(
-                RCCommand(0, 20, 0, 0),
-                ObstacleResult(
-                    found=True,
-                    state="BLOCKED",
-                    side="center",
-                    free_space={"left": 0.9, "right": 0.1},
-                    consecutive_found_frames=3,
-                ),
-            )
-        self.assertEqual(retry.state, "AVOIDING")
-
-    def test_recovering_holds_until_clear_confirmation(self) -> None:
-        planner = ObstacleAvoidancePlanner(
-            safety_manager=build_safety(),
-            recovery_clear_frames=3,
-        )
-        planner.plan(
-            RCCommand(0, 20, 0, 0),
-            ObstacleResult(
-                found=True,
-                state="BLOCKED",
-                side="center",
-                free_space={"left": 0.5, "right": 0.5},
-                consecutive_found_frames=3,
-            ),
-        )
-        first_clear = planner.plan(RCCommand(0, 20, 0, 0), ObstacleResult(found=False))
-        second_clear = planner.plan(RCCommand(0, 20, 0, 0), ObstacleResult(found=False))
-        settled = planner.plan(RCCommand(0, 20, 0, 0), ObstacleResult(found=False))
-
-        self.assertEqual(first_clear.state, "RECOVERING")
-        self.assertEqual(first_clear.action, "HOLD")
-        self.assertEqual(first_clear.command.forward_backward, 0)
-        self.assertEqual(second_clear.state, "RECOVERING")
-        self.assertEqual(settled.state, "CLEAR")
-        self.assertEqual(settled.action, "FOLLOW")
-        self.assertEqual(settled.command.forward_backward, 20)
-
-    def test_scan_also_respects_avoidance_timeout(self) -> None:
-        planner = ObstacleAvoidancePlanner(
-            safety_manager=build_safety(),
-            max_avoidance_seconds=5.0,
-        )
-        low_free_space = ObstacleResult(
-            found=True,
-            state="BLOCKED",
-            side="center",
-            free_space={"left": 0.1, "right": 0.1},
-            consecutive_found_frames=3,
-        )
-        with patch("control.obstacle_avoidance.monotonic", side_effect=[1.0, 6.5]):
-            scanning = planner.plan(RCCommand(0, 20, 0, 0), low_free_space)
-            timed_out = planner.plan(RCCommand(0, 20, 0, 0), low_free_space)
-
-        self.assertEqual(scanning.state, "SCAN")
-        self.assertEqual(scanning.command.forward_backward, 0)
-        self.assertEqual(timed_out.state, "FAILSAFE")
-
-    def test_generic_sector_labels_split_into_left_and_right(self) -> None:
-        planner = ObstacleAvoidancePlanner(
-            safety_manager=build_safety(),
-            avoidance_lateral_speed=12,
-        )
-        right_free = planner.plan(
-            RCCommand(0, 20, 0, 0),
-            ObstacleResult(
-                found=True,
-                state="BLOCKED",
-                side="center",
-                free_space={"sector_0": 0.1, "sector_1": 0.1, "sector_2": 0.9, "sector_3": 0.9},
-                consecutive_found_frames=3,
-            ),
-        )
-        self.assertEqual(right_free.action, "DETOUR_RIGHT")
-        self.assertGreater(right_free.command.left_right, 0)
-
-        planner.reset()
-        left_free = planner.plan(
-            RCCommand(0, 20, 0, 0),
-            ObstacleResult(
-                found=True,
-                state="BLOCKED",
-                side="center",
-                free_space={"sector_0": 0.9, "sector_1": 0.9, "sector_2": 0.1, "sector_3": 0.1},
-                consecutive_found_frames=3,
-            ),
-        )
-        self.assertEqual(left_free.action, "DETOUR_LEFT")
-        self.assertLess(left_free.command.left_right, 0)
 
 
 if __name__ == "__main__":

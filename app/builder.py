@@ -20,7 +20,7 @@ from drone.fake_adapter import FakeDroneAdapter
 from drone.safety import SafetyConfig, SafetyManager
 from drone.tello_adapter import TelloDroneAdapter
 from vision.detector_factory import create_detector
-from vision.obstacle_detect import ObstacleDetector
+from vision.obstacle_detect import DistanceOnlyObstacleDetector
 
 
 def build_safety_manager() -> SafetyManager:
@@ -32,7 +32,7 @@ def build_obstacle_modules(
     config: dict,
     safety_manager: SafetyManager,
 ) -> tuple[
-    Optional[ObstacleDetector],
+    Optional[DistanceOnlyObstacleDetector],
     Optional[ObstacleAvoidancePlanner],
     Optional[MotionArbiter],
 ]:
@@ -40,7 +40,7 @@ def build_obstacle_modules(
     obstacle_config = config.get("obstacle", {})
     if not isinstance(obstacle_config, dict) or not bool(obstacle_config.get("enabled", False)):
         return None, None, None
-    detector = ObstacleDetector.from_config(config)
+    detector = DistanceOnlyObstacleDetector()
     planner = ObstacleAvoidancePlanner.from_config(
         safety_manager=safety_manager,
         config=config,

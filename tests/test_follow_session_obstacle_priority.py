@@ -117,6 +117,8 @@ class FollowSessionObstaclePriorityTestCase(unittest.TestCase):
             state="BLOCKED",
             side="left",
             consecutive_found_frames=3,
+            front_distance_cm=60.0,
+            front_distance_status="valid",
         )
 
     def test_target_loss_with_blocked_obstacle_detours_and_pauses_search(self) -> None:
@@ -139,20 +141,29 @@ class FollowSessionObstaclePriorityTestCase(unittest.TestCase):
     def test_target_loss_detours_then_searches_after_obstacle_clears(self) -> None:
         drone = RecordingFakeDrone(verbose_rc=False)
         drone.height_cm = 70
-        clear = ObstacleResult(found=False, state="CLEAR")
-        sequence = [self.blocked_result()] * 4 + [clear] * 4
+        clear = ObstacleResult(
+            found=False,
+            state="CLEAR",
+            front_distance_cm=80.0,
+            front_distance_status="valid",
+        )
+        sequence = [self.blocked_result()] + [clear] * 5
         session = self.build_session(drone, sequence)
 
-        with patch("control.follow_session.sleep", return_value=None):
+        with (
+            patch("control.follow_session.sleep", return_value=None),
+            patch(
+                "control.obstacle_avoidance.monotonic",
+                side_effect=[0.0, 1.0, 1.0 + 120 / 35, 2.0 + 120 / 35],
+            ),
+        ):
             session._loop()
 
-        # 前 4 帧障碍挡路：绕行（前进=0、横向/偏航非 0）。
-        for command in drone.rc_history[:4]:
-            self.assertEqual(command[1], 0)
-            self.assertTrue(command[0] != 0 or command[3] != 0)
-        # 障碍清除后：恢复丢失处理，ReID 搜索从 LOST_HOLD 悬停开始。
-        for command in drone.rc_history[4:]:
-            self.assertEqual(command, (0, 0, 0, 0))
+        self.assertGreater(drone.rc_history[0][0], 0)  # 向右侧移
+        self.assertGreater(drone.rc_history[1][1], 0)  # 前进约 1.2 m
+        self.assertLess(drone.rc_history[2][0], 0)  # 等时向左返回
+        self.assertEqual(drone.rc_history[3], (0, 0, 0, 0))  # 路线完成停一帧
+        self.assertEqual(drone.rc_history[4], (0, 0, 0, 0))  # 恢复找人
         self.assertTrue(session.target_search.searching)
 
 

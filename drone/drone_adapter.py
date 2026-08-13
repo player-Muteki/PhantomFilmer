@@ -1,7 +1,7 @@
 """Unified abstract drone adapter interface used by the control system."""
 
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, Optional
 
 
 class DroneAdapter(ABC):
@@ -42,6 +42,10 @@ class DroneAdapter(ABC):
     def get_yaw(self) -> int:
         """Return flight-controller heading in degrees when available."""
         raise RuntimeError("当前无人机适配器不提供航向角。")
+
+    def get_front_distance_cm(self) -> Optional[float]:
+        """Return top/front expansion ToF distance, or None when out of range."""
+        raise RuntimeError("当前无人机适配器不提供前方顶部 ToF 距离。")
 
     @abstractmethod
     def stream_on(self) -> None:

@@ -7,12 +7,13 @@ from pathlib import Path
 from queue import Full, Queue
 from threading import Thread
 from time import monotonic
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 from uuid import uuid4
 
 from control.follow_control import RCCommand
 from control.obstacle_avoidance import AvoidanceDecision, ObstacleAvoidancePlanner
-from vision.obstacle_detect import ObstacleDetector, ObstacleResult
+from vision.obstacle_detect import DistanceOnlyObstacleDetector, ObstacleResult
+from drone.front_tof import FrontToFSnapshot
 
 
 @dataclass(frozen=True)
@@ -28,7 +29,7 @@ class MotionArbiter:
 
     def __init__(
         self,
-        detector: ObstacleDetector,
+        detector: DistanceOnlyObstacleDetector,
         planner: ObstacleAvoidancePlanner,
         config: Optional[Dict[str, object]] = None,
     ) -> None:
@@ -51,6 +52,11 @@ class MotionArbiter:
         self.last_decision: Optional[AvoidanceDecision] = None
         self.last_latency_ms = 0.0
         self._active = False
+        self._front_tof_enabled = bool(self._obstacle_config.get("front_tof_enabled", False))
+        self._front_tof_blocked_distance_cm = self._config_float(
+            "front_tof_blocked_distance_cm", 60.0
+        )
+        self._front_tof_provider: Optional[Callable[[], FrontToFSnapshot]] = None
 
     def reset(self, mode: str = "unknown") -> None:
         """Start a fresh planning and logging session."""
@@ -100,6 +106,7 @@ class MotionArbiter:
                         observation,
                         consecutive_found_frames=observation.consecutive_found_frames + 1,
                     )
+            observation = self._fuse_front_tof(observation)
             decision = self.planner.plan(desired_command, observation, obstacle_priority)
             self.last_observation = observation
         except Exception as exc:
@@ -127,6 +134,41 @@ class MotionArbiter:
     def invalidate_observation(self) -> None:
         """Force the next decide() to run a fresh detection (e.g. after a pause)."""
         self.last_observation = None
+
+    def set_front_tof_provider(
+        self, provider: Optional[Callable[[], FrontToFSnapshot]]
+    ) -> None:
+        """Attach a non-blocking front-distance snapshot provider."""
+        self._front_tof_provider = provider
+
+    def _fuse_front_tof(self, visual: ObstacleResult) -> ObstacleResult:
+        if not self._front_tof_enabled:
+            return visual
+        if self._front_tof_provider is None:
+            raise RuntimeError("front ToF provider is not attached")
+        sample = self._front_tof_provider()
+        if sample.status not in {"valid", "out_of_range"}:
+            raise RuntimeError(f"front ToF sample is {sample.status}")
+        updates: Dict[str, object] = {
+            "front_distance_cm": sample.distance_cm,
+            "front_distance_status": sample.status,
+            "front_distance_age_seconds": round(sample.age_seconds, 3),
+        }
+        if (
+            sample.distance_cm is not None
+            and sample.distance_cm <= self._front_tof_blocked_distance_cm
+        ):
+            updates.update(
+                found=True,
+                state="BLOCKED",
+                side=visual.side if visual.side in {"left", "right"} else "center",
+                confidence=1.0,
+                consecutive_found_frames=max(
+                    visual.consecutive_found_frames, sample.consecutive_blocked
+                ),
+                consecutive_clear_frames=0,
+            )
+        return replace(visual, **updates)
 
     def close(self) -> None:
         """Flush the optional event writer without affecting flight output."""
@@ -191,6 +233,12 @@ class MotionArbiter:
     def _config_int(self, key: str, default: int) -> int:
         try:
             return int(self._obstacle_config.get(key, default))
+        except (TypeError, ValueError):
+            return default
+
+    def _config_float(self, key: str, default: float) -> float:
+        try:
+            return float(self._obstacle_config.get(key, default))
         except (TypeError, ValueError):
             return default
 

@@ -4,6 +4,7 @@ This is the only module that imports djitellopy directly. The rest of the
 project should use DroneAdapter so hardware details stay isolated here.
 """
 
+import re
 from typing import Any, Optional
 
 from .drone_adapter import DroneAdapter
@@ -116,6 +117,23 @@ class TelloDroneAdapter(DroneAdapter):
             return int(self._tello.get_height())
         except Exception as exc:
             raise RuntimeError("读取飞控估算高度失败：请确认无人机连接正常。") from exc
+
+    def get_front_distance_cm(self) -> Optional[float]:
+        """Read the top expansion ToF using SDK 3.0 ``EXT tof?`` (millimetres)."""
+        self._require_connection()
+        try:
+            response = str(self._tello.send_command_with_return("EXT tof?", timeout=0.7))
+        except Exception as exc:
+            raise RuntimeError("读取顶部前向 ToF 距离失败。") from exc
+        match = re.search(r"(?:tof\s+)?(\d+)", response.strip().lower())
+        if match is None:
+            raise RuntimeError(f"顶部前向 ToF 返回格式无效：{response!r}")
+        millimetres = int(match.group(1))
+        if millimetres == 8192:
+            return None
+        if not 0 < millimetres <= 1200:
+            raise RuntimeError(f"顶部前向 ToF 返回范围无效：{millimetres} mm")
+        return millimetres / 10.0
 
     def get_yaw(self) -> int:
         """Return the cached flight-controller yaw angle in degrees."""

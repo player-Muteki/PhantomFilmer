@@ -18,10 +18,11 @@ from control.motion_arbiter import MotionArbiter, MotionContext
 from control.obstacle_avoidance import AvoidanceDecision, ObstacleAvoidancePlanner
 from control.target_search import TargetSearchController
 from drone.drone_adapter import DroneAdapter
+from drone.front_tof import FrontToFMonitor
 from drone.safety import SafetyManager
 from vision.camera import CameraStream
 from vision.detector_protocol import DetectorProtocol
-from vision.obstacle_detect import ObstacleDetector, ObstacleResult
+from vision.obstacle_detect import DistanceOnlyObstacleDetector, ObstacleResult
 from vision.reid_enrollment import TargetLockTracker
 
 
@@ -50,7 +51,7 @@ class FollowSession:
         allow_pause: bool = False,
         stop_event: Optional[Event] = None,
         pre_follow_maneuver: Optional[FixedDemoManeuver] = None,
-        obstacle_detector: Optional[ObstacleDetector] = None,
+        obstacle_detector: Optional[DistanceOnlyObstacleDetector] = None,
         obstacle_planner: Optional[ObstacleAvoidancePlanner] = None,
         motion_arbiter: Optional[MotionArbiter] = None,
         initial_target_lock_frames: int = 0,
@@ -70,6 +71,17 @@ class FollowSession:
         self.obstacle_detector = obstacle_detector
         self.obstacle_planner = obstacle_planner
         self.motion_arbiter = motion_arbiter
+        obstacle_config = config.get("obstacle", {}) if isinstance(config, dict) else {}
+        front_tof_enabled = (
+            self.motion_arbiter is not None
+            and isinstance(obstacle_config, dict)
+            and bool(obstacle_config.get("front_tof_enabled", False))
+        )
+        self.front_tof_monitor = (
+            FrontToFMonitor.from_config(drone, config) if front_tof_enabled else None
+        )
+        if self.motion_arbiter is not None and self.front_tof_monitor is not None:
+            self.motion_arbiter.set_front_tof_provider(self.front_tof_monitor.snapshot)
         self.initial_target_lock_frames = max(0, int(initial_target_lock_frames))
         self.initial_target_lock_timeout_seconds = max(
             1.0, float(initial_target_lock_timeout_seconds)
@@ -902,11 +914,16 @@ class FollowSession:
         obstacle_text = "DISABLED"
         obstacle_side = "none"
         obstacle_area = 0.0
+        front_tof_text = "N/A"
         obstacle_reason = ""
         if self.last_obstacle_result is not None:
             obstacle_text = self.last_obstacle_result.state
             obstacle_side = self.last_obstacle_result.side
             obstacle_area = self.last_obstacle_result.area_ratio
+            if self.last_obstacle_result.front_distance_cm is not None:
+                front_tof_text = f"{self.last_obstacle_result.front_distance_cm:.1f}cm"
+            else:
+                front_tof_text = self.last_obstacle_result.front_distance_status
         if self.last_avoidance_decision is not None:
             obstacle_text = self.last_avoidance_decision.state
             obstacle_reason = self.last_avoidance_decision.reason
@@ -925,7 +942,7 @@ class FollowSession:
             f"Y: {debug.target_center_y}/{debug.frame_center_y} err={debug.vertical_error} ({debug.vertical_error_ratio:.2f})",
             f"AREA: {debug.area_ratio:.3f}  STATE: {debug.target_state}",
             f"SEARCH: {self.search_reason or 'inactive'}",
-            f"OBSTACLE: {obstacle_text} side={obstacle_side} area={obstacle_area:.3f}",
+            f"OBSTACLE: {obstacle_text} side={obstacle_side} area={obstacle_area:.3f} front={front_tof_text}",
             f"AVOID: {obstacle_reason}",
             key_text,
         )
@@ -1214,6 +1231,23 @@ class FollowSession:
             raise RuntimeError(
                 "无法获取无人机视频流，请检查是否已连接 RoboMaster TT / Tello Wi-Fi。"
             ) from exc
+
+    def _prepare_front_tof(self) -> None:
+        """Verify the optional top/front ToF while the aircraft is grounded."""
+        if self.front_tof_monitor is not None:
+            print("正在检查顶部前向 ToF 距离模块...")
+            self.front_tof_monitor.prepare()
+            print("顶部前向 ToF 已就绪：60 cm 内将触发 BLOCKED。")
+
+    def _start_front_tof(self) -> None:
+        """Begin cached distance polling after takeoff."""
+        if self.front_tof_monitor is not None:
+            self.front_tof_monitor.start()
+
+    def _stop_front_tof(self) -> None:
+        """Stop polling before SDK landing/stream commands."""
+        if self.front_tof_monitor is not None:
+            self.front_tof_monitor.stop()
 
     def _reset_tracking_state(self) -> None:
         """Clear detector and controller state before every independent follow task."""

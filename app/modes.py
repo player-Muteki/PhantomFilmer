@@ -18,6 +18,7 @@ from control.follow_session import FollowSession
 from control.kernel.arbitration import ArbitrationEngine
 from control.kernel.features import ArbitrationContext
 from control.kernel.phases import KernelPhase
+from drone.front_tof import FrontToFMonitor
 from drone.safety import SafetyManager
 from drone.tello_adapter import TelloDroneAdapter
 from vision.camera import CameraStream
@@ -89,7 +90,6 @@ def run_camera(use_fake: bool = False) -> int:
     drone = create_drone_adapter(use_fake, config=config)
     camera = None
     detector = create_detector(config)
-    obstacle_detector, _obstacle_planner = build_obstacle_modules(config, SafetyManager.from_dict(config))
 
     try:
         print("正在连接模拟无人机..." if use_fake else "正在连接 RoboMaster TT / Tello...")
@@ -110,9 +110,6 @@ def run_camera(use_fake: bool = False) -> int:
 
             result = detector.detect(frame)
             debug_frame = detector.draw_debug(frame, result)
-            if obstacle_detector is not None:
-                obstacle_result = obstacle_detector.detect(frame, result)
-                debug_frame = obstacle_detector.draw_debug(debug_frame, obstacle_result)
             cv2.imshow("PhantomFilmer Camera", debug_frame)
             last_mask = getattr(detector, "last_mask", None)
             if last_mask is not None:
@@ -266,7 +263,6 @@ def run_follow(
     detector = create_detector(config)
     controller = FollowController.from_config(safety_manager=safety, config=config)
     _, _, motion_arbiter = build_obstacle_modules(config, safety)
-
     try:
         print("正在连接模拟无人机..." if use_fake else "正在连接 RoboMaster TT / Tello...")
         drone.connect()
@@ -562,6 +558,15 @@ def run_follow_dry_run(
     detector = create_detector(config)
     controller = FollowController.from_config(safety_manager=safety, config=config)
     _, _, motion_arbiter = build_obstacle_modules(config, safety)
+    front_tof_monitor = None
+    obstacle_config = config.get("obstacle", {})
+    if (
+        motion_arbiter is not None
+        and isinstance(obstacle_config, dict)
+        and bool(obstacle_config.get("front_tof_enabled", False))
+    ):
+        front_tof_monitor = FrontToFMonitor.from_config(drone, config)
+        motion_arbiter.set_front_tof_provider(front_tof_monitor.snapshot)
     control_interval = read_control_interval(config)
     # 与生产路径共用同一仲裁引擎与 feature 注册表，保证 dry-run 决策逐帧一致。
     engine = ArbitrationEngine(
@@ -584,6 +589,9 @@ def run_follow_dry_run(
             height=int(config.get("camera_height", 480)),
         )
         camera.start()
+        if front_tof_monitor is not None:
+            front_tof_monitor.prepare()
+            front_tof_monitor.start()
         print("follow-dry-run 已启动：只计算控制量，不起飞，不发送 move_rc。按 q 退出。")
 
         while True:
@@ -645,7 +653,9 @@ def run_follow_dry_run(
             if obstacle_result is not None and avoidance_decision is not None:
                 obstacle_line = (
                     f"obstacle={avoidance_decision.state} side={obstacle_result.side} "
-                    f"area={obstacle_result.area_ratio:.3f} {avoidance_decision.reason}"
+                    f"area={obstacle_result.area_ratio:.3f} "
+                    f"front_tof={obstacle_result.front_distance_cm}cm "
+                    f"{avoidance_decision.reason}"
                 )
             dry_run_lines = (
                 f"dry-run rc: lr={left_right} fb={forward_backward} ud={up_down} yaw={yaw}",
@@ -682,6 +692,8 @@ def run_follow_dry_run(
         print("已手动中断，正在关闭视频流。")
         return 0
     finally:
+        if front_tof_monitor is not None:
+            front_tof_monitor.stop()
         if camera is not None:
             try:
                 camera.stop()

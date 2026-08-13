@@ -71,7 +71,10 @@ class ArbitrationEngine:
             own = self._obstacle.own(ctx, hover, ctx.now)
             observation = self._obstacle.last_observation
             decision = self._obstacle.last_decision
-            if observation is not None and observation.found:
+            if (
+                observation is not None
+                and (observation.found or (decision is not None and decision.owns_motion))
+            ):
                 return self._finish(
                     own,
                     obstacle_ran=True,

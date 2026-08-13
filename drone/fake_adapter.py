@@ -46,6 +46,7 @@ class FakeDroneAdapter(DroneAdapter):
         self._started_at = monotonic()
         self._last_rc_at = self._started_at
         self.yaw_degrees = 0.0
+        self.front_distance_cm = None
 
     def connect(self) -> None:
         """Simulate drone connection."""
@@ -99,6 +100,10 @@ class FakeDroneAdapter(DroneAdapter):
     def get_yaw(self) -> int:
         """Return simulated wrapped yaw in the same range as Tello telemetry."""
         return int(round(self.yaw_degrees))
+
+    def get_front_distance_cm(self):
+        """Return the configurable simulated front ToF reading."""
+        return self.front_distance_cm
 
     def stream_on(self) -> None:
         """Simulate video stream startup."""

@@ -43,6 +43,9 @@ class KernelSession:
                         streaming=session.streaming,
                     )
                 session._start_camera()
+                prepare_front_tof = getattr(session, "_prepare_front_tof", None)
+                if callable(prepare_front_tof):
+                    prepare_front_tof()
 
             ctx = LifecycleContext()
             phase = KernelPhase.PRE_FLIGHT
@@ -92,6 +95,9 @@ class KernelSession:
     def _land_and_cleanup(self) -> None:
         """Land and release resources in the historical cleanup order."""
         session = self._session
+        stop_front_tof = getattr(session, "_stop_front_tof", None)
+        if callable(stop_front_tof):
+            stop_front_tof()
         session._safe_zero_output()
         if session.airborne:
             session._safe_land()

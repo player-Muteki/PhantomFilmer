@@ -10,7 +10,7 @@ from control.obstacle_avoidance import ObstacleAvoidancePlanner
 from drone.drone_adapter import DroneAdapter
 from drone.safety import SafetyManager
 from vision.detector_protocol import DetectorProtocol
-from vision.obstacle_detect import ObstacleDetector
+from vision.obstacle_detect import DistanceOnlyObstacleDetector
 
 
 class ConsoleTools:
@@ -31,7 +31,7 @@ class ConsoleTools:
         mode_label: str = "REAL",
         frame_width: int = 640,
         frame_height: int = 480,
-        obstacle_detector: Optional[ObstacleDetector] = None,
+        obstacle_detector: Optional[DistanceOnlyObstacleDetector] = None,
         obstacle_planner: Optional[ObstacleAvoidancePlanner] = None,
         motion_arbiter: Optional[MotionArbiter] = None,
         follow_task_allowed: bool = True,
