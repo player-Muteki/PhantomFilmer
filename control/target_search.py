@@ -95,6 +95,16 @@ class TargetSearchController:
     def searching(self) -> bool:
         return self.state != "IDLE"
 
+    def close_recovery_has_priority(self) -> bool:
+        """Whether the narrowly scoped too-close recovery must preempt avoidance."""
+        if not self.enabled or not self.close_recovery_enabled or not self.has_observed_target:
+            return False
+        if self.state in {"CLOSE_BACKOFF", "CLOSE_BACKOFF_PAUSE"}:
+            return True
+        if self.state not in {"IDLE", "LOST_HOLD"}:
+            return False
+        return self.close_attempts < self.close_max_attempts and self._looks_too_close()
+
     def reset(self) -> None:
         self.state = "IDLE"
         self.phase_started_at = None

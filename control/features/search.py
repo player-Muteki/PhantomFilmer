@@ -65,5 +65,9 @@ class SearchFeature:
             landing_kind="target_lost" if decision.action == "land" else "",
         )
 
+    def close_recovery_has_priority(self) -> bool:
+        """Expose only the bounded too-close backoff as a higher-priority action."""
+        return self._search.close_recovery_has_priority()
+
     def reset(self) -> None:
         pass

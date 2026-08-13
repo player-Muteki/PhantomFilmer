@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 from unittest.mock import patch
 
+import numpy as np
+
 from control.follow_control import RCCommand
 from control.motion_arbiter import MotionArbiter, MotionContext
 from control.obstacle_avoidance import ObstacleAvoidancePlanner
@@ -315,6 +317,79 @@ class MotionArbiterTestCase(unittest.TestCase):
         self.assertEqual(decision.command, desired)
         self.assertEqual(decision.action, "FOLLOW")
         self.assertIsNone(arbiter.planner._bypass_phase)
+
+    def test_center_loss_advances_until_tof_detects_object_within_120_cm(self) -> None:
+        safety = build_safety()
+        current = self.front_sample(None, status="out_of_range", count=0, sequence=1)
+        arbiter = MotionArbiter(
+            detector=StubDetector(ObstacleResult(found=False, state="CLEAR")),
+            planner=ObstacleAvoidancePlanner(
+                safety_manager=safety,
+                avoidance_lateral_speed=20,
+                detect_confirm_frames=3,
+            ),
+            config={
+                "obstacle": {
+                    "front_tof_enabled": True,
+                    "center_loss_forward_enabled": True,
+                    "center_loss_forward_speed": 25,
+                    "center_loss_history_frames": 3,
+                    "center_loss_edge_margin_ratio": 0.05,
+                }
+            },
+        )
+        arbiter.set_front_tof_provider(lambda: current)
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        visible = {
+            "found": True,
+            "is_predicted": False,
+            "ambiguous": False,
+            "bbox": (250, 60, 140, 360),
+        }
+        for _ in range(3):
+            arbiter.decide(RCCommand(), frame, MotionContext("test", visible))
+
+        advancing = arbiter.decide(
+            RCCommand(), frame, MotionContext("test", {"found": False}),
+            obstacle_priority=True,
+        )
+        self.assertEqual(advancing.state, "CENTER_LOSS_ADVANCE")
+        self.assertEqual(advancing.command.as_tuple(), (0, 25, 0, 0))
+
+        current = self.front_sample(110, status="valid", count=0, sequence=2)
+        avoiding = arbiter.decide(
+            RCCommand(), frame, MotionContext("test", {"found": False}),
+            obstacle_priority=True,
+        )
+        self.assertEqual(avoiding.action, "SIDE_STEP_OUT")
+        self.assertEqual(avoiding.command.as_tuple(), (20, 0, 0, 0))
+        self.assertTrue(avoiding.observation.found)
+
+    def test_horizontal_edge_exit_does_not_start_blind_forward_recovery(self) -> None:
+        safety = build_safety()
+        arbiter = MotionArbiter(
+            detector=StubDetector(ObstacleResult(found=False, state="CLEAR")),
+            planner=ObstacleAvoidancePlanner(safety_manager=safety),
+            config={"obstacle": {"front_tof_enabled": True}},
+        )
+        arbiter.set_front_tof_provider(
+            lambda: self.front_sample(None, status="out_of_range", count=0, sequence=1)
+        )
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        results = (
+            {"found": True, "bbox": (250, 60, 140, 360)},
+            {"found": True, "bbox": (350, 60, 140, 360)},
+            {"found": True, "bbox": (510, 60, 130, 360)},
+        )
+        for result in results:
+            arbiter.decide(RCCommand(), frame, MotionContext("test", result))
+
+        lost = arbiter.decide(
+            RCCommand(), frame, MotionContext("test", {"found": False}),
+            obstacle_priority=True,
+        )
+        self.assertNotEqual(lost.state, "CENTER_LOSS_ADVANCE")
+        self.assertEqual(lost.command.forward_backward, 0)
 
     def test_error_observation_is_not_reused_by_sub_sampling(self) -> None:
         safety = build_safety()

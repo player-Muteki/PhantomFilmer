@@ -144,6 +144,29 @@ class TargetSearchControllerTests(unittest.TestCase):
         self.assertEqual(decision.state, "CLOSE_BACKOFF")
         self.assertEqual(decision.command.forward_backward, -35)
 
+    def test_only_too_close_recovery_reports_priority_over_obstacle(self):
+        controller = self.build_controller()
+        controller.observe_target(
+            target(
+                center=(320, 240),
+                area_ratio=0.40,
+                bbox=(120, 20, 400, 450),
+            ),
+            640,
+            480,
+            RCCommand(forward_backward=-16),
+        )
+        self.assertTrue(controller.close_recovery_has_priority())
+
+        controller.update(LOST, 640, 480, 150, now=0.0)
+        controller.update(LOST, 640, 480, 150, now=1.01)
+        self.assertEqual(controller.state, "CLOSE_BACKOFF")
+        self.assertTrue(controller.close_recovery_has_priority())
+
+        ordinary = self.build_controller()
+        ordinary.observe_target(target(area_ratio=0.20), 640, 480, RCCommand())
+        self.assertFalse(ordinary.close_recovery_has_priority())
+
     def test_last_direction_and_layer_sweeps_use_separate_yaw_speeds(self):
         controller = self.build_controller()
         controller.observe_target(target(center=(560, 240)), 640, 480, RCCommand())

@@ -303,6 +303,58 @@ class EngineRecipeIsolationTestCase(unittest.TestCase):
         self.assertEqual(outcome.state, "OBSTACLE_FIRST")
         self.assertEqual(outcome.reason, "avoiding obstacle before search")
 
+    def test_too_close_backoff_preempts_blocked_obstacle_only_for_that_recovery(self) -> None:
+        blocked = ObstacleResult(
+            found=True,
+            state="BLOCKED",
+            side="center",
+            consecutive_found_frames=3,
+            front_distance_cm=50,
+            front_distance_status="valid",
+        )
+        safety = build_safety()
+        search_controller = build_search(
+            {
+                "hold_seconds": 0.01,
+                "close_area_ratio": 0.32,
+                "close_very_area_ratio": 0.37,
+                "close_backward_speed": 35,
+            }
+        )
+        search_controller.observe_target(
+            {
+                "found": True,
+                "is_predicted": False,
+                "ambiguous": False,
+                "center": (320, 240),
+                "area_ratio": 0.40,
+                "bbox": (0, 10, 630, 460),
+            },
+            640,
+            480,
+            RCCommand(forward_backward=-16),
+        )
+        search = SearchFeature(
+            target_search=search_controller,
+            safety_manager=safety,
+            follow_controller=FollowController(safety_manager=safety),
+        )
+        engine = self.build_engine([blocked], search)
+        lost_ctx = build_ctx(
+            target_result={"found": False, "center": None, "area": 0.0, "bbox": None},
+            now=0.0,
+        )
+
+        hold = engine.arbitrate(lost_ctx)
+        lost_ctx.now = 0.02
+        backoff = engine.arbitrate(lost_ctx)
+
+        self.assertEqual(hold.command.as_tuple(), (0, 0, 0, 0))
+        self.assertEqual(backoff.state, "CLOSE_BACKOFF")
+        self.assertEqual(backoff.command.as_tuple(), (0, -35, 0, 0))
+        obstacle = engine._obstacle
+        self.assertEqual(obstacle._arbiter.detector.reads, 0)
+
     def test_paused_or_emergency_emits_hover_and_invokes_no_feature(self) -> None:
         blocked = ObstacleResult(found=True, state="BLOCKED", side="left", consecutive_found_frames=3)
         search = CountingSearch()

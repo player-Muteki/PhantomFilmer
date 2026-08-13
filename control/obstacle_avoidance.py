@@ -183,6 +183,7 @@ class ObstacleAvoidancePlanner:
         obstacle_priority: bool = False,
         lost_episode_id: Optional[int] = None,
         yaw_deg: Optional[int] = None,
+        immediate_lost_bypass: bool = False,
     ) -> AvoidanceDecision:
         """Run/continue the bypass route independently of target tracking."""
         self._plan_counter += 1
@@ -191,6 +192,10 @@ class ObstacleAvoidancePlanner:
             return self._plan_active_bypass(
                 follow_command, obstacle_result, plan_id, yaw_deg=yaw_deg
             )
+        if immediate_lost_bypass and obstacle_result.found:
+            self._dynamic_lost_bypass = True
+            self._lost_probe_complete = True
+            return self._start_bypass(follow_command, obstacle_result, plan_id)
         if obstacle_priority and lost_episode_id is not None:
             if lost_episode_id != self._lost_episode_id:
                 self._begin_lost_probe(lost_episode_id, obstacle_result)

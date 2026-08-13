@@ -54,15 +54,15 @@ fake_target_lost_duration_seconds: 2
 frame_failure_limit: 30
 horizontal_dead_zone_ratio: 0.08
 yaw_kp: 160
-minimum_yaw_speed: 20
-maximum_yaw_speed: 35
+minimum_yaw_speed: 15
+maximum_yaw_speed: 25
 # ArUco 前后距离分区：0.030–0.080 悬停，区外全速调整。
 target_area_ratio_min: 0.030
 target_area_ratio_max: 0.080
-# ReID 人物距离带：人物框占画面 0.25–0.35 时保持前后距离；
+# ReID 人物距离带：人物框占画面 0.22–0.32 时保持前后距离；
 # 仅 reid-demo 运行期覆盖到 shared 配置，不影响默认 ArUco 跟随。
-reid_target_area_ratio_min: 0.25
-reid_target_area_ratio_max: 0.35
+reid_target_area_ratio_min: 0.22
+reid_target_area_ratio_max: 0.32
 maximum_forward_speed: 25
 forward_speed_while_aligning: 16
 vertical_dead_zone_ratio: 0.10
@@ -72,9 +72,9 @@ target_lock_stable_frames: 15
 # 避免面积在中带边界附近波动时反复锁定/解锁。
 target_lock_exit_area_ratio_min: 0.025
 target_lock_exit_area_ratio_max: 0.085
-# ReID 锁定退出面积带比进入带（0.25–0.35）略宽：0.23–0.37 形成面积滞回。
-reid_target_lock_exit_area_ratio_min: 0.23
-reid_target_lock_exit_area_ratio_max: 0.37
+# ReID 锁定退出面积带比进入带（0.22–0.32）略宽：0.20–0.34 形成面积滞回。
+reid_target_lock_exit_area_ratio_min: 0.20
+reid_target_lock_exit_area_ratio_max: 0.34
 target_lock_exit_horizontal_dead_zone_ratio: 0.12
 target_lock_exit_vertical_dead_zone_ratio: 0.15
 control_interval: 0.05
@@ -91,6 +91,11 @@ obstacle:
   front_tof_clear_distance_cm: 70
   front_tof_poll_interval_seconds: 0.2
   front_tof_max_age_seconds: 0.8
+  # 连续3帧目标框均未触碰左右边缘却突然丢失：向前25，直到ToF发现1.2m内任意实体。
+  center_loss_forward_enabled: true
+  center_loss_forward_speed: 25
+  center_loss_history_frames: 3
+  center_loss_edge_margin_ratio: 0.05
   avoidance_lateral_speed: 20
   bypass_lateral_direction: right
   # Tello无横向里程计：用速度20持续约5秒估算右移100cm。
@@ -135,8 +140,8 @@ target_search:
   min_height_cm: 80
   max_height_cm: 200
   close_recovery_enabled: true
-  close_area_ratio: 0.35
-  close_very_area_ratio: 0.40
+  close_area_ratio: 0.32
+  close_very_area_ratio: 0.37
   close_backward_speed: 35
   close_pulse_seconds: 1.5
   close_pause_seconds: 0.50

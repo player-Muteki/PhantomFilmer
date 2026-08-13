@@ -1,6 +1,7 @@
 """Unified obstacle observation, local planning, and decision logging."""
 
 import json
+from collections import deque
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -68,6 +69,23 @@ class MotionArbiter:
         self._lost_tof_failures = 0
         self._latest_front_sequence = -1
         self._last_failed_front_sequence = -1
+        self._center_loss_forward_enabled = bool(
+            self._obstacle_config.get("center_loss_forward_enabled", True)
+        )
+        self._center_loss_forward_speed = max(
+            1, self._config_int("center_loss_forward_speed", 25)
+        )
+        self._center_loss_history_frames = max(
+            1, self._config_int("center_loss_history_frames", 3)
+        )
+        self._center_loss_edge_margin_ratio = max(
+            0.0,
+            min(0.25, self._config_float("center_loss_edge_margin_ratio", 0.05)),
+        )
+        self._recent_horizontal_edge: deque[bool] = deque(
+            maxlen=self._center_loss_history_frames
+        )
+        self._center_loss_advancing = False
 
     def reset(self, mode: str = "unknown") -> None:
         """Start a fresh planning and logging session."""
@@ -88,6 +106,8 @@ class MotionArbiter:
         self._lost_tof_failures = 0
         self._latest_front_sequence = -1
         self._last_failed_front_sequence = -1
+        self._recent_horizontal_edge.clear()
+        self._center_loss_advancing = False
         self._active = True
         if self._log_enabled:
             self._writer = _JsonlEventWriter(self._session_log_path())
@@ -113,14 +133,17 @@ class MotionArbiter:
             and not bool(context.target_result.get("ambiguous"))
         )
         if fresh_target:
+            self._record_target_horizontal_edge(frame, context.target_result)
             self._target_seen = True
             self._target_was_found = True
             self._active_lost_episode_id = None
+            self._center_loss_advancing = False
             self.planner.cancel_lost_target_recovery()
         elif self._target_was_found:
             self._target_was_found = False
             self._lost_episode_counter += 1
             self._active_lost_episode_id = self._lost_episode_counter
+            self._center_loss_advancing = self._should_advance_after_center_loss()
         started_at = monotonic()
         try:
             self._detect_counter += 1
@@ -141,17 +164,61 @@ class MotionArbiter:
             observation = self._fuse_front_tof(observation)
             self._lost_tof_failures = 0
             self._last_failed_front_sequence = -1
-            decision = self.planner.plan(
-                desired_command,
-                observation,
-                obstacle_priority,
-                lost_episode_id=(
-                    self._active_lost_episode_id
-                    if obstacle_priority and self._target_seen
-                    else None
-                ),
-                yaw_deg=context.yaw_deg,
-            )
+            if self._center_loss_advancing:
+                front_in_range = (
+                    observation.front_distance_status == "valid"
+                    and observation.front_distance_cm is not None
+                    and observation.front_distance_cm <= 120.0
+                )
+                if front_in_range:
+                    self._center_loss_advancing = False
+                    blocked = replace(
+                        observation,
+                        found=True,
+                        state="BLOCKED",
+                        confidence=1.0,
+                        consecutive_found_frames=max(
+                            observation.consecutive_found_frames,
+                            self.planner.detect_confirm_frames,
+                        ),
+                    )
+                    decision = self.planner.plan(
+                        self._zero_command(),
+                        blocked,
+                        obstacle_priority=True,
+                        yaw_deg=context.yaw_deg,
+                        immediate_lost_bypass=True,
+                    )
+                    observation = blocked
+                else:
+                    advance = self._limited_forward_command(
+                        self._center_loss_forward_speed
+                    )
+                    decision = AvoidanceDecision(
+                        command=advance,
+                        state="CENTER_LOSS_ADVANCE",
+                        action="ADVANCE_UNTIL_FRONT_OBJECT",
+                        reason=(
+                            "target disappeared away from horizontal edges; "
+                            "advancing until front ToF detects an object within 120 cm"
+                        ),
+                        confidence=1.0,
+                        plan_id="center-loss-advance",
+                        owns_motion=True,
+                        observation=observation,
+                    )
+            else:
+                decision = self.planner.plan(
+                    desired_command,
+                    observation,
+                    obstacle_priority,
+                    lost_episode_id=(
+                        self._active_lost_episode_id
+                        if obstacle_priority and self._target_seen
+                        else None
+                    ),
+                    yaw_deg=context.yaw_deg,
+                )
             self.last_observation = observation
         except Exception as exc:
             if obstacle_priority and self._active_lost_episode_id is not None:
@@ -188,6 +255,39 @@ class MotionArbiter:
         self.last_decision = decision
         self._record(desired_command, context, observation, decision)
         return decision
+
+    def _record_target_horizontal_edge(
+        self, frame: Any, target_result: Dict[str, object]
+    ) -> None:
+        bbox = target_result.get("bbox")
+        shape = getattr(frame, "shape", None)
+        if not isinstance(bbox, (tuple, list)) or len(bbox) != 4 or shape is None:
+            self._recent_horizontal_edge.clear()
+            return
+        try:
+            frame_width = int(shape[1])
+            x, _y, width, _height = (float(value) for value in bbox)
+        except (TypeError, ValueError, IndexError):
+            self._recent_horizontal_edge.clear()
+            return
+        if frame_width <= 0 or width <= 0:
+            self._recent_horizontal_edge.clear()
+            return
+        margin = frame_width * self._center_loss_edge_margin_ratio
+        touches_horizontal_edge = x <= margin or x + width >= frame_width - margin
+        self._recent_horizontal_edge.append(touches_horizontal_edge)
+
+    def _should_advance_after_center_loss(self) -> bool:
+        return (
+            self._front_tof_enabled
+            and self._center_loss_forward_enabled
+            and len(self._recent_horizontal_edge) == self._center_loss_history_frames
+            and not any(self._recent_horizontal_edge)
+        )
+
+    def _limited_forward_command(self, speed: int) -> RCCommand:
+        limited = self.planner.safety_manager.limit_rc_command(0, speed, 0, 0)
+        return RCCommand(*limited)
 
     def invalidate_observation(self) -> None:
         """Force the next decide() to run a fresh detection (e.g. after a pause)."""

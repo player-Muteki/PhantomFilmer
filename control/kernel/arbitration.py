@@ -66,6 +66,11 @@ class ArbitrationEngine:
                 command=hover, state="PAUSED" if ctx.paused else ""
             )
 
+        # 唯一高于避障的目标丢失动作：视觉历史明确表明人物贴得太近时，
+        # 先完成有界后退/停顿。其他所有搜索动作仍保持避障优先。
+        if not ctx.target_result.get("found") and self._close_recovery_has_priority():
+            return self._finish(self._lost_tracking(ctx))
+
         # 配方 3：目标丢失 → 先障碍探测（own）；有阻挡则避障接管、暂停找人。
         if self._obstacle is not None and not ctx.target_result.get("found"):
             own = self._obstacle.own(ctx, hover, ctx.now)
@@ -126,6 +131,10 @@ class ArbitrationEngine:
         if self._search is not None:
             return self._search.propose(ctx, ctx.now)  # 配方 4
         return self._safety.lost_hover(ctx, ctx.now)  # 配方 5
+
+    def _close_recovery_has_priority(self) -> bool:
+        checker = getattr(self._search, "close_recovery_has_priority", None)
+        return bool(checker()) if callable(checker) else False
 
     def _finish(
         self,
