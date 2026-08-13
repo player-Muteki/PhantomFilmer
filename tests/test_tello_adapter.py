@@ -15,6 +15,14 @@ class RecordingTello:
             "command": "ok",
             "battery?": "87",
         }
+        self.background_frame_read = None
+        self.stream_on = False
+
+    def streamon(self) -> None:
+        self.stream_on = True
+
+    def streamoff(self) -> None:
+        self.stream_on = False
 
     def takeoff(self) -> None:
         self.takeoff_calls += 1
@@ -39,6 +47,35 @@ class RecordingTello:
         if isinstance(response, Exception):
             raise response
         return response
+
+
+class RecordingWorker:
+    def __init__(self, events) -> None:
+        self.events = events
+
+    def join(self, timeout=None) -> None:
+        self.events.append(("join", timeout))
+
+    def is_alive(self) -> bool:
+        return False
+
+
+class RecordingContainer:
+    def __init__(self, events) -> None:
+        self.events = events
+
+    def close(self) -> None:
+        self.events.append("container_close")
+
+
+class RecordingFrameReader:
+    def __init__(self, events) -> None:
+        self.events = events
+        self.container = RecordingContainer(events)
+        self.worker = RecordingWorker(events)
+
+    def stop(self) -> None:
+        self.events.append("reader_stop")
 
 
 class ConnectionTestDrone:
@@ -226,6 +263,50 @@ class TelloDroneAdapterTestCase(unittest.TestCase):
 
         with self.assertRaisesRegex(RuntimeError, "返回格式无效"):
             adapter.get_front_distance_cm()
+
+    def test_stream_off_releases_reader_before_stopping_aircraft_stream(self) -> None:
+        adapter, tello = self.build_adapter()
+        events = []
+        tello.background_frame_read = RecordingFrameReader(events)
+        tello.stream_on = True
+        adapter.streaming = True
+        original_streamoff = tello.streamoff
+
+        def record_streamoff() -> None:
+            events.append("streamoff")
+            original_streamoff()
+
+        tello.streamoff = record_streamoff
+
+        adapter.stream_off()
+
+        self.assertEqual(
+            events,
+            ["reader_stop", "container_close", ("join", 2.0), "streamoff"],
+        )
+        self.assertIsNone(tello.background_frame_read)
+        self.assertFalse(adapter.streaming)
+
+    def test_stream_on_discards_stale_reader_before_restart(self) -> None:
+        adapter, tello = self.build_adapter()
+        events = []
+        tello.background_frame_read = RecordingFrameReader(events)
+        original_streamon = tello.streamon
+
+        def record_streamon() -> None:
+            events.append("streamon")
+            original_streamon()
+
+        tello.streamon = record_streamon
+
+        adapter.stream_on()
+
+        self.assertEqual(
+            events,
+            ["reader_stop", "container_close", ("join", 2.0), "streamon"],
+        )
+        self.assertIsNone(tello.background_frame_read)
+        self.assertTrue(adapter.streaming)
 
 
 if __name__ == "__main__":

@@ -32,7 +32,7 @@ class TargetSearchController:
         cfg = search if isinstance(search, dict) else {}
         self.enabled = bool(cfg.get("enabled", True))
         self.hold_seconds = self._positive_float(cfg.get("hold_seconds"), 1.0)
-        self.yaw_speed = self._positive_int(cfg.get("yaw_speed"), 20)
+        self.yaw_speed = self._positive_int(cfg.get("yaw_speed"), 30)
         self.last_direction_yaw_speed = self._positive_int(
             cfg.get("last_direction_yaw_speed"), 25
         )

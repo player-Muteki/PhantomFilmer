@@ -5,7 +5,7 @@ project should use DroneAdapter so hardware details stay isolated here.
 """
 
 import re
-from threading import Lock
+from threading import Lock, current_thread
 from typing import Any, Optional
 
 from .drone_adapter import DroneAdapter
@@ -17,6 +17,7 @@ class TelloDroneAdapter(DroneAdapter):
     SDK_PORT = 8889
     # djitellopy runtime-checks this argument and accepts ``int`` only.
     COMMAND_TIMEOUT_SECONDS = 5
+    VIDEO_READER_JOIN_TIMEOUT_SECONDS = 2.0
 
     def __init__(self, host: str = "192.168.10.1") -> None:
         self.host = host
@@ -104,14 +105,19 @@ class TelloDroneAdapter(DroneAdapter):
             if self.connected:
                 self._tello.send_rc_control(0, 0, 0, 0)
             if self.streaming:
-                with self._command_lock:
-                    self._tello.streamoff()
+                self.stream_off()
+            else:
+                self._release_video_reader()
+            end = getattr(self._tello, "end", None)
+            if callable(end):
+                end()
         except Exception as exc:
             print(f"停止无人机时出现异常：{exc}")
         finally:
             self.connected = False
             self.streaming = False
             self._takeoff_authorized = False
+            self._tello = None
 
     def move_rc(self, left_right: int, forward_backward: int, up_down: int, yaw: int) -> None:
         """Send remote-control velocity values to the aircraft."""
@@ -181,6 +187,7 @@ class TelloDroneAdapter(DroneAdapter):
         """Enable the drone camera stream."""
         self._require_connection()
         try:
+            self._release_video_reader()
             with self._command_lock:
                 self._tello.streamon()
             self.streaming = True
@@ -193,11 +200,50 @@ class TelloDroneAdapter(DroneAdapter):
             print("关闭视频流命令未执行：无人机尚未连接。")
             return
         try:
+            # Release the decoder while packets are still arriving. Calling
+            # streamoff first can leave BackgroundFrameRead blocked forever.
+            self._release_video_reader()
             with self._command_lock:
                 self._tello.streamoff()
             self.streaming = False
         except Exception as exc:
             raise RuntimeError("关闭视频流失败：请确认无人机连接正常。") from exc
+
+    def _release_video_reader(self) -> None:
+        """Synchronously release djitellopy's PyAV reader, if one exists."""
+        if self._tello is None:
+            return
+        reader = getattr(self._tello, "background_frame_read", None)
+        if reader is None:
+            return
+
+        # Detach first so get_frame_read() cannot return a stopped old reader.
+        self._tello.background_frame_read = None
+        try:
+            stop = getattr(reader, "stop", None)
+            if callable(stop):
+                stop()
+        except Exception as exc:
+            print(f"停止旧视频接收器时出现异常：{exc}")
+
+        try:
+            close = getattr(getattr(reader, "container", None), "close", None)
+            if callable(close):
+                close()
+        except Exception as exc:
+            print(f"关闭旧视频解码器时出现异常：{exc}")
+
+        try:
+            worker = getattr(reader, "worker", None)
+            if worker is not None and worker is not current_thread():
+                join = getattr(worker, "join", None)
+                if callable(join):
+                    join(timeout=self.VIDEO_READER_JOIN_TIMEOUT_SECONDS)
+                is_alive = getattr(worker, "is_alive", None)
+                if callable(is_alive) and is_alive():
+                    print("视频接收线程未及时退出；已与下一次视频会话隔离。")
+        except Exception as exc:
+            print(f"等待旧视频接收线程退出时出现异常：{exc}")
 
     def get_frame(self) -> Any:
         """Return the latest frame from the drone camera stream."""

@@ -131,13 +131,13 @@ target_search:
   reacquire_frames: 5
   # 丢失后先按最后方向寻找：水平偏航 ±25、上下 ±20。
   last_direction_yaw_speed: 25
-  # 后续各高度层偏航扫描速度和所有上下移动速度均为 ±20。
-  yaw_speed: 20
+  # 后续各高度层完整360度偏航扫描速度为 ±30；上下移动仍为 ±20。
+  yaw_speed: 30
   vertical_speed: 20
   last_direction_seconds: 2.0
   full_rotation_degrees: 360
-  # 航向遥测不可用时的保底时间；偏航指令 20 时约用 18 秒完成一圈。
-  full_rotation_fallback_seconds: 18.0
+  # 航向遥测不可用时的保底时间；偏航指令30时约用12秒完成一圈。
+  full_rotation_fallback_seconds: 12.0
   height_step_cm: 20
   min_height_cm: 80
   max_height_cm: 200

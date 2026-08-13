@@ -40,11 +40,11 @@ class TargetSearchControllerTests(unittest.TestCase):
             "hold_seconds": 1.0,
             "reacquire_frames": 5,
             "last_direction_yaw_speed": 25,
-            "yaw_speed": 20,
+            "yaw_speed": 30,
             "vertical_speed": 20,
             "last_direction_seconds": 2.0,
             "full_rotation_degrees": 360,
-            "full_rotation_fallback_seconds": 18.0,
+            "full_rotation_fallback_seconds": 12.0,
             "close_area_ratio": 0.35,
             "close_very_area_ratio": 0.40,
             "close_backward_speed": 35,
@@ -76,7 +76,7 @@ class TargetSearchControllerTests(unittest.TestCase):
 
         self.assertEqual(layer_start.state, "LAYER_SCAN_FULL")
         self.assertEqual(layer_start.command.as_tuple(), (0, 0, 0, 0))
-        self.assertEqual(first_sweep.command.yaw, 20)
+        self.assertEqual(first_sweep.command.yaw, 30)
 
     def test_ordinary_loss_holds_then_turns_toward_last_horizontal_direction(self):
         controller = self.build_controller()
@@ -206,7 +206,7 @@ class TargetSearchControllerTests(unittest.TestCase):
         layer_sweep = controller.update(LOST, 640, 480, 150, now=3.04)
 
         self.assertEqual(last_direction.command.yaw, 25)
-        self.assertEqual(layer_sweep.command.yaw, 20)
+        self.assertEqual(layer_sweep.command.yaw, 30)
 
     def test_full_rotation_uses_wrapped_yaw_telemetry_until_360_degrees(self):
         controller = self.build_controller()
@@ -224,7 +224,7 @@ class TargetSearchControllerTests(unittest.TestCase):
             LOST, 640, 480, 150, now=0.6, yaw_deg=-170
         )
 
-        self.assertTrue(all(item.command.yaw == 20 for item in decisions))
+        self.assertTrue(all(item.command.yaw == 30 for item in decisions))
         self.assertGreaterEqual(controller.rotation_progress_degrees, 360)
         self.assertEqual(completed.state, "MOVE_TO_LAYER")
         self.assertEqual(completed.command.yaw, 0)
@@ -241,8 +241,8 @@ class TargetSearchControllerTests(unittest.TestCase):
         controller._reset_rotation_tracking()
         upper = controller.update(LOST, 640, 480, 170, now=0.1, yaw_deg=0)
 
-        self.assertEqual(current.command.yaw, 20)
-        self.assertEqual(upper.command.yaw, -20)
+        self.assertEqual(current.command.yaw, 30)
+        self.assertEqual(upper.command.yaw, -30)
 
     def test_reacquisition_requires_five_consecutive_fresh_matches(self):
         controller = self.build_controller()
@@ -286,7 +286,7 @@ class TargetSearchControllerTests(unittest.TestCase):
         self.assertEqual(before, 90)
         self.assertEqual(controller.rotation_progress_degrees, 90)
         self.assertEqual(resumed.state, "LAYER_SCAN_FULL")
-        self.assertEqual(resumed.command.yaw, 20)
+        self.assertEqual(resumed.command.yaw, 30)
 
     def test_elapsed_time_alone_does_not_end_search(self):
         controller = self.build_controller()

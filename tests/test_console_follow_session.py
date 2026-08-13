@@ -701,6 +701,23 @@ class ConsoleFollowSessionTestCase(unittest.TestCase):
         self.assertEqual(drone.last_rc_command, (0, 0, 0, 0))
         self.assertEqual(session.console_state, "EMERGENCY_STOP")
 
+    def test_q_still_stops_then_lands_through_normal_cleanup(self) -> None:
+        drone = FakeDroneAdapter(verbose_rc=False)
+        drone.connect()
+        drone.takeoff()
+        safety = build_safety()
+        session = build_session(drone, safety)
+        session.airborne = True
+
+        action = session.handle_key(ord("q"))
+        session._kernel._land_and_cleanup()
+
+        self.assertEqual(action, "stop")
+        self.assertEqual(session.console_state, "STOPPED")
+        self.assertEqual(drone.last_rc_command, (0, 0, 0, 0))
+        self.assertEqual(drone.get_height(), 0)
+        self.assertFalse(session.airborne)
+
     def test_long_target_loss_enters_landing_state(self) -> None:
         drone = FakeDroneAdapter(verbose_rc=False)
         safety = build_safety()
