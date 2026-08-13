@@ -6,12 +6,6 @@ from app.config import load_config, load_runtime_config, selected_detector_type
 from app.trace import is_trace_enabled, trace_drone
 from console.command_parser import CommandParser
 from console.console_controller import ConsoleController
-from console.llm_client import (
-    DEFAULT_BASE_URL,
-    DEFAULT_MODEL,
-    DEFAULT_TIMEOUT_SECONDS,
-    LLMClient,
-)
 from console.tools import ConsoleTools
 from control.follow_control import FollowController
 from control.motion_arbiter import MotionArbiter
@@ -114,11 +108,5 @@ def build_system(
         frame_width=int(config.get("camera_width", 640)),
         frame_height=int(config.get("camera_height", 480)),
     )
-    llm_client = LLMClient(
-        base_url=str(config.get("llm_base_url", DEFAULT_BASE_URL)),
-        model=str(config.get("llm_model", DEFAULT_MODEL)),
-        timeout_seconds=float(config.get("llm_timeout_seconds", DEFAULT_TIMEOUT_SECONDS)),
-        enabled=bool(config.get("llm_enabled", False)),
-    )
-    parser = CommandParser(llm_client=llm_client)
-    return ConsoleController(tools=tools, parser=parser, llm_client=llm_client)
+    parser = CommandParser()
+    return ConsoleController(tools=tools, parser=parser)

@@ -18,7 +18,6 @@ class ImportTestCase(unittest.TestCase):
         import console.command_parser
         import console.commands
         import console.follow_session
-        import console.llm_client
         import console.tools
         import control.follow_session
         import control.follow_control
@@ -40,7 +39,6 @@ class ImportTestCase(unittest.TestCase):
         self.assertIsNotNone(console.command_parser)
         self.assertIsNotNone(console.commands)
         self.assertIsNotNone(console.follow_session)
-        self.assertIsNotNone(console.llm_client)
         self.assertIsNotNone(console.tools)
         self.assertIsNotNone(control.follow_session)
         self.assertIsNotNone(control.follow_control)

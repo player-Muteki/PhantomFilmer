@@ -4,7 +4,6 @@ from typing import Optional
 
 from console.command_parser import CommandParser
 from console.commands import ConsoleCommand
-from console.llm_client import LLMClient
 from console.tools import ConsoleTools
 
 
@@ -17,17 +16,13 @@ class ConsoleController:
         self,
         tools: ConsoleTools,
         parser: Optional[CommandParser] = None,
-        llm_client: Optional[LLMClient] = None,
     ) -> None:
         self.tools = tools
-        self.llm_client = llm_client
-        self.parser = parser or CommandParser(llm_client=llm_client)
+        self.parser = parser or CommandParser()
 
     def describe(self) -> None:
         """Describe the Console boundary and available interaction style."""
-        print("自然语言控制台已就绪：支持固定命令和自然语言任务调度，不直接执行底层实时飞控。")
-        if self.llm_client is not None and self.llm_client.enabled and not self.llm_client.is_available():
-            print("提示：已启用在线模型解析，但当前未检测到 LLM_API_KEY，将只使用本地规则解析。")
+        print("自然语言控制台已就绪：支持固定命令和本地规则任务调度，不直接执行底层实时飞控。")
 
     def run(self) -> int:
         """Run the interactive command loop."""

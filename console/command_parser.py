@@ -1,9 +1,8 @@
 """Natural-language to safe console command parsing."""
 
-from typing import Iterable, Optional
+from typing import Iterable
 
 from console.commands import ConsoleCommand
-from console.llm_client import LLMClient
 
 
 EXACT_COMMANDS = {
@@ -90,11 +89,8 @@ LOCAL_PATTERNS = (
 class CommandParser:
     """Parse user input into one whitelisted console action."""
 
-    def __init__(self, llm_client: Optional[LLMClient] = None) -> None:
-        self.llm_client = llm_client
-
     def parse(self, user_text: str) -> ConsoleCommand:
-        """Resolve an action using local rules first, then LLM fallback."""
+        """Resolve an action using local rules only."""
         normalized = user_text.strip()
         if not normalized:
             return ConsoleCommand.UNKNOWN
@@ -110,9 +106,7 @@ class CommandParser:
                     return ConsoleCommand.UNKNOWN
                 return action
 
-        if self.llm_client is None:
-            return ConsoleCommand.UNKNOWN
-        return self.llm_client.classify(normalized)
+        return ConsoleCommand.UNKNOWN
 
     def _matches_local_pattern(self, user_text: str, keywords: Iterable[str]) -> bool:
         """Return True when a keyword matches without an obvious negation."""
