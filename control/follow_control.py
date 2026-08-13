@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from typing import Dict, Optional, Tuple
 
+from app.trace import trace_call
 from drone.safety import SafetyManager
 
 
@@ -137,6 +138,7 @@ class FollowController:
             ),
         )
 
+    @trace_call
     def compute_command(
         self,
         target_result: Dict[str, object],

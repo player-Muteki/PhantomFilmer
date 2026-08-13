@@ -3,6 +3,7 @@
 from typing import Optional
 
 from app.config import load_config, load_runtime_config, selected_detector_type
+from app.trace import is_trace_enabled, trace_drone
 from console.command_parser import CommandParser
 from console.console_controller import ConsoleController
 from console.llm_client import (
@@ -59,7 +60,7 @@ def create_drone_adapter(
         vision_config = config.get("vision", {})
         if not isinstance(vision_config, dict):
             vision_config = {}
-        return FakeDroneAdapter(
+        drone: DroneAdapter = FakeDroneAdapter(
             verbose_rc=verbose_fake_rc,
             camera_width=int(config.get("camera_width", 640)),
             camera_height=int(config.get("camera_height", 480)),
@@ -77,7 +78,11 @@ def create_drone_adapter(
             ),
             target_marker_id=int(vision_config.get("target_marker_id", 23)),
         )
-    return TelloDroneAdapter()
+    else:
+        drone = TelloDroneAdapter()
+    if is_trace_enabled():
+        return trace_drone(drone)
+    return drone
 
 
 def build_system(

@@ -114,12 +114,37 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="起飞前需要连续识别成功的帧数。",
     )
+    parser.add_argument(
+        "--trace",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="开启/关闭无人机行为接口实时跟踪；未指定时运行时询问（回车默认开启）。",
+    )
+    parser.add_argument(
+        "--trace-file",
+        default=None,
+        help="行为跟踪输出文件路径；默认 logs/trace/<UTC时间戳>.jsonl。",
+    )
     return parser.parse_args()
 
 
 def main() -> int:
     """Run the selected project mode."""
     args = parse_args()
+    trace_enabled = getattr(args, "trace", False)
+    if trace_enabled is None:
+        # 命令行未显式指定 --trace/--no-trace：运行时询问，回车默认开启。
+        from app.trace import prompt_trace_enabled
+
+        trace_enabled = prompt_trace_enabled(default_enabled=True)
+        if trace_enabled is None:
+            return 0
+    if trace_enabled:
+        from app.trace import enable_trace
+
+        trace_logger = enable_trace(getattr(args, "trace_file", None))
+        print(f"行为跟踪已开启：{trace_logger.path}")
+
     obstacle_enabled = None
     if args.mode in FOLLOW_MODES:
         config = load_config()
