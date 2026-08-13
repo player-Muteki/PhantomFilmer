@@ -374,6 +374,7 @@ def run_reid_demo(
     reference_camera: int = 0,
     reference_count: int = 3,
     lock_frames: Optional[int] = None,
+    recovery_test: bool = False,
 ) -> int:
     """Load a ReID identity, take off on terminal confirmation, then follow/search."""
     selected_profile = str(profile_name or "").strip()
@@ -400,6 +401,21 @@ def run_reid_demo(
         selected_images,
         profile_name=selected_profile or None,
     )
+    if recovery_test:
+        # Test mode keeps the real flight path and configured motion limits, but
+        # forces per-frame obstacle observation and logging for reproducibility.
+        config = dict(config)
+        raw_obstacle = config.get("obstacle", {})
+        obstacle = dict(raw_obstacle) if isinstance(raw_obstacle, dict) else {}
+        obstacle.update(
+            {
+                "enabled": True,
+                "detect_every_n_frames": 1,
+                "log_enabled": True,
+            }
+        )
+        config["obstacle"] = obstacle
+        config["display_console_camera"] = True
     safety = SafetyManager.from_dict(config)
     drone = create_drone_adapter(use_fake, config=config)
     try:
@@ -442,6 +458,11 @@ def run_reid_demo(
             f"{int(config.get('base_hover_height_cm', 150))} cm，"
             "再进入 ReID 跟随；未发现目标时自动执行丢失搜索。"
         )
+        if recovery_test:
+            print(
+                "[遮挡恢复真机测试] 首次目标采集将固定方向旋转一周；"
+                "确认遮挡后执行横移→悬停 ReID→反向局部偏航→回正。"
+            )
         try:
             answer = input(
                 "确认周围及后方、上下方净空后，输入 y 起飞："
@@ -484,6 +505,45 @@ def run_reid_demo(
         return 0
     finally:
         drone.stop()
+
+
+def run_reid_recovery_test(
+    *,
+    profile_name: Optional[str] = None,
+    reference_images: Optional[Sequence[str]] = None,
+    capture_reference: bool = False,
+    reference_camera: int = 0,
+    reference_count: int = 3,
+) -> int:
+    """Run the real-aircraft ReID occlusion-recovery acceptance test.
+
+    This entry point deliberately has no fake-drone option and forces obstacle
+    avoidance on. It still delegates lifecycle, RC clamping, emergency handling,
+    and landing to the production FollowSession.
+    """
+    print("=== ReID 遮挡恢复真机专项测试 ===")
+    print("要求：桨叶保护罩；左右/后方/上下净空；一名专职急停人员。")
+    print("急停键：e；正常停止并降落：q。")
+    print("测试顺序：无目标一周扫描 → 稳定锁定 → 泡沫板遮挡 → 横移/局部扫描 → 重识别。")
+    try:
+        authorization = input(
+            "确认当前连接的是真机且测试场地已清空，输入 RECOVERY-TEST 继续："
+        ).strip()
+    except (EOFError, KeyboardInterrupt):
+        authorization = ""
+    if authorization != "RECOVERY-TEST":
+        print("已取消真机专项测试：未收到精确测试授权口令。")
+        return 0
+    return run_reid_demo(
+        use_fake=False,
+        obstacle_enabled=True,
+        reference_images=reference_images,
+        profile_name=profile_name,
+        capture_reference=capture_reference,
+        reference_camera=reference_camera,
+        reference_count=reference_count,
+        recovery_test=True,
+    )
 
 
 def run_fixed_demo(
@@ -570,6 +630,7 @@ def run_follow_dry_run(
             safety_manager=safety,
             motion_arbiter=motion_arbiter,
             mode_label="DRY_RUN",
+            config=config,
         ),
         follow_controller=controller,
         mode_label="DRY_RUN",
@@ -595,8 +656,8 @@ def run_follow_dry_run(
 
             frame_height, frame_width = frame.shape[:2]
             target_result = detector.detect(frame)
-            # 配方表（1-6）逐帧仲裁：目标丢失+障碍 → 避障接管（暂停找人）、
-            # 目标存在 → follow 期望指令经避障仲裁、目标丢失+无障碍 → 丢失悬停。
+            # 配方表逐帧仲裁：目标丢失时先被动探测障碍，只有目标记忆与
+            # 遮挡证据连续成立才做受限横移；否则进入首次采集或有界搜索。
             outcome = engine.arbitrate(
                 ArbitrationContext(
                     phase=KernelPhase.FOLLOW,
@@ -630,6 +691,8 @@ def run_follow_dry_run(
                 f"target_area={debug.target_area:.1f}, "
                 f"area_ratio={debug.area_ratio:.4f}, "
                 f"target_state={debug.target_state}, "
+                f"mission_state={outcome.state}, "
+                f"mission_reason={outcome.reason}, "
                 f"obstacle_state={(avoidance_decision.state if avoidance_decision else 'DISABLED')}, "
                 f"yaw={yaw}, "
                 f"left_right={left_right}, "
@@ -640,7 +703,7 @@ def run_follow_dry_run(
             debug_frame = detector.draw_debug(frame, target_result)
             if motion_arbiter is not None:
                 debug_frame = motion_arbiter.detector.draw_debug(debug_frame, obstacle_result)
-            cv2.rectangle(debug_frame, (12, 84), (620, 238), (0, 0, 0), -1)
+            cv2.rectangle(debug_frame, (12, 84), (630, 270), (0, 0, 0), -1)
             obstacle_line = "obstacle=DISABLED"
             if obstacle_result is not None and avoidance_decision is not None:
                 obstacle_line = (
@@ -651,6 +714,7 @@ def run_follow_dry_run(
                 f"dry-run rc: lr={left_right} fb={forward_backward} ud={up_down} yaw={yaw}",
                 f"x_err={debug.horizontal_error} x_ratio={debug.horizontal_error_ratio:.2f}",
                 f"y_err={debug.vertical_error} y_ratio={debug.vertical_error_ratio:.2f} area_ratio={debug.area_ratio:.3f}",
+                f"mission={outcome.state or '-'} {outcome.reason or '-'}",
                 obstacle_line,
                 f"target={debug.target_state} no takeoff, no move_rc, q to quit",
             )

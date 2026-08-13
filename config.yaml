@@ -59,10 +59,12 @@ maximum_yaw_speed: 35
 # ArUco 前后距离分区：0.030–0.080 悬停，区外全速调整。
 target_area_ratio_min: 0.030
 target_area_ratio_max: 0.080
-# ReID 人物距离带：人物框占画面 0.25–0.35 时保持前后距离；
+# ReID 人物距离带：人物框占画面 0.22–0.31 时保持前后距离。
+# 相比原 0.25–0.35，在约 1.5 m 标定距离附近约后移 10 cm；单目面积法只能
+# 给出近似距离，真机场地、人物身高和服装变化后仍需复测。
 # 仅 reid-demo 运行期覆盖到 shared 配置，不影响默认 ArUco 跟随。
-reid_target_area_ratio_min: 0.25
-reid_target_area_ratio_max: 0.35
+reid_target_area_ratio_min: 0.22
+reid_target_area_ratio_max: 0.31
 maximum_forward_speed: 35
 forward_speed_while_aligning: 16
 vertical_dead_zone_ratio: 0.10
@@ -72,9 +74,9 @@ target_lock_stable_frames: 15
 # 避免面积在中带边界附近波动时反复锁定/解锁。
 target_lock_exit_area_ratio_min: 0.025
 target_lock_exit_area_ratio_max: 0.085
-# ReID 锁定退出面积带比进入带（0.25–0.35）略宽：0.23–0.37 形成面积滞回。
-reid_target_lock_exit_area_ratio_min: 0.23
-reid_target_lock_exit_area_ratio_max: 0.37
+# ReID 锁定退出面积带比进入带（0.22–0.31）略宽：0.20–0.33 形成面积滞回。
+reid_target_lock_exit_area_ratio_min: 0.20
+reid_target_lock_exit_area_ratio_max: 0.33
 target_lock_exit_horizontal_dead_zone_ratio: 0.12
 target_lock_exit_vertical_dead_zone_ratio: 0.15
 control_interval: 0.05
@@ -107,6 +109,45 @@ obstacle:
   log_every_n_frames: 2
   # 每 N 帧重新跑一次避障检测（配合风险区裁剪，减少 CV 开销），中间帧复用上次观测。
   detect_every_n_frames: 2
+# 遮挡恢复不是“看见障碍就绕”：必须先稳定锁定目标，再确认障碍与目标预测框
+# 连续重合。主动动作只做低速横移脉冲，脉冲间悬停并重新运行 ReID。
+occlusion_recovery:
+  enabled: true
+  initial_lock_frames: 10
+  # 第一次稳定锁定前只沿固定方向旋转一周，不允许横移、前后或升降搜索。
+  initial_scan_yaw_speed: 20
+  initial_scan_degrees: 360
+  # yaw 遥测不可用时按 18 秒估算一周；35 秒为总安全上限。
+  initial_scan_fallback_seconds: 18.0
+  initial_acquire_timeout_seconds: 35.0
+  # 目标刚消失时先悬停观察，避免一帧漏检触发动作。
+  occlusion_check_seconds: 1.5
+  occlusion_max_age_seconds: 2.5
+  # 现场泡沫板多被全局检测器判为 CAUTION；只有面积至少 2% 且与预测目标框
+  # 连续重合时才作为遮挡证据，不会把任意小轮廓升级成主动横移。
+  occluder_min_area_ratio: 0.02
+  occlusion_overlap_ratio: 0.25
+  occluder_iou_threshold: 0.15
+  occlusion_confirm_frames: 3
+  # 已确认遮挡但左右均不安全时悬停等待，禁止退回 360° 搜索；超时后降落。
+  no_safe_route_seconds: 3.0
+  prediction_margin_ratio: 0.20
+  # Tello 横移 RC 取 25 并保持约 4 秒，名义单次位移约 1 m；不叠加前进、
+  # 升降或偏航。RC 速度不是测距闭环，实际距离须在比赛场地重新标定。
+  lateral_speed: 25
+  lateral_pulse_seconds: 4.0
+  settle_seconds: 0.55
+  # 1 m 已是大动作：每次遮挡事件最多只允许一次，防止累计到数米。
+  max_lateral_pulses: 1
+  # 每次横移和悬停仍未看见人时，朝横移反方向偏航 30°，短暂停留运行
+  # ReID，再回到原航向；不得与横移同时输出。
+  local_scan_degrees: 30
+  local_scan_yaw_speed: 20
+  local_scan_hold_seconds: 0.35
+  local_scan_fallback_seconds: 1.5
+  local_scan_return_tolerance_degrees: 3.0
+  reacquire_frames: 5
+  min_free_space_score: 0.35
 lost_target_hover_seconds: 3
 lost_target_land_seconds: 8
 # ReID 丢失目标后的有限搜索。先悬停判断；疑似距离过近时最多做两次短后退，

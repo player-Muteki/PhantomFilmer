@@ -161,6 +161,25 @@ class ObstacleCliDispatchTestCase(unittest.TestCase):
             lock_frames=12,
         )
 
+    def test_recovery_test_rejects_fake_flag(self) -> None:
+        args = argparse.Namespace(
+            mode="reid-recovery-test",
+            fake=True,
+            reference_image=None,
+            reference_dir=None,
+            profile="person-a",
+            overwrite_profile=False,
+            capture_reference=False,
+            reference_camera=0,
+            reference_count=3,
+            lock_frames=None,
+        )
+        with patch.object(main, "parse_args", return_value=args), patch.object(
+            main, "run_reid_recovery_test"
+        ) as runner:
+            self.assertEqual(main.main(), 1)
+        runner.assert_not_called()
+
     def test_reid_enroll_does_not_prompt_or_connect_drone(self) -> None:
         args = argparse.Namespace(
             mode="reid-enroll",

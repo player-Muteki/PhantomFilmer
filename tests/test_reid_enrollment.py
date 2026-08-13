@@ -114,6 +114,30 @@ def test_runtime_config_enables_reid_without_mutating_project_default(tmp_path: 
     assert "reference_images" not in original["vision"]
 
 
+def test_runtime_config_applies_farther_reid_follow_band(tmp_path: Path) -> None:
+    photo = tmp_path / "person.jpg"
+    photo.write_bytes(b"test")
+    original = {
+        "vision": {"detector_type": "aruco"},
+        "target_area_ratio_min": 0.03,
+        "target_area_ratio_max": 0.08,
+        "target_lock_exit_area_ratio_min": 0.025,
+        "target_lock_exit_area_ratio_max": 0.085,
+        "reid_target_area_ratio_min": 0.22,
+        "reid_target_area_ratio_max": 0.31,
+        "reid_target_lock_exit_area_ratio_min": 0.20,
+        "reid_target_lock_exit_area_ratio_max": 0.33,
+    }
+
+    runtime = build_reid_runtime_config(original, [photo])
+
+    assert runtime["target_area_ratio_min"] == 0.22
+    assert runtime["target_area_ratio_max"] == 0.31
+    assert runtime["target_lock_exit_area_ratio_min"] == 0.20
+    assert runtime["target_lock_exit_area_ratio_max"] == 0.33
+    assert original["target_area_ratio_min"] == 0.03
+
+
 def test_validate_reference_images_supports_repeated_and_comma_values(
     tmp_path: Path,
 ) -> None:
@@ -257,6 +281,79 @@ def test_reid_demo_terminal_y_skips_ground_lock_and_enables_search(monkeypatch) 
     assert captured["initial_target_lock_frames"] == 0
     assert captured["enable_target_search"] is True
     assert captured["ran"] is True
+
+
+def test_recovery_test_mode_forces_per_frame_obstacle_logs(monkeypatch) -> None:
+    class DirectTakeoffDrone:
+        def connect(self) -> None:
+            pass
+
+        def get_battery(self) -> int:
+            return 90
+
+        def authorize_next_takeoff(self) -> None:
+            pass
+
+        def stop(self) -> None:
+            pass
+
+    class PreparedDetector:
+        def prepare(self) -> None:
+            pass
+
+    captured: dict[str, object] = {}
+
+    class RecordingSession:
+        def __init__(self, **kwargs) -> None:
+            captured.update(kwargs)
+
+        def run(self) -> None:
+            pass
+
+    config = {
+        "min_battery_takeoff": 30,
+        "vision": {"detector_type": "aruco"},
+        "target_search": {"enabled": True},
+        "obstacle": {"enabled": False, "detect_every_n_frames": 2},
+    }
+    monkeypatch.setattr(app_modes, "load_runtime_config", lambda value: config)
+    monkeypatch.setattr(
+        app_modes, "create_drone_adapter", lambda *args, **kwargs: DirectTakeoffDrone()
+    )
+    monkeypatch.setattr(app_modes, "create_detector", lambda value: PreparedDetector())
+    monkeypatch.setattr(
+        app_modes, "build_obstacle_modules", lambda *args: (None, None, None)
+    )
+    monkeypatch.setattr(app_modes, "FollowSession", RecordingSession)
+    monkeypatch.setattr("builtins.input", lambda prompt: "y")
+
+    result = app_modes.run_reid_demo(
+        use_fake=False,
+        profile_name="person-a",
+        recovery_test=True,
+    )
+
+    runtime = captured["config"]
+    assert result == 0
+    assert runtime["obstacle"]["enabled"] is True
+    assert runtime["obstacle"]["detect_every_n_frames"] == 1
+    assert runtime["obstacle"]["log_enabled"] is True
+    assert runtime["display_console_camera"] is True
+
+
+def test_real_recovery_entry_requires_exact_authorization(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(app_modes, "run_reid_demo", lambda **kwargs: calls.append(kwargs) or 7)
+    monkeypatch.setattr("builtins.input", lambda prompt: "wrong")
+
+    assert app_modes.run_reid_recovery_test(profile_name="person-a") == 0
+    assert calls == []
+
+    monkeypatch.setattr("builtins.input", lambda prompt: "RECOVERY-TEST")
+    assert app_modes.run_reid_recovery_test(profile_name="person-a") == 7
+    assert calls[0]["use_fake"] is False
+    assert calls[0]["obstacle_enabled"] is True
+    assert calls[0]["recovery_test"] is True
 
 
 def test_window_confirmation_reuses_one_window_and_accepts_y(monkeypatch) -> None:

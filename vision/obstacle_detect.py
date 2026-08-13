@@ -190,6 +190,7 @@ class ObstacleDetector:
 
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         candidates: List[ObstacleCandidate] = []
+        accepted_contours: List[Any] = []
         for contour in contours:
             area = float(cv2.contourArea(contour))
             if area < self.minimum_obstacle_area:
@@ -201,6 +202,7 @@ class ObstacleDetector:
             overlap_area = self._box_area(overlap)
             if overlap_area <= 0:
                 continue
+            accepted_contours.append(contour)
             center = (bbox[0] + bw // 2, bbox[1] + bh // 2)
             area_ratio = area / frame_area
             coverage = overlap_area / risk_area
@@ -231,7 +233,7 @@ class ObstacleDetector:
             self._clear_frames += 1
             state = "CLEAR"
 
-        free_space = self._free_space(candidates, risk_zone, frame_width)
+        free_space = self._free_space(accepted_contours, zone_width, zone_height)
         self.last_result = ObstacleResult(
             found=best is not None,
             state=state,
@@ -331,18 +333,30 @@ class ObstacleDetector:
             points[:, :, 1] -= zone_y
             cv2.fillPoly(mask, [points], 0)
 
-    def _free_space(self, candidates: List[ObstacleCandidate], risk_zone: Box, frame_width: int) -> Dict[str, float]:
+    def _free_space(
+        self,
+        contours: List[Any],
+        zone_width: int,
+        zone_height: int,
+    ) -> Dict[str, float]:
+        """Estimate each horizontal sector from filled contour occupancy.
+
+        Bounding rectangles are intentionally not used here. A sparse or curved
+        contour can have a full-width bounding box and previously made every
+        sector appear blocked even when most pixels were free.
+        """
+        cv2 = _import_cv2()
         labels = self._sector_labels()
-        _, _, zone_width, zone_height = risk_zone
-        values = {label: 1.0 for label in labels}
-        sector_width = zone_width / len(labels)
-        for candidate in candidates:
-            x, _, width, _ = candidate.bbox
-            for index, label in enumerate(labels):
-                sector = (risk_zone[0] + int(index * sector_width), risk_zone[1], max(1, int(sector_width)), zone_height)
-                overlap = self._box_area(self._intersect_boxes(candidate.bbox, sector))
-                if overlap:
-                    values[label] = min(values[label], max(0.0, 1.0 - overlap / max(1, sector[2] * sector[3])))
+        occupancy = np.zeros((zone_height, zone_width), dtype=np.uint8)
+        if contours:
+            cv2.drawContours(occupancy, contours, -1, 255, thickness=cv2.FILLED)
+        values: Dict[str, float] = {}
+        for index, label in enumerate(labels):
+            x1 = int(round(index * zone_width / len(labels)))
+            x2 = int(round((index + 1) * zone_width / len(labels)))
+            sector = occupancy[:, x1:max(x1 + 1, x2)]
+            occupied_ratio = float(np.count_nonzero(sector)) / max(1, sector.size)
+            values[label] = max(0.0, min(1.0, 1.0 - occupied_ratio))
         return values
 
     def _sector_labels(self) -> List[str]:

@@ -6,6 +6,7 @@ state — the kernel decides who runs via the arbitration table.
 """
 
 from control.features.follow import FollowFeature
+from control.features.occlusion import OcclusionRecoveryFeature
 from control.features.obstacle import ObstacleFeature
 from control.features.safety import SafetyFeature
 from control.features.search import SearchFeature
@@ -19,6 +20,7 @@ def build_features(
     search_enabled=False,
     motion_arbiter=None,
     mode_label="FOLLOW",
+    config=None,
 ):
     """Assemble the feature registry for one session from existing controllers.
 
@@ -48,11 +50,19 @@ def build_features(
             arbiter=motion_arbiter,
             mode_label=mode_label,
         )
+    if config is not None:
+        recovery = OcclusionRecoveryFeature(
+            config=config,
+            target_search=target_search,
+        )
+        if recovery.config.enabled:
+            features["occlusion_recovery"] = recovery
     return features
 
 
 __all__ = [
     "FollowFeature",
+    "OcclusionRecoveryFeature",
     "ObstacleFeature",
     "SafetyFeature",
     "SearchFeature",

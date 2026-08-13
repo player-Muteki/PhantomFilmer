@@ -95,6 +95,17 @@ class ObstacleDetectorTestCase(unittest.TestCase):
         self.assertLess(result.free_space["far_right"], 1.0)
         self.assertGreater(left_score, right_score)
 
+    def test_sparse_full_width_bbox_does_not_zero_every_sector(self) -> None:
+        """Free space follows contour occupancy, not its oversized bounding box."""
+        frame = self.frame()
+        cv2.line(frame, (60, 60), (240, 160), (255, 255, 255), 4)
+
+        result = self.build_detector().detect(frame, {"found": False, "bbox": None})
+
+        self.assertTrue(result.found)
+        self.assertGreater(max(result.free_space.values()), 0.5)
+        self.assertGreater(sum(result.free_space.values()), 2.0)
+
     def test_bbox_and_center_are_full_frame_coordinates(self) -> None:
         detector = self.build_detector()
         frame = self.frame()

@@ -35,6 +35,7 @@ from app.modes import (
     run_follow_test,
     run_reid_demo,
     run_reid_enroll,
+    run_reid_recovery_test,
     run_safety_test,
     run_status,
 )
@@ -58,6 +59,7 @@ def parse_args() -> argparse.Namespace:
             "follow",
             "reid-enroll",
             "reid-demo",
+            "reid-recovery-test",
             "console",
         ),
         default="demo",
@@ -174,6 +176,17 @@ def main() -> int:
             reference_camera=args.reference_camera,
             reference_count=args.reference_count,
             lock_frames=args.lock_frames,
+        )
+    if args.mode == "reid-recovery-test":
+        if args.fake:
+            print("reid-recovery-test 是真机专项模式，不接受 --fake；已取消。")
+            return 1
+        return run_reid_recovery_test(
+            profile_name=args.profile,
+            reference_images=args.reference_image,
+            capture_reference=args.capture_reference,
+            reference_camera=args.reference_camera,
+            reference_count=args.reference_count,
         )
     if args.mode == "console":
         return run_console(

@@ -93,6 +93,11 @@ def _load_config_without_yaml(path: Path) -> dict:
             config["target_search"] = target_search
             continue
 
+        if raw.startswith("occlusion_recovery:"):
+            occlusion_recovery, index = _parse_flat_block(lines, index + 1)
+            config["occlusion_recovery"] = occlusion_recovery
+            continue
+
         if ":" in raw and not raw.startswith(" "):
             key, value = raw.split(":", 1)
             config[key.strip()] = _parse_config_value(value.strip())

@@ -52,6 +52,15 @@ class ObstacleFeature:
             landing_kind="obstacle_failsafe" if decision.requires_landing else "",
         )
 
+    def probe(self, ctx: ArbitrationContext, now: float) -> FeatureProposal:
+        """Observe a lost-target frame without authorizing active avoidance.
+
+        The occlusion-recovery feature consumes this observation and applies its
+        stronger target-history/overlap checks. A zero desired command keeps the
+        planner in BRAKING/HOLD instead of its legacy takeover mode.
+        """
+        return self.arbitrate(ctx, RCCommand(), now)
+
     def arbitrate(self, ctx: ArbitrationContext, desired: RCCommand, now: float) -> FeatureProposal:
         """Gate a desired autonomous command through the avoidance pipeline."""
         decision = self._arbiter.decide(

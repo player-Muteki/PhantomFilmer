@@ -140,6 +140,7 @@ class FollowSession:
             search_enabled=self.target_search_enabled,
             motion_arbiter=self.motion_arbiter,
             mode_label=self.mode_label,
+            config=self.config,
         )
         self._arbitration = ArbitrationEngine(
             features=self._features,
@@ -1168,6 +1169,10 @@ class FollowSession:
         self.last_raw_height = None
         self.last_yaw = None
         self.target_search.reset()
+        for feature in self._features.values():
+            reset_feature = getattr(feature, "reset", None)
+            if callable(reset_feature):
+                reset_feature()
         self.search_reason = ""
 
     def _read_frame(self) -> Any:
