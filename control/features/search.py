@@ -69,5 +69,9 @@ class SearchFeature:
         """Expose only the bounded too-close backoff as a higher-priority action."""
         return self._search.close_recovery_has_priority()
 
+    def horizontal_edge_exit_has_priority(self) -> bool:
+        """Expose the latched left/right-exit search above ToF avoidance."""
+        return self._search.horizontal_edge_exit_has_priority()
+
     def reset(self) -> None:
         pass

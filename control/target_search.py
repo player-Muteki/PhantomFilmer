@@ -89,6 +89,7 @@ class TargetSearchController:
         self.close_attempts = 0
         self.rotation_progress_degrees = 0.0
         self.rotation_last_yaw: Optional[float] = None
+        self.horizontal_edge_exit_active = False
         self._reacquire_tracker = TargetLockTracker(self.reacquire_frames)
 
     @property
@@ -105,6 +106,14 @@ class TargetSearchController:
             return False
         return self.close_attempts < self.close_max_attempts and self._looks_too_close()
 
+    def horizontal_edge_exit_has_priority(self) -> bool:
+        """Keep a left/right frame exit in search, ahead of all ToF avoidance."""
+        if not self.enabled or not self.has_observed_target:
+            return False
+        if self.searching:
+            return self.horizontal_edge_exit_active
+        return self._last_bbox_touches_horizontal_edge()
+
     def reset(self) -> None:
         self.state = "IDLE"
         self.phase_started_at = None
@@ -112,6 +121,7 @@ class TargetSearchController:
         self.search_height_cm = None
         self.layer_index = 0
         self.has_observed_target = False
+        self.horizontal_edge_exit_active = False
         self.close_attempts = 0
         self._reset_rotation_tracking()
         self._reacquire_tracker.reset()
@@ -183,7 +193,11 @@ class TargetSearchController:
         if self.state == "LOST_HOLD":
             if elapsed < self.hold_seconds:
                 return self._hover("brief hold")
-            if self.close_recovery_enabled and self._looks_too_close():
+            if (
+                not self.horizontal_edge_exit_active
+                and self.close_recovery_enabled
+                and self._looks_too_close()
+            ):
                 next_state = "CLOSE_BACKOFF"
             elif self.has_observed_target:
                 next_state = "SEARCH_LAST_DIRECTION"
@@ -338,6 +352,7 @@ class TargetSearchController:
         self.verification_started_at = None
         self.layer_index = 0
         self.close_attempts = 0
+        self.horizontal_edge_exit_active = self._last_bbox_touches_horizontal_edge()
         self._reset_rotation_tracking()
         self._reacquire_tracker.reset()
         self.state = "LOST_HOLD"
@@ -378,6 +393,28 @@ class TargetSearchController:
             or y <= margin_y
             or x + box_width >= width - margin_x
             or y + box_height >= height - margin_y
+        )
+
+    def _last_bbox_touches_horizontal_edge(self) -> bool:
+        """Return true only for exits through the left or right image border."""
+        if self.last_bbox is None:
+            return False
+        width, _height = self.last_frame_size
+        if width <= 0:
+            return False
+        x, _y, box_width, _box_height = self.last_bbox
+        margin_x = width * self.edge_margin_ratio
+        touches_left = x <= margin_x
+        touches_right = x + box_width >= width - margin_x
+        center_x = x + box_width / 2.0
+        # A lateral exit must touch exactly one side and have its box centre in
+        # that side's outer quarter. A huge close target can touch one/both
+        # borders while its centre remains near the image centre; that stays in
+        # the existing too-close recovery instead of being mistaken for exit.
+        return (
+            touches_left and not touches_right and center_x <= width * 0.25
+        ) or (
+            touches_right and not touches_left and center_x >= width * 0.75
         )
 
     def _yaw_decision(self, direction: int, reason: str) -> SearchDecision:

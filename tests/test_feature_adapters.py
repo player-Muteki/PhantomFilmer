@@ -96,6 +96,9 @@ class CountingSearch:
     def reset(self) -> None:
         pass
 
+    def horizontal_edge_exit_has_priority(self) -> bool:
+        return False
+
 
 class LandingSearch(CountingSearch):
     def propose(self, ctx, now):
@@ -370,6 +373,50 @@ class EngineRecipeIsolationTestCase(unittest.TestCase):
         self.assertEqual(search.calls, 0)  # 障碍接管期间搜索不被调用（计时冻结）
         self.assertEqual(outcome.state, "OBSTACLE_FIRST")
         self.assertEqual(outcome.reason, "avoiding obstacle before search")
+
+    def test_horizontal_edge_exit_search_bypasses_blocked_obstacle(self) -> None:
+        blocked = ObstacleResult(
+            found=True,
+            state="BLOCKED",
+            side="center",
+            consecutive_found_frames=3,
+            front_distance_cm=50,
+            front_distance_status="valid",
+        )
+        safety = build_safety()
+        search_controller = build_search({"hold_seconds": 0.01})
+        search_controller.observe_target(
+            {
+                "found": True,
+                "is_predicted": False,
+                "ambiguous": False,
+                "center": (620, 240),
+                "area_ratio": 0.40,
+                "bbox": (600, 40, 40, 400),
+            },
+            640,
+            480,
+            RCCommand(yaw=20),
+        )
+        search = SearchFeature(
+            target_search=search_controller,
+            safety_manager=safety,
+            follow_controller=FollowController(safety_manager=safety),
+        )
+        engine = self.build_engine([blocked], search)
+        lost_ctx = build_ctx(
+            target_result={"found": False, "center": None, "area": 0.0, "bbox": None},
+            now=0.0,
+        )
+
+        hold = engine.arbitrate(lost_ctx)
+        lost_ctx.now = 0.02
+        search_turn = engine.arbitrate(lost_ctx)
+
+        self.assertEqual(hold.command.as_tuple(), (0, 0, 0, 0))
+        self.assertEqual(search_turn.state, "SEARCH_LAST_DIRECTION")
+        self.assertGreater(search_turn.command.yaw, 0)
+        self.assertEqual(engine._obstacle._arbiter.detector.reads, 0)
 
     def test_too_close_backoff_preempts_blocked_obstacle_only_for_that_recovery(self) -> None:
         blocked = ObstacleResult(

@@ -93,6 +93,34 @@ class TargetSearchControllerTests(unittest.TestCase):
         self.assertEqual(turn.command.left_right, 0)
         self.assertEqual(turn.command.forward_backward, 0)
 
+    def test_horizontal_edge_exit_latches_search_priority(self):
+        controller = self.build_controller()
+        controller.observe_target(
+            target(center=(620, 240), area_ratio=0.20, bbox=(600, 80, 40, 320)),
+            640,
+            480,
+            RCCommand(yaw=20),
+        )
+
+        self.assertTrue(controller.horizontal_edge_exit_has_priority())
+        controller.update(LOST, 640, 480, 150, now=0.0)
+        self.assertTrue(controller.horizontal_edge_exit_active)
+        self.assertTrue(controller.horizontal_edge_exit_has_priority())
+
+        controller.reset()
+        self.assertFalse(controller.horizontal_edge_exit_has_priority())
+
+    def test_top_edge_only_does_not_activate_horizontal_exit_priority(self):
+        controller = self.build_controller()
+        controller.observe_target(
+            target(center=(320, 20), area_ratio=0.20, bbox=(260, 0, 120, 80)),
+            640,
+            480,
+            RCCommand(up_down=12),
+        )
+
+        self.assertFalse(controller.horizontal_edge_exit_has_priority())
+
     def test_vertical_position_does_not_create_a_separate_vertical_branch(self):
         controller = self.build_controller()
         result = target(center=(100, 80), area_ratio=0.20)

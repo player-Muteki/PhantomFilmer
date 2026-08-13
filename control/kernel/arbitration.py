@@ -91,6 +91,15 @@ class ArbitrationEngine:
                 self._target_ever_acquired = True
             return self._finish(first_target)
 
+        # A target that left through the left/right frame edge has an explicit
+        # visual direction.  Keep that entire reacquisition attempt in SEARCH
+        # and do not let front ToF start probing or a bypass route.
+        if (
+            not ctx.target_result.get("found")
+            and self._horizontal_edge_exit_has_priority()
+        ):
+            return self._finish(self._lost_tracking(ctx))
+
         # 唯一高于避障的目标丢失动作：视觉历史明确表明人物贴得太近时，
         # 先完成有界后退/停顿。其他所有搜索动作仍保持避障优先。
         if not ctx.target_result.get("found") and self._close_recovery_has_priority():
@@ -159,6 +168,10 @@ class ArbitrationEngine:
 
     def _close_recovery_has_priority(self) -> bool:
         checker = getattr(self._search, "close_recovery_has_priority", None)
+        return bool(checker()) if callable(checker) else False
+
+    def _horizontal_edge_exit_has_priority(self) -> bool:
+        checker = getattr(self._search, "horizontal_edge_exit_has_priority", None)
         return bool(checker()) if callable(checker) else False
 
     def _finish(
