@@ -62,5 +62,5 @@ MPLCONFIGDIR=.matplotlib YOLO_CONFIG_DIR=.ultralytics \
   .venv-reid/bin/python tools/reid_offline_eval.py
 ```
 
-配置示例见 `config.reid.offline-snippet.yaml`，已验证结果见 `docs/reid_test/`。
+配置示例见 `config.reid.offline-snippet.yaml`。
 示例阈值只用于离线标定，不得直接授权真机飞行。
