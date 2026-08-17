@@ -12,15 +12,48 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 
+from vision.debug_overlay import BoxAnnotation, draw_box_annotations
 from vision.detector_protocol import DetectionResult
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_VISUAL_OBJECT_CLASSES = (
+    "bicycle",
+    "car",
+    "motorcycle",
+    "bus",
+    "truck",
+    "bench",
+    "chair",
+    "couch",
+    "suitcase",
+    "backpack",
+)
+VISUAL_OBJECT_LABELS = {
+    "bicycle": "自行车",
+    "car": "汽车",
+    "motorcycle": "摩托车",
+    "bus": "公交车",
+    "truck": "卡车",
+    "bench": "长椅",
+    "chair": "椅子",
+    "couch": "沙发",
+    "suitcase": "行李箱",
+    "backpack": "背包",
+}
 
 
 class UltralyticsPersonDetector:
-    """Return person bounding boxes from an Ultralytics detection model."""
+    """Return person boxes and optional visual object boxes."""
 
-    def __init__(self, model_path: str, confidence: float, device: str) -> None:
+    def __init__(
+        self,
+        model_path: str,
+        confidence: float,
+        device: str,
+        visual_object_detection_enabled: bool = False,
+        visual_object_confidence: float = 0.35,
+        visual_object_classes: Sequence[str] = DEFAULT_VISUAL_OBJECT_CLASSES,
+    ) -> None:
         # RoboMaster TT / Tello Wi-Fi normally has no internet access.  Without
         # this hint, Ultralytics performs an online-status DNS lookup while it
         # is imported and macOS can wait about a minute for that lookup to time
@@ -35,31 +68,76 @@ class UltralyticsPersonDetector:
         self.model = YOLO(model_path)
         self.confidence = confidence
         self.device = device
+        self.visual_object_detection_enabled = bool(visual_object_detection_enabled)
+        self.visual_object_confidence = visual_object_confidence
+        self.visual_object_classes = {
+            str(value).strip().lower()
+            for value in visual_object_classes
+            if str(value).strip()
+        }
 
     def detect_people(self, frame: Any) -> List[DetectionResult]:
+        return self.detect_scene(frame)["people"]
+
+    def detect_scene(self, frame: Any) -> Dict[str, List[DetectionResult]]:
+        confidence = (
+            min(self.confidence, self.visual_object_confidence)
+            if self.visual_object_detection_enabled
+            else self.confidence
+        )
         results = self.model.predict(
             source=frame,
-            classes=[0],
-            conf=self.confidence,
+            classes=None if self.visual_object_detection_enabled else [0],
+            conf=confidence,
             device=self.device,
             verbose=False,
         )
         people: List[DetectionResult] = []
+        visual_objects: List[DetectionResult] = []
         if not results:
-            return people
+            return {"people": people, "visual_objects": visual_objects}
         boxes = getattr(results[0], "boxes", None)
         if boxes is None:
-            return people
+            return {"people": people, "visual_objects": visual_objects}
         xyxy_values = boxes.xyxy.detach().cpu().numpy()
         confidence_values = boxes.conf.detach().cpu().numpy()
-        for xyxy, confidence in zip(xyxy_values, confidence_values):
-            people.append(
-                {
-                    "bbox_xyxy": tuple(float(value) for value in xyxy[:4]),
-                    "confidence": float(confidence),
-                }
-            )
-        return people
+        class_values = getattr(boxes, "cls", None)
+        if class_values is not None:
+            class_values = class_values.detach().cpu().numpy()
+        else:
+            class_values = np.zeros(len(xyxy_values), dtype=np.float32)
+        for xyxy, confidence_value, class_value in zip(
+            xyxy_values, confidence_values, class_values
+        ):
+            class_id = int(class_value)
+            class_name = self._class_name(class_id)
+            confidence_float = float(confidence_value)
+            detection = {
+                "bbox_xyxy": tuple(float(value) for value in xyxy[:4]),
+                "confidence": confidence_float,
+                "class_id": class_id,
+                "class_name": class_name,
+            }
+            if class_id == 0:
+                if confidence_float >= self.confidence:
+                    people.append(detection)
+            elif (
+                self.visual_object_detection_enabled
+                and confidence_float >= self.visual_object_confidence
+                and class_name.lower() in self.visual_object_classes
+            ):
+                detection["display_label"] = _visual_object_label(class_name)
+                visual_objects.append(detection)
+        return {"people": people, "visual_objects": visual_objects}
+
+    def _class_name(self, class_id: int) -> str:
+        names = getattr(self.model, "names", {})
+        if isinstance(names, dict):
+            return str(names.get(class_id, class_id))
+        if isinstance(names, (list, tuple)) and 0 <= class_id < len(names):
+            return str(names[class_id])
+        return str(class_id)
+
 
 
 class TorchreidFeatureExtractor:
@@ -111,6 +189,9 @@ class PersonReIDDetector:
         temporary_lost_frames: int = 0,
         target_area_ratio_min: float = 0.03,
         target_area_ratio_max: float = 0.08,
+        visual_object_detection_enabled: bool = False,
+        visual_object_confidence: float = 0.35,
+        visual_object_classes: Sequence[str] = DEFAULT_VISUAL_OBJECT_CLASSES,
         person_detector: Optional[Any] = None,
         feature_extractor: Optional[Any] = None,
         reference_features: Optional[Any] = None,
@@ -129,6 +210,16 @@ class PersonReIDDetector:
         if self.target_area_ratio_max <= self.target_area_ratio_min:
             self.target_area_ratio_min = 0.03
             self.target_area_ratio_max = 0.08
+        self.visual_object_detection_enabled = bool(visual_object_detection_enabled)
+        self.visual_object_confidence = _clamp_float(
+            visual_object_confidence, 0.01, 1.0, 0.35
+        )
+        self.visual_object_classes = tuple(
+            str(value).strip().lower()
+            for value in visual_object_classes
+            if str(value).strip()
+        )
+        self._last_visual_objects: List[DetectionResult] = []
         self._person_detector = person_detector
         self._feature_extractor = feature_extractor
         self._reference_feature: Optional[np.ndarray] = None
@@ -157,6 +248,15 @@ class PersonReIDDetector:
             reid_model_name=str(cfg.get("reid_model_name", "osnet_x0_25")),
             reid_model_path=str(cfg.get("reid_model_path", "")),
             device=str(cfg.get("reid_device", "cpu")),
+            visual_object_detection_enabled=_safe_bool(
+                cfg.get("visual_object_detection_enabled"), False
+            ),
+            visual_object_confidence=_safe_float(
+                cfg.get("visual_object_confidence"), 0.35
+            ),
+            visual_object_classes=_parse_string_list(
+                cfg.get("visual_object_classes", DEFAULT_VISUAL_OBJECT_CLASSES)
+            ),
             detection_confidence=_safe_float(cfg.get("person_detection_confidence"), 0.45),
             similarity_threshold=_safe_float(cfg.get("reid_similarity_threshold"), 0.65),
             ambiguity_margin=_safe_float(cfg.get("reid_ambiguity_margin"), 0.05),
@@ -170,7 +270,9 @@ class PersonReIDDetector:
         if not _valid_frame(frame):
             return self._empty_result(similarity_threshold=self.similarity_threshold)
         self._ensure_ready()
-        detections = self._person_detector.detect_people(frame)
+        scene = self._detect_scene(frame)
+        self._last_visual_objects = list(scene["visual_objects"])
+        detections = scene["people"]
         candidates = self._prepare_candidates(frame, detections)
         if not candidates:
             return self._handle_not_found()
@@ -189,6 +291,8 @@ class PersonReIDDetector:
                 "distance_state": self._distance_state(
                     float(candidate[0][2] * candidate[0][3]) / frame_area
                 ),
+                "role": "unclassified",
+                "display_label": "人物",
             }
             for candidate, similarity in zip(candidates, similarities)
         ]
@@ -197,12 +301,14 @@ class PersonReIDDetector:
         best_similarity = float(similarities[best_index])
         second_similarity = float(similarities[int(order[1])]) if len(order) > 1 else -1.0
         if best_similarity < self.similarity_threshold:
+            self._set_candidate_roles(candidate_diagnostics, "non_target")
             return self._handle_not_found(
                 best_similarity=best_similarity,
                 second_similarity=second_similarity if len(order) > 1 else None,
                 candidate_diagnostics=candidate_diagnostics,
             )
         if len(order) > 1 and best_similarity - second_similarity < self.ambiguity_margin:
+            self._set_candidate_roles(candidate_diagnostics, "ambiguous")
             return self._handle_not_found(
                 best_similarity=best_similarity,
                 second_similarity=second_similarity,
@@ -210,6 +316,7 @@ class PersonReIDDetector:
                 candidate_diagnostics=candidate_diagnostics,
             )
 
+        self._set_candidate_roles(candidate_diagnostics, "non_target", best_index)
         x, y, width, height = candidates[best_index][0]
         center = (x + width // 2, y + height // 2)
         result: DetectionResult = {
@@ -227,6 +334,7 @@ class PersonReIDDetector:
             "ambiguous": False,
             "candidate_count": len(candidates),
             "candidates": candidate_diagnostics,
+            "visual_objects": list(self._last_visual_objects),
             "similarity_threshold": self.similarity_threshold,
         }
         self._lost_count = 0
@@ -258,6 +366,7 @@ class PersonReIDDetector:
         cv2.line(debug, (0, frame_center[1]), (width, frame_center[1]), (255, 0, 0), 1)
         accepted_bbox = result.get("bbox") if result.get("found") else None
         candidate_diagnostics = result.get("candidates") or []
+        annotations: List[BoxAnnotation] = []
         accepted_box_drawn = False
         for index, candidate in enumerate(candidate_diagnostics, start=1):
             bbox = candidate.get("bbox")
@@ -266,23 +375,40 @@ class PersonReIDDetector:
             x, y, box_width, box_height = (int(value) for value in bbox)
             accepted = accepted_bbox is not None and tuple(bbox) == tuple(accepted_bbox)
             accepted_box_drawn = accepted_box_drawn or accepted
-            color = (0, 255, 0) if accepted else (0, 165, 255)
-            cv2.rectangle(debug, (x, y), (x + box_width, y + box_height), color, 2)
             similarity = candidate.get("similarity")
             similarity_text = "N/A" if similarity is None else f"{float(similarity):.3f}"
             area_ratio = float(candidate.get("area_ratio") or 0.0)
             distance_state = str(candidate.get("distance_state") or "N/A")
-            cv2.putText(
-                debug,
-                f"#{index} ReID={similarity_text} AREA={area_ratio:.3f} {distance_state}",
-                (max(0, x), max(20, y - 8)),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.5,
-                color,
-                2,
+            role = str(candidate.get("role") or "unclassified")
+            display_label = str(candidate.get("display_label") or "人物")
+            color = (0, 255, 0) if role == "target" else (0, 165, 255)
+            if role == "ambiguous":
+                color = (0, 255, 255)
+            annotations.append(
+                BoxAnnotation(
+                    (x, y, box_width, box_height),
+                    f"{display_label} {similarity_text}",
+                    color,
+                )
+            )
+            accepted_box_drawn = accepted_box_drawn or accepted
+
+        for visual_object in result.get("visual_objects") or []:
+            bbox = visual_object.get("bbox_xyxy")
+            if bbox is None or len(bbox) != 4:
+                continue
+            x1, y1, x2, y2 = (int(round(float(value))) for value in bbox)
+            object_label = str(visual_object.get("display_label") or "视觉物体")
+            annotations.append(
+                BoxAnnotation(
+                    (x1, y1, max(1, x2 - x1), max(1, y2 - y1)),
+                    object_label,
+                    (0, 0, 255),
+                )
             )
 
-        # Compatibility fallback for injected/custom results without diagnostics.
+        debug = draw_box_annotations(debug, annotations)
+
         if result.get("found") and not accepted_box_drawn:
             x, y, box_width, box_height = result["bbox"]
             color = (0, 180, 255) if result.get("is_predicted") else (0, 255, 0)
@@ -294,7 +420,7 @@ class PersonReIDDetector:
         threshold = float(result.get("similarity_threshold", self.similarity_threshold))
         cv2.putText(
             debug,
-            f"YOLO people={candidate_count} best={best_text} threshold={threshold:.3f}",
+            f"YOLO people={candidate_count} objects={len(result.get('visual_objects') or [])} best={best_text} threshold={threshold:.3f}",
             (20, 28),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.55,
@@ -344,8 +470,35 @@ class PersonReIDDetector:
         return "OK"
 
     def reset(self) -> None:
+        self._last_visual_objects = []
         self._lost_count = 0
         self._last_valid_result = None
+
+    def _detect_scene(self, frame: Any) -> Dict[str, List[DetectionResult]]:
+        if self._person_detector is not None and hasattr(
+            self._person_detector, "detect_scene"
+        ):
+            return self._person_detector.detect_scene(frame)
+        return {
+            "people": self._person_detector.detect_people(frame),
+            "visual_objects": [],
+        }
+
+    def _set_candidate_roles(
+        self,
+        diagnostics: List[Dict[str, object]],
+        role: str,
+        target_index: Optional[int] = None,
+    ) -> None:
+        labels = {
+            "target": "目标人物",
+            "non_target": "非目标人物",
+            "ambiguous": "身份未确认",
+        }
+        for index, candidate in enumerate(diagnostics):
+            candidate_role = "target" if target_index == index else role
+            candidate["role"] = candidate_role
+            candidate["display_label"] = labels.get(candidate_role, "人物")
 
     def _ensure_ready(self) -> None:
         prepare_started = perf_counter()
@@ -357,6 +510,9 @@ class PersonReIDDetector:
                 self.detector_model_path,
                 self.detection_confidence,
                 self.device,
+                self.visual_object_detection_enabled,
+                self.visual_object_confidence,
+                self.visual_object_classes,
             )
             print(f"ReID 准备 1/3 完成：{perf_counter() - step_started:.2f} 秒")
             initialized_component = True
@@ -456,15 +612,17 @@ class PersonReIDDetector:
             predicted["similarity"] = best_similarity
             predicted["second_similarity"] = second_similarity
             predicted["ambiguous"] = ambiguous
-            predicted["similarity_threshold"] = self.similarity_threshold
+            predicted["visual_objects"] = list(self._last_visual_objects)
             return predicted
-        return self._empty_result(
+        result = self._empty_result(
             best_similarity,
             second_similarity,
             ambiguous,
             diagnostics,
             self.similarity_threshold,
         )
+        result["visual_objects"] = list(self._last_visual_objects)
+        return result
 
     @staticmethod
     def _empty_result(
@@ -489,6 +647,7 @@ class PersonReIDDetector:
             "ambiguous": ambiguous,
             "candidate_count": len(diagnostics),
             "candidates": diagnostics,
+            "visual_objects": [],
             "similarity_threshold": similarity_threshold,
         }
 
@@ -514,6 +673,29 @@ class PersonReIDDetector:
         if np.any(norms <= 1e-12):
             raise RuntimeError("ReID 模型返回了零向量。")
         return values / norms
+
+
+def _visual_object_label(class_name: str) -> str:
+    display_name = VISUAL_OBJECT_LABELS.get(class_name.lower(), class_name)
+    return f"障碍物候选：{display_name}"
+
+
+def _parse_string_list(value: Any) -> List[str]:
+    if isinstance(value, (list, tuple)):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return [item.strip() for item in str(value or "").split(",") if item.strip()]
+
+
+def _safe_bool(value: Any, default: bool) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "y", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "n", "off"}:
+            return False
+    return default
 
 
 def _parse_reference_images(value: Any) -> List[str]:

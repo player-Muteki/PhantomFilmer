@@ -9,6 +9,8 @@ from dataclasses import dataclass, field
 from time import monotonic
 from typing import Any, Dict, List, Optional, Tuple
 
+from vision.debug_overlay import draw_status_label
+
 
 Box = Tuple[int, int, int, int]
 
@@ -131,8 +133,16 @@ class DistanceOnlyObstacleDetector:
         return self.last_result
 
     def draw_debug(self, frame: Any, result: Optional[ObstacleResult]) -> Any:
-        del result
-        return frame
+        if result is None or (not result.found and result.state == "CLEAR"):
+            return frame
+        distance = (
+            ""
+            if result.front_distance_cm is None
+            else f" {result.front_distance_cm:.0f}cm"
+        )
+        state = "障碍物（ToF）" if result.found else f"ToF {result.state}"
+        color = (0, 0, 255) if result.found else (0, 165, 255)
+        return draw_status_label(frame, f"{state}{distance}", color, top=84)
 
     def reset(self) -> None:
         self.last_result = ObstacleResult()

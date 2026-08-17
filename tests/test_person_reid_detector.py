@@ -36,6 +36,44 @@ class FakeYOLO:
         self.model_path = model_path
 
 
+class FakeSceneYOLO:
+    names = {0: "person", 56: "chair", 2: "car"}
+
+    def __init__(self, model_path):
+        self.model_path = model_path
+        self.calls = []
+
+    def predict(self, **kwargs):
+        self.calls.append(kwargs)
+        values = SimpleNamespace(
+            xyxy=SimpleNamespace(
+                detach=lambda: SimpleNamespace(
+                    cpu=lambda: SimpleNamespace(
+                        numpy=lambda: np.array(
+                            [[5, 10, 35, 90], [40, 20, 90, 80], [10, 30, 50, 70]],
+                            dtype=np.float32,
+                        )
+                    )
+                )
+            ),
+            conf=SimpleNamespace(
+                detach=lambda: SimpleNamespace(
+                    cpu=lambda: SimpleNamespace(
+                        numpy=lambda: np.array([0.9, 0.8, 0.2], dtype=np.float32)
+                    )
+                )
+            ),
+            cls=SimpleNamespace(
+                detach=lambda: SimpleNamespace(
+                    cpu=lambda: SimpleNamespace(
+                        numpy=lambda: np.array([0, 56, 2], dtype=np.float32)
+                    )
+                )
+            ),
+        )
+        return [SimpleNamespace(boxes=values)]
+
+
 def build_detector(detections, features, **kwargs):
     return PersonReIDDetector(
         reference_image_paths=[],
@@ -68,6 +106,24 @@ class PersonReIDDetectorTestCase(unittest.TestCase):
                 UltralyticsPersonDetector("local.pt", 0.5, "cpu")
             self.assertEqual(os.environ["YOLO_OFFLINE"], "0")
 
+    def test_yolo_scene_detection_separates_people_and_visual_objects(self):
+        fake_ultralytics = SimpleNamespace(YOLO=FakeSceneYOLO)
+        with patch.dict(sys.modules, {"ultralytics": fake_ultralytics}):
+            detector = UltralyticsPersonDetector(
+                "local.pt",
+                0.45,
+                "cpu",
+                visual_object_detection_enabled=True,
+                visual_object_confidence=0.35,
+                visual_object_classes=("chair", "car"),
+            )
+            scene = detector.detect_scene(self.frame)
+
+        self.assertEqual(len(scene["people"]), 1)
+        self.assertEqual(len(scene["visual_objects"]), 1)
+        self.assertEqual(scene["visual_objects"][0]["display_label"], "障碍物候选：椅子")
+        self.assertIsNone(detector.model.calls[0]["classes"])
+
     def test_selects_person_with_best_reference_similarity(self):
         detector = build_detector(
             [
@@ -82,6 +138,8 @@ class PersonReIDDetectorTestCase(unittest.TestCase):
         self.assertEqual(result["center"], (85, 55))
         self.assertGreater(result["similarity"], 0.99)
         self.assertEqual(result["candidate_count"], 2)
+        self.assertEqual(result["candidates"][0]["display_label"], "非目标人物")
+        self.assertEqual(result["candidates"][1]["display_label"], "目标人物")
 
     def test_below_threshold_is_rejected(self):
         detector = build_detector(
@@ -123,25 +181,27 @@ class PersonReIDDetectorTestCase(unittest.TestCase):
             similarity_threshold=0.9,
         )
         result = detector.detect(self.frame)
-        rectangles = []
+        annotations = []
         labels = []
         fake_cv2 = SimpleNamespace(
             FONT_HERSHEY_SIMPLEX=0,
             line=lambda *args, **kwargs: None,
-            rectangle=lambda *args, **kwargs: rectangles.append(args),
             putText=lambda image, label, *args, **kwargs: labels.append(label),
         )
 
-        with patch.dict(sys.modules, {"cv2": fake_cv2}):
+        def capture_annotations(frame, values):
+            annotations.extend(list(values))
+            return frame
+
+        with patch.dict(sys.modules, {"cv2": fake_cv2}), patch(
+            "vision.person_reid_detect.draw_box_annotations",
+            side_effect=capture_annotations,
+        ):
             detector.draw_debug(self.frame, result)
 
-        self.assertEqual(len(rectangles), 2)
-        self.assertTrue(any("#1 ReID=" in label and "AREA=" in label for label in labels))
-        self.assertTrue(any("#2 ReID=" in label and "AREA=" in label for label in labels))
-        self.assertTrue(
-            any("YOLO people=2" in label and "threshold=0.900" in label for label in labels)
-        )
-        self.assertTrue(any(label.startswith("ReID BELOW THRESHOLD") for label in labels))
+        self.assertEqual(len(annotations), 2)
+        self.assertTrue(any(item.label == "非目标人物 0.800" for item in annotations))
+        self.assertTrue(any(item.label == "非目标人物 0.600" for item in annotations))
 
     def test_candidate_area_ratio_uses_follow_distance_thresholds(self):
         detector = build_detector(

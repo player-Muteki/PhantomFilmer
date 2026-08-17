@@ -1,7 +1,8 @@
 import unittest
+from unittest.mock import patch
 
 from drone.front_tof import FrontToFMonitor
-from vision.obstacle_detect import DistanceOnlyObstacleDetector
+from vision.obstacle_detect import DistanceOnlyObstacleDetector, ObstacleResult
 
 
 class FakeFrontDrone:
@@ -39,6 +40,27 @@ class FrontToFMonitorTestCase(unittest.TestCase):
         sample = monitor.snapshot()
         self.assertEqual(sample.status, "out_of_range")
         self.assertIsNone(sample.distance_cm)
+
+    def test_blocked_obstacle_draws_tof_status_label(self) -> None:
+        result = ObstacleResult(
+            found=True,
+            state="BLOCKED",
+            front_distance_cm=50.0,
+        )
+        frame = object()
+        with patch(
+            "vision.obstacle_detect.draw_status_label",
+            return_value="rendered",
+        ) as draw_status:
+            rendered = DistanceOnlyObstacleDetector().draw_debug(frame, result)
+
+        self.assertEqual(rendered, "rendered")
+        draw_status.assert_called_once_with(
+            frame,
+            "障碍物（ToF） 50cm",
+            (0, 0, 255),
+            top=84,
+        )
 
     def test_blocked_counter_counts_sensor_samples(self) -> None:
         monitor = FrontToFMonitor(FakeFrontDrone([60.0, 59.0]), blocked_distance_cm=60)

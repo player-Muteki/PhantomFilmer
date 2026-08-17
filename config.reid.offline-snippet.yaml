@@ -11,3 +11,6 @@ vision:
   reid_similarity_threshold: 0.60
   reid_ambiguity_margin: 0.05
   reid_temporary_lost_frames: 0
+  visual_object_detection_enabled: false
+  visual_object_confidence: 0.35
+  visual_object_classes: "bicycle,car,motorcycle,bus,truck,bench,chair,couch,suitcase,backpack"

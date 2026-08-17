@@ -121,6 +121,8 @@ curl -L https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo11n.p
 从 `yolov8n.pt` 切换到 `yolo11n.pt` 后，已有 ReID 档案会因行人检测权重哈希变化
 而被拒绝加载，这是预期的安全行为；请使用新权重重新执行 `reid-enroll`。
 
+人物框默认显示目标角色标签。若要在 ReID 画面中额外显示车辆、椅子、背包等视觉障碍候选，先完成 CPU 性能测试，再将 `config.yaml` 中的 `vision.visual_object_detection_enabled` 改为 `true`；这些框只用于屏幕提示，不参与飞控避障。
+
 先使用不发送飞控指令的模式验证：
 
 ```bash

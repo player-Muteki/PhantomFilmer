@@ -43,6 +43,10 @@ vision:
   reid_ambiguity_margin: 0.05
   # 真机初测保持为 0：未确认身份时立即视为丢失并悬停。
   reid_temporary_lost_frames: 0
+  # 视觉物体框只用于屏幕提示，不参与飞控避障；先关闭并完成 CPU 性能测试。
+  visual_object_detection_enabled: false
+  visual_object_confidence: 0.35
+  visual_object_classes: "bicycle,car,motorcycle,bus,truck,bench,chair,couch,suitcase,backpack"
 # 旧版地面锁定流程的兼容参数；当前 reid-demo 直接由命令行 y 授权起飞，不使用。
 reid_lock_stable_frames: 10
 reid_lock_timeout_seconds: 30
