@@ -15,7 +15,7 @@ from vision.reid_profiles import (
 
 
 def build_config(tmp_path: Path) -> dict[str, object]:
-    yolo = tmp_path / "yolov8n.pt"
+    yolo = tmp_path / "yolo11n.pt"
     osnet = tmp_path / "osnet.pth"
     yolo.write_bytes(b"yolo-v1")
     osnet.write_bytes(b"osnet-v1")

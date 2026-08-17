@@ -148,7 +148,7 @@ def _current_model_info(config: dict[str, object]) -> dict[str, str]:
         str(cfg.get("reid_model_path", "weights/osnet_x0_25_msmt17.pth"))
     )
     detector_model_path = _resolve_project_path(
-        str(cfg.get("person_detector_model", "weights/yolov8n.pt"))
+        str(cfg.get("person_detector_model", "weights/yolo11n.pt"))
     )
     for label, path in (
         ("ReID", reid_model_path),

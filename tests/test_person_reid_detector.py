@@ -214,6 +214,7 @@ class PersonReIDDetectorTestCase(unittest.TestCase):
             }
         )
         self.assertEqual(detector.reference_image_paths, ["front.jpg", "side.jpg"])
+        self.assertEqual(detector.detector_model_path, "weights/yolo11n.pt")
         self.assertEqual(detector.similarity_threshold, 0.72)
         self.assertEqual(detector.ambiguity_margin, 0.08)
 

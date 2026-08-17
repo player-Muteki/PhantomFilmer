@@ -103,11 +103,23 @@ bash scripts/setup_reid_env.sh python3
 模型权重、人物照片和数据集不会提交到 Git。所需材料和校验方式见 [docs/06-配置测试与源码索引.md 第 4 节](docs/06-配置测试与源码索引.md#4-依赖与本地数据)，ReID 模型加载与档案校验见 [docs/03-视觉感知与目标跟随.md](docs/03-视觉感知与目标跟随.md)。配置示例见 `config.reid.offline-snippet.yaml`。典型本地文件包括：
 
 ```text
-weights/yolov8n.pt
+weights/yolo11n.pt
 weights/osnet_x0_25_msmt17.pth
 data/reid_target/front.jpg
 data/reid_target/side.jpg
 ```
+
+项目默认使用 COCO 预训练 YOLO11n。程序在飞行现场设置 `YOLO_OFFLINE=1`，
+因此首次运行前需在可联网环境下载官方权重：
+
+```bash
+mkdir -p weights
+curl -L https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo11n.pt \
+  -o weights/yolo11n.pt
+```
+
+从 `yolov8n.pt` 切换到 `yolo11n.pt` 后，已有 ReID 档案会因行人检测权重哈希变化
+而被拒绝加载，这是预期的安全行为；请使用新权重重新执行 `reid-enroll`。
 
 先使用不发送飞控指令的模式验证：
 

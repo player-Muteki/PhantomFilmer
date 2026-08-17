@@ -101,7 +101,7 @@ class PersonReIDDetector:
     def __init__(
         self,
         reference_image_paths: Sequence[str],
-        detector_model_path: str = "weights/yolov8n.pt",
+        detector_model_path: str = "weights/yolo11n.pt",
         reid_model_name: str = "osnet_x0_25",
         reid_model_path: str = "",
         device: str = "cpu",
@@ -152,7 +152,7 @@ class PersonReIDDetector:
         return cls(
             reference_image_paths=reference_images,
             detector_model_path=str(
-                cfg.get("person_detector_model", "weights/yolov8n.pt")
+                cfg.get("person_detector_model", "weights/yolo11n.pt")
             ),
             reid_model_name=str(cfg.get("reid_model_name", "osnet_x0_25")),
             reid_model_path=str(cfg.get("reid_model_path", "")),
