@@ -12,8 +12,8 @@ import numpy as np
 from control.follow_control import RCCommand
 from control.motion_arbiter import MotionArbiter, MotionContext
 from control.obstacle_avoidance import ObstacleAvoidancePlanner
-from drone.safety import SafetyManager
 from drone.front_tof import FrontToFSnapshot
+from drone.safety import SafetyManager
 from vision.obstacle_detect import ObstacleResult
 
 
@@ -44,7 +44,10 @@ class StubDetector:
 class MotionArbiterTestCase(unittest.TestCase):
     @staticmethod
     def front_sample(
-        distance_cm: Optional[float], *, status: str = "valid", count: int = 3,
+        distance_cm: Optional[float],
+        *,
+        status: str = "valid",
+        count: int = 3,
         sequence: int = 1,
     ):
         return FrontToFSnapshot(
@@ -61,7 +64,12 @@ class MotionArbiterTestCase(unittest.TestCase):
         arbiter = MotionArbiter(
             detector=StubDetector(ObstacleResult(found=False, state="CLEAR")),
             planner=ObstacleAvoidancePlanner(safety_manager=safety),
-            config={"obstacle": {"front_tof_enabled": True, "front_tof_blocked_distance_cm": 60}},
+            config={
+                "obstacle": {
+                    "front_tof_enabled": True,
+                    "front_tof_blocked_distance_cm": 60,
+                }
+            },
         )
         arbiter.set_front_tof_provider(lambda: self.front_sample(60.0))
 
@@ -74,14 +82,19 @@ class MotionArbiterTestCase(unittest.TestCase):
         self.assertEqual(decision.observation.front_distance_cm, 60.0)
         self.assertIn(decision.state, {"AVOIDING", "SCAN"})
 
-    def test_front_tof_above_60_cm_does_not_increase_visual_risk(self) -> None:
+    def test_front_tof_above_caution_distance_stays_clear(self) -> None:
         safety = build_safety()
         arbiter = MotionArbiter(
             detector=StubDetector(ObstacleResult(found=False, state="CLEAR")),
             planner=ObstacleAvoidancePlanner(safety_manager=safety),
-            config={"obstacle": {"front_tof_enabled": True, "front_tof_blocked_distance_cm": 60}},
+            config={
+                "obstacle": {
+                    "front_tof_enabled": True,
+                    "front_tof_blocked_distance_cm": 60,
+                }
+            },
         )
-        arbiter.set_front_tof_provider(lambda: self.front_sample(60.1, count=0))
+        arbiter.set_front_tof_provider(lambda: self.front_sample(100.1, count=0))
 
         decision = arbiter.decide(
             RCCommand(0, 20, 0, 0), object(), MotionContext("test", {"found": True})
@@ -91,6 +104,177 @@ class MotionArbiterTestCase(unittest.TestCase):
         self.assertFalse(arbiter.last_observation.found)
         self.assertEqual(decision.state, "CLEAR")
         self.assertEqual(decision.command.forward_backward, 20)
+
+    def test_ir_caution_stops_positive_forward_motion(self) -> None:
+        safety = build_safety()
+        arbiter = MotionArbiter(
+            detector=StubDetector(ObstacleResult(found=False, state="CLEAR")),
+            planner=ObstacleAvoidancePlanner(safety_manager=safety),
+            config={
+                "obstacle": {
+                    "front_tof_enabled": True,
+                    "front_tof_blocked_distance_cm": 60,
+                    "front_tof_caution_distance_cm": 100,
+                }
+            },
+        )
+        arbiter.set_front_tof_provider(lambda: self.front_sample(80.0, count=0))
+
+        decision = arbiter.decide(
+            RCCommand(0, 20, 0, 0),
+            np.zeros((480, 640, 3), dtype=np.uint8),
+            MotionContext("test", {"found": True}),
+        )
+
+        self.assertEqual(arbiter.last_fused_state.state, "IR_CAUTION")
+        self.assertEqual(decision.state, "IR_CAUTION")
+        self.assertEqual(decision.command.forward_backward, 0)
+
+    def test_out_of_range_does_not_start_avoidance(self) -> None:
+        safety = build_safety()
+        arbiter = MotionArbiter(
+            detector=StubDetector(ObstacleResult(found=False, state="CLEAR")),
+            planner=ObstacleAvoidancePlanner(safety_manager=safety),
+            config={"obstacle": {"front_tof_enabled": True}},
+        )
+        arbiter.set_front_tof_provider(
+            lambda: self.front_sample(None, status="out_of_range", count=0)
+        )
+
+        decision = arbiter.decide(
+            RCCommand(0, 20, 0, 0),
+            np.zeros((480, 640, 3), dtype=np.uint8),
+            MotionContext("test", {"found": True}),
+        )
+
+        self.assertEqual(arbiter.last_fused_state.state, "CLEAR")
+        self.assertEqual(decision.state, "CLEAR")
+        self.assertEqual(decision.command.forward_backward, 20)
+
+    def test_visual_caution_preserves_backward_motion(self) -> None:
+        safety = build_safety()
+        arbiter = MotionArbiter(
+            detector=StubDetector(ObstacleResult(found=False, state="CLEAR")),
+            planner=ObstacleAvoidancePlanner(safety_manager=safety),
+            config={"obstacle": {"front_tof_enabled": True}},
+        )
+        arbiter.set_front_tof_provider(lambda: self.front_sample(120.0, count=0))
+        target = {
+            "found": True,
+            "visual_objects": [
+                {
+                    "bbox_xyxy": (250, 180, 390, 420),
+                    "confidence": 0.88,
+                    "class_name": "chair",
+                }
+            ],
+        }
+
+        decision = arbiter.decide(
+            RCCommand(0, -20, 0, 0),
+            np.zeros((480, 640, 3), dtype=np.uint8),
+            MotionContext("test", target),
+        )
+
+        self.assertEqual(decision.command.forward_backward, -20)
+
+    def test_reset_clears_fused_and_visual_history(self) -> None:
+        safety = build_safety()
+        arbiter = MotionArbiter(
+            detector=StubDetector(ObstacleResult(found=False, state="CLEAR")),
+            planner=ObstacleAvoidancePlanner(safety_manager=safety),
+            config={"obstacle": {"front_tof_enabled": True}},
+        )
+        arbiter.set_front_tof_provider(lambda: self.front_sample(120.0, count=0))
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        target = {
+            "found": True,
+            "visual_objects": [
+                {
+                    "bbox_xyxy": (250, 180, 390, 420),
+                    "confidence": 0.88,
+                    "class_name": "chair",
+                }
+            ],
+        }
+        arbiter.decide(RCCommand(0, 20, 0, 0), frame, MotionContext("test", target))
+
+        arbiter.reset("next")
+
+        self.assertIsNone(arbiter.last_fused_state)
+        self.assertEqual(arbiter.visual_advisor.history_size, 0)
+
+    def test_visual_risk_is_fused_into_motion_state_when_ir_is_safe(self) -> None:
+        safety = build_safety()
+        arbiter = MotionArbiter(
+            detector=StubDetector(ObstacleResult(found=False, state="CLEAR")),
+            planner=ObstacleAvoidancePlanner(safety_manager=safety),
+            config={
+                "obstacle": {
+                    "front_tof_enabled": True,
+                    "front_tof_blocked_distance_cm": 60,
+                }
+            },
+        )
+        arbiter.set_front_tof_provider(lambda: self.front_sample(150.0, count=0))
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        target = {
+            "found": True,
+            "visual_objects": [
+                {
+                    "bbox_xyxy": (250, 180, 390, 420),
+                    "confidence": 0.88,
+                    "class_name": "chair",
+                    "display_label": "障碍物候选：椅子",
+                }
+            ],
+        }
+
+        decision = arbiter.decide(
+            RCCommand(0, 20, 0, 0), frame, MotionContext("test", target)
+        )
+
+        self.assertIsNotNone(arbiter.last_fused_state)
+        self.assertEqual(arbiter.last_fused_state.state, "VISUAL_CAUTION")
+        self.assertLess(decision.command.forward_backward, 20)
+
+    def test_log_payload_includes_fused_state(self) -> None:
+        safety = build_safety()
+        arbiter = MotionArbiter(
+            detector=StubDetector(ObstacleResult(found=False, state="CLEAR")),
+            planner=ObstacleAvoidancePlanner(safety_manager=safety),
+            config={
+                "obstacle": {
+                    "front_tof_enabled": True,
+                    "log_enabled": True,
+                    "log_dir": "/tmp",
+                }
+            },
+        )
+        arbiter.set_front_tof_provider(lambda: self.front_sample(150.0, count=0))
+        arbiter.reset("test")
+
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        target = {
+            "found": True,
+            "visual_objects": [
+                {
+                    "bbox_xyxy": (250, 180, 390, 420),
+                    "confidence": 0.88,
+                    "class_name": "chair",
+                    "display_label": "障碍物候选：椅子",
+                }
+            ],
+        }
+
+        arbiter.decide(RCCommand(0, 20, 0, 0), frame, MotionContext("test", target))
+        if arbiter._writer is None:
+            self.fail("log writer was not initialized")
+        payload = arbiter._writer._queue.get_nowait()
+
+        self.assertIsNotNone(payload)
+        self.assertEqual(payload["fused_state"]["state"], "VISUAL_CAUTION")
+        self.assertEqual(payload["fused_state"]["primary_source"], "visual")
 
     def test_front_tof_stale_sample_fails_safe_to_hover(self) -> None:
         safety = build_safety()
@@ -239,9 +423,7 @@ class MotionArbiterTestCase(unittest.TestCase):
         )
         arbiter.set_front_tof_provider(lambda: current)
         # Establish that the target was previously visible.
-        arbiter.decide(
-            RCCommand(), object(), MotionContext("test", {"found": True})
-        )
+        arbiter.decide(RCCommand(), object(), MotionContext("test", {"found": True}))
         failures = iter(
             self.front_sample(None, status="stale", count=0, sequence=sequence)
             for sequence in (2, 3, 4)
@@ -252,12 +434,16 @@ class MotionArbiterTestCase(unittest.TestCase):
         for _ in range(3):
             decisions.append(
                 arbiter.decide(
-                    RCCommand(), object(), MotionContext("test", {"found": False}),
+                    RCCommand(),
+                    object(),
+                    MotionContext("test", {"found": False}),
                     obstacle_priority=True,
                 )
             )
 
-        self.assertEqual([item.command.as_tuple() for item in decisions], [(0, 0, 0, 0)] * 3)
+        self.assertEqual(
+            [item.command.as_tuple() for item in decisions], [(0, 0, 0, 0)] * 3
+        )
         self.assertFalse(decisions[0].requires_landing)
         self.assertFalse(decisions[1].requires_landing)
         self.assertTrue(decisions[2].requires_landing)
@@ -282,7 +468,9 @@ class MotionArbiterTestCase(unittest.TestCase):
 
         decisions = [
             arbiter.decide(
-                RCCommand(), object(), MotionContext("test", {"found": False}),
+                RCCommand(),
+                object(),
+                MotionContext("test", {"found": False}),
                 obstacle_priority=True,
             )
             for _ in range(10)
@@ -350,7 +538,9 @@ class MotionArbiterTestCase(unittest.TestCase):
             arbiter.decide(RCCommand(), frame, MotionContext("test", visible))
 
         advancing = arbiter.decide(
-            RCCommand(), frame, MotionContext("test", {"found": False}),
+            RCCommand(),
+            frame,
+            MotionContext("test", {"found": False}),
             obstacle_priority=True,
         )
         self.assertEqual(advancing.state, "CENTER_LOSS_ADVANCE")
@@ -358,7 +548,9 @@ class MotionArbiterTestCase(unittest.TestCase):
 
         current = self.front_sample(110, status="valid", count=0, sequence=2)
         avoiding = arbiter.decide(
-            RCCommand(), frame, MotionContext("test", {"found": False}),
+            RCCommand(),
+            frame,
+            MotionContext("test", {"found": False}),
             obstacle_priority=True,
         )
         self.assertEqual(avoiding.action, "SIDE_STEP_OUT")
@@ -385,7 +577,9 @@ class MotionArbiterTestCase(unittest.TestCase):
             arbiter.decide(RCCommand(), frame, MotionContext("test", result))
 
         lost = arbiter.decide(
-            RCCommand(), frame, MotionContext("test", {"found": False}),
+            RCCommand(),
+            frame,
+            MotionContext("test", {"found": False}),
             obstacle_priority=True,
         )
         self.assertNotEqual(lost.state, "CENTER_LOSS_ADVANCE")
@@ -401,7 +595,9 @@ class MotionArbiterTestCase(unittest.TestCase):
         )
         context = MotionContext(mode="test", target_result={"found": True})
         states = [
-            arbiter.decide(RCCommand(0, 20, 0, 0), frame=object(), context=context).state
+            arbiter.decide(
+                RCCommand(0, 20, 0, 0), frame=object(), context=context
+            ).state
             for _ in range(3)
         ]
         # 失败帧不缓存观测：即使处于跳过帧，每个决策帧都必须重新检测并 FAILSAFE，
@@ -422,7 +618,9 @@ class MotionArbiterTestCase(unittest.TestCase):
                     free_space={"left": 0.9, "right": 0.1},
                 )
 
-            def detect(self, frame: Any, target_result: Dict[str, object]) -> ObstacleResult:
+            def detect(
+                self, frame: Any, target_result: Dict[str, object]
+            ) -> ObstacleResult:
                 self.detect_calls += 1
                 self.observation.consecutive_found_frames = self.detect_calls
                 return self.observation
@@ -433,12 +631,16 @@ class MotionArbiterTestCase(unittest.TestCase):
         detector = CountingFoundDetector()
         arbiter = MotionArbiter(
             detector=detector,  # type: ignore[arg-type]
-            planner=ObstacleAvoidancePlanner(safety_manager=safety, detect_confirm_frames=3),
+            planner=ObstacleAvoidancePlanner(
+                safety_manager=safety, detect_confirm_frames=3
+            ),
             config={"obstacle": {"detect_every_n_frames": 2}},
         )
         context = MotionContext(mode="test", target_result={"found": True})
         states = [
-            arbiter.decide(RCCommand(0, 20, 0, 0), frame=object(), context=context).state
+            arbiter.decide(
+                RCCommand(0, 20, 0, 0), frame=object(), context=context
+            ).state
             for _ in range(4)
         ]
         # 确认按实际帧数推进：第 4 帧（2 次真实检测 + 跳过帧递增）达到 3 次确认开始绕行；
@@ -474,7 +676,13 @@ class MotionArbiterTestCase(unittest.TestCase):
             arbiter = MotionArbiter(
                 detector=StubDetector(result),
                 planner=ObstacleAvoidancePlanner(safety_manager=safety),
-                config={"obstacle": {"log_enabled": True, "log_dir": tmp, "log_every_n_frames": 1}},
+                config={
+                    "obstacle": {
+                        "log_enabled": True,
+                        "log_dir": tmp,
+                        "log_every_n_frames": 1,
+                    }
+                },
             )
             decision = arbiter.decide(
                 desired_command=RCCommand(0, 20, 0, 0),

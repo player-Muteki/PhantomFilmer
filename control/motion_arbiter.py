@@ -13,8 +13,16 @@ from uuid import uuid4
 
 from control.follow_control import RCCommand
 from control.obstacle_avoidance import AvoidanceDecision, ObstacleAvoidancePlanner
-from vision.obstacle_detect import DistanceOnlyObstacleDetector, ObstacleResult
+from control.obstacle_fusion import (
+    InfraredObservation,
+    ObstacleFusionEngine,
+    VisualObstacleRisk,
+    classify_infrared_snapshot,
+    normalized_obstacle_config,
+)
 from drone.front_tof import FrontToFSnapshot
+from vision.obstacle_detect import DistanceOnlyObstacleDetector, ObstacleResult
+from vision.visual_obstacle import VisualObstacleAdvisor
 
 
 @dataclass(frozen=True)
@@ -39,12 +47,30 @@ class MotionArbiter:
         self.planner = planner
         self.config = config or {}
         obstacle = self.config.get("obstacle", {})
-        self._obstacle_config = obstacle if isinstance(obstacle, dict) else {}
+        self._obstacle_config = normalized_obstacle_config(self.config)
+        self.fusion_engine = ObstacleFusionEngine(self.config)
+        self.visual_advisor = VisualObstacleAdvisor(self._obstacle_config)
+        self._visual_assist_forward_speed_ratio = max(
+            0.0,
+            min(
+                1.0,
+                float(
+                    self._obstacle_config.get(
+                        "visual_assist_forward_speed_ratio", 0.40
+                    )
+                ),
+            ),
+        )
+        self.last_fused_state = None
         self._log_enabled = bool(self._obstacle_config.get("log_enabled", False))
-        self._log_dir = Path(str(self._obstacle_config.get("log_dir", "logs/avoidance")))
+        self._log_dir = Path(
+            str(self._obstacle_config.get("log_dir", "logs/avoidance"))
+        )
         self._log_every_n_frames = max(1, self._config_int("log_every_n_frames", 2))
         # 每 N 帧才重新跑一次检测器，中间帧复用上次观测，只保留规划/仲裁开销。
-        self._detect_every_n_frames = max(1, self._config_int("detect_every_n_frames", 1))
+        self._detect_every_n_frames = max(
+            1, self._config_int("detect_every_n_frames", 1)
+        )
         self._detect_counter = 1
         self._detector_ran = False
         self._writer: Optional[_JsonlEventWriter] = None
@@ -54,7 +80,9 @@ class MotionArbiter:
         self.last_decision: Optional[AvoidanceDecision] = None
         self.last_latency_ms = 0.0
         self._active = False
-        self._front_tof_enabled = bool(self._obstacle_config.get("front_tof_enabled", False))
+        self._front_tof_enabled = bool(
+            self._obstacle_config.get("front_tof_enabled", False)
+        )
         self._front_tof_blocked_distance_cm = self._config_float(
             "front_tof_blocked_distance_cm", 60.0
         )
@@ -64,7 +92,7 @@ class MotionArbiter:
         self._lost_episode_counter = 0
         self._active_lost_episode_id: Optional[int] = None
         self._lost_tof_failure_limit = max(
-            1, self._config_int("lost_tof_failure_limit", 5)
+            1, self._config_int("front_tof_failure_limit", 5)
         )
         self._lost_tof_failures = 0
         self._latest_front_sequence = -1
@@ -96,6 +124,8 @@ class MotionArbiter:
         self.mode = str(mode)
         self.last_observation = None
         self.last_decision = None
+        self.last_fused_state = None
+        self.visual_advisor.reset()
         self.last_latency_ms = 0.0
         self._detect_counter = 1
         self._detector_ran = False
@@ -147,7 +177,10 @@ class MotionArbiter:
         started_at = monotonic()
         try:
             self._detect_counter += 1
-            if self.last_observation is None or self._detect_counter % self._detect_every_n_frames == 0:
+            if (
+                self.last_observation is None
+                or self._detect_counter % self._detect_every_n_frames == 0
+            ):
                 self._detector_ran = True
                 observation = self.detector.detect(frame, context.target_result)
                 self.last_latency_ms = (monotonic() - started_at) * 1000.0
@@ -159,9 +192,11 @@ class MotionArbiter:
                     # 否则 detect_confirm_frames 变成按检测次数计数、确认明显变慢。
                     observation = replace(
                         observation,
-                        consecutive_found_frames=observation.consecutive_found_frames + 1,
+                        consecutive_found_frames=observation.consecutive_found_frames
+                        + 1,
                     )
-            observation = self._fuse_front_tof(observation)
+            visual_risk = self.visual_advisor.evaluate(frame, context.target_result)
+            observation = self._fuse_front_tof(observation, visual_risk)
             self._lost_tof_failures = 0
             self._last_failed_front_sequence = -1
             if self._center_loss_advancing:
@@ -208,17 +243,31 @@ class MotionArbiter:
                         observation=observation,
                     )
             else:
-                decision = self.planner.plan(
-                    desired_command,
-                    observation,
-                    obstacle_priority,
-                    lost_episode_id=(
-                        self._active_lost_episode_id
-                        if obstacle_priority and self._target_seen
-                        else None
-                    ),
-                    yaw_deg=context.yaw_deg,
+                fused_state = self.last_fused_state
+                should_moderate_for_fused_warning = (
+                    not obstacle_priority
+                    and not self.planner.avoidance_active
+                    and fused_state is not None
+                    and fused_state.state in {"VISUAL_CAUTION", "IR_CAUTION"}
                 )
+                if should_moderate_for_fused_warning:
+                    decision = self._fused_warning_decision(
+                        desired_command,
+                        observation,
+                        fused_state,
+                    )
+                else:
+                    decision = self.planner.plan(
+                        desired_command,
+                        observation,
+                        obstacle_priority,
+                        lost_episode_id=(
+                            self._active_lost_episode_id
+                            if obstacle_priority and self._target_seen
+                            else None
+                        ),
+                        yaw_deg=context.yaw_deg,
+                    )
             self.last_observation = observation
         except Exception as exc:
             if obstacle_priority and self._active_lost_episode_id is not None:
@@ -293,27 +342,110 @@ class MotionArbiter:
         """Force the next decide() to run a fresh detection (e.g. after a pause)."""
         self.last_observation = None
 
+    def _fused_warning_decision(
+        self,
+        desired_command: RCCommand,
+        observation: ObstacleResult,
+        fused_state: object,
+    ) -> AvoidanceDecision:
+        state = str(getattr(fused_state, "state", "VISUAL_CAUTION"))
+        forward_backward = desired_command.forward_backward
+        if forward_backward > 0:
+            if state == "IR_CAUTION":
+                forward_backward = 0
+            else:
+                forward_backward = int(
+                    round(
+                        forward_backward
+                        * self._visual_assist_forward_speed_ratio
+                    )
+                )
+        moderated = RCCommand(
+            desired_command.left_right,
+            forward_backward,
+            desired_command.up_down,
+            desired_command.yaw,
+        )
+        limited = self.planner.safety_manager.limit_rc_command(
+            moderated.left_right,
+            moderated.forward_backward,
+            moderated.up_down,
+            moderated.yaw,
+        )
+        return AvoidanceDecision(
+            command=RCCommand(*limited),
+            state=state,
+            action="BRAKE" if state == "IR_CAUTION" else "LIMIT_FORWARD",
+            reason=str(getattr(fused_state, "reason", "fused obstacle warning")),
+            confidence=float(getattr(fused_state, "confidence", 0.0)),
+            plan_id="fused-caution",
+            owns_motion=True,
+            observation=observation,
+        )
+
     def set_front_tof_provider(
         self, provider: Optional[Callable[[], FrontToFSnapshot]]
     ) -> None:
         """Attach a non-blocking front-distance snapshot provider."""
         self._front_tof_provider = provider
 
-    def _fuse_front_tof(self, visual: ObstacleResult) -> ObstacleResult:
+    def _fuse_front_tof(
+        self,
+        visual: ObstacleResult,
+        visual_risk: Optional[VisualObstacleRisk] = None,
+    ) -> ObstacleResult:
         if not self._front_tof_enabled:
             return visual
         if self._front_tof_provider is None:
             raise RuntimeError("front ToF provider is not attached")
         sample = self._front_tof_provider()
         self._latest_front_sequence = sample.sequence
+        infrared = classify_infrared_snapshot(
+            sample,
+            caution_distance_cm=self._obstacle_config.get(
+                "front_tof_caution_distance_cm",
+                max(self._front_tof_blocked_distance_cm, 100.0),
+            ),
+            blocked_distance_cm=self._front_tof_blocked_distance_cm,
+            max_age_seconds=float(
+                self._obstacle_config.get("front_tof_max_age_seconds", 0.8)
+            ),
+        )
+        resolved_visual = visual_risk or VisualObstacleRisk(
+            state=visual.state,
+            candidates=(),
+            primary_candidate=None,
+            confidence=float(visual.confidence),
+            reason=visual.state,
+        )
+        self.last_fused_state = self.fusion_engine.fuse(infrared, resolved_visual)
         if sample.status not in {"valid", "out_of_range"}:
             raise RuntimeError(f"front ToF sample is {sample.status}")
+        fused = self.last_fused_state
         updates: Dict[str, object] = {
             "front_distance_cm": sample.distance_cm,
             "front_distance_status": sample.status,
             "front_distance_age_seconds": round(sample.age_seconds, 3),
             "front_distance_sequence": sample.sequence,
         }
+        if fused is not None and fused.state == "IR_UNKNOWN":
+            updates.update(
+                found=True,
+                state="UNKNOWN",
+                side=visual.side if visual.side in {"left", "right"} else "center",
+                confidence=0.0,
+                consecutive_found_frames=max(visual.consecutive_found_frames, 1),
+                consecutive_clear_frames=0,
+            )
+        elif fused is not None and fused.state == "VISUAL_CAUTION":
+            updates.update(
+                found=False,
+                state="CLEAR",
+                side=visual.side if visual.side in {"left", "right"} else "center",
+                confidence=max(0.0, min(1.0, float(resolved_visual.confidence))),
+                consecutive_found_frames=0,
+                consecutive_clear_frames=max(visual.consecutive_found_frames, 1),
+            )
         if (
             sample.distance_cm is not None
             and sample.distance_cm <= self._front_tof_blocked_distance_cm
@@ -364,7 +496,9 @@ class MotionArbiter:
         important = observation.found or decision.state not in {"CLEAR", "RECOVERING"}
         if not important and observation.frame_index % self._log_every_n_frames:
             return
-        frame_width, frame_height = self._frame_dimensions(observation, context.target_result)
+        frame_width, frame_height = self._frame_dimensions(
+            observation, context.target_result
+        )
         payload = {
             "schema_version": 1,
             "event": "obstacle_decision",
@@ -374,8 +508,11 @@ class MotionArbiter:
             "mode": context.mode,
             "latency_ms": round(self.last_latency_ms, 3),
             "detector_ran": bool(self._detector_ran),
-            "target": self._target_payload(context.target_result, frame_width, frame_height),
+            "target": self._target_payload(
+                context.target_result, frame_width, frame_height
+            ),
             "observation": observation.to_observation(frame_width, frame_height),
+            "fused_state": self._fused_state_payload(self.last_fused_state),
             "desired_command": self._command_payload(desired_command),
             "decision": decision.to_dict(),
             "final_command": self._command_payload(decision.command),
@@ -443,6 +580,63 @@ class MotionArbiter:
         return payload
 
     @staticmethod
+    def _visual_candidate_payload(
+        candidate: Optional[object],
+    ) -> Optional[Dict[str, object]]:
+        if candidate is None:
+            return None
+        return {
+            "label": getattr(candidate, "label", None),
+            "class_name": getattr(candidate, "class_name", None),
+            "bbox": list(getattr(candidate, "bbox", ())),
+            "confidence": round(float(getattr(candidate, "confidence", 0.0)), 4),
+            "zone": getattr(candidate, "zone", None),
+            "area_ratio": round(float(getattr(candidate, "area_ratio", 0.0)), 4),
+            "approach_score": round(
+                float(getattr(candidate, "approach_score", 0.0)), 4
+            ),
+            "is_centered": bool(getattr(candidate, "is_centered", False)),
+        }
+
+    @classmethod
+    def _fused_state_payload(
+        cls, fused_state: Optional[object]
+    ) -> Optional[Dict[str, object]]:
+        if fused_state is None:
+            return None
+        infrared = getattr(fused_state, "infrared", None)
+        visual = getattr(fused_state, "visual", None)
+        primary = getattr(visual, "primary_candidate", None)
+        return {
+            "state": getattr(fused_state, "state", None),
+            "risk_level": getattr(fused_state, "risk_level", None),
+            "primary_source": getattr(fused_state, "primary_source", None),
+            "distance_cm": getattr(fused_state, "distance_cm", None),
+            "recommended_direction": getattr(
+                fused_state, "recommended_direction", None
+            ),
+            "forward_speed_limit": getattr(fused_state, "forward_speed_limit", None),
+            "confidence": round(float(getattr(fused_state, "confidence", 0.0)), 4),
+            "reason": getattr(fused_state, "reason", None),
+            "infrared": {
+                "state": getattr(infrared, "state", None),
+                "distance_cm": getattr(infrared, "distance_cm", None),
+                "status": getattr(infrared, "status", None),
+                "age_seconds": getattr(infrared, "age_seconds", None),
+                "sequence": getattr(infrared, "sequence", None),
+                "is_fresh": getattr(infrared, "is_fresh", None),
+                "is_safe_to_advance": getattr(infrared, "is_safe_to_advance", None),
+            },
+            "visual": {
+                "state": getattr(visual, "state", None),
+                "confidence": round(float(getattr(visual, "confidence", 0.0)), 4),
+                "reason": getattr(visual, "reason", None),
+                "primary_candidate": cls._visual_candidate_payload(primary),
+                "candidate_count": len(getattr(visual, "candidates", ()) or ()),
+            },
+        }
+
+    @staticmethod
     def _command_payload(command: RCCommand) -> Dict[str, int]:
         return {
             "left_right": command.left_right,
@@ -486,7 +680,9 @@ class _JsonlEventWriter:
                     payload = self._queue.get()
                     if payload is None:
                         return
-                    output.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+                    output.write(
+                        json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+                    )
                     output.write("\n")
                     output.flush()
         except (OSError, TypeError):

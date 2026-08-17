@@ -93,6 +93,17 @@ obstacle:
   # RoboMaster TT 顶部扩展红外 ToF：有效距离 <= 60 cm 时进入 BLOCKED。
   front_tof_enabled: true
   front_tof_blocked_distance_cm: 60
+  # 进入 60–100 cm 预警带时停止正向运动，红外仍是最高优先级。
+  front_tof_caution_distance_cm: 100
+  front_tof_failure_limit: 5
+  # 视觉只允许提前限速，不能解除红外 BLOCKED/UNKNOWN。
+  visual_assist_enabled: true
+  visual_assist_confidence: 0.35
+  visual_assist_center_zone_ratio: 0.30
+  visual_assist_approach_frames: 3
+  visual_assist_approach_growth_ratio: 0.08
+  visual_assist_forward_speed_ratio: 0.40
+  visual_assist_can_clear_infrared: false
   # BLOCKED 避障：固定向右约1m，再以-12左转90度；全程绝不前进。
   front_tof_clear_distance_cm: 70
   front_tof_poll_interval_seconds: 0.2

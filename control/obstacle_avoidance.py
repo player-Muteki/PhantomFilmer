@@ -126,6 +126,10 @@ class ObstacleAvoidancePlanner:
         self._turn_progress_degrees = 0.0
         self._turn_last_yaw: Optional[float] = None
 
+    @property
+    def avoidance_active(self) -> bool:
+        return self._bypass_phase is not None
+
     @classmethod
     def from_config(
         cls,
