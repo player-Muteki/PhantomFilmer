@@ -100,7 +100,7 @@ python3 tools/generate_aruco_marker.py
 bash scripts/setup_reid_env.sh python3
 ```
 
-模型权重、人物照片和数据集不会提交到 Git。所需材料和校验方式见 `docs/reid_materials.md`，配置示例见 `config.reid.offline-snippet.yaml`。典型本地文件包括：
+模型权重、人物照片和数据集不会提交到 Git。所需材料和校验方式见 [docs/06-配置测试与源码索引.md 第 4 节](docs/06-配置测试与源码索引.md#4-依赖与本地数据)，ReID 模型加载与档案校验见 [docs/03-视觉感知与目标跟随.md](docs/03-视觉感知与目标跟随.md)。配置示例见 `config.reid.offline-snippet.yaml`。典型本地文件包括：
 
 ```text
 weights/yolov8n.pt
@@ -166,7 +166,7 @@ ReID 只进行外观匹配，不识别真实姓名；俯视、遮挡、换衣、
 4. 进入跟随后若从未发现目标，直接从当前高度开始固定三层扫描，首次搜索同样不受顶部前向 ToF 避障影响；完整搜索一轮仍未找到就降落。人物通过连续 5 帧身份确认并首次进入正常跟随后，才启用现有顶部 ToF 避障。此后跟随中途丢失，继续沿用原来的避障、过近后退、遮挡恢复和最后方向搜索逻辑。
 5. 目标丢失时先悬停 1 秒；疑似过近时以 `-35` 后退 1.5 秒、停顿 0.5 秒，最多两次。之后只按最后水平方向以 `±25` 偏航，再按“当前高度 → 上方 20 cm → 下方 20 cm”的固定顺序分层搜索。每层以 `±30` 偏航，并根据飞控 yaw 累计完整旋转 360°；相邻层反向旋转。三层完整搜索一轮后返回起始高度，仍未找回则清零并降落，不再使用总时间限制。
 
-比赛前详细演练清单见 [`docs/reid_demo_runbook.md`](docs/reid_demo_runbook.md)。
+比赛前详细演练清单与流程见 [docs/01-功能与运行模式.md 第 4.5 节（reid-demo）](docs/01-功能与运行模式.md#45-reid-demo现场-reid-跟随)、[docs/03-视觉感知与目标跟随.md 第 5–6 节](docs/03-视觉感知与目标跟随.md#5-人物-reid-personreiddetector) 与 [docs/05-安全机制与硬件边界.md 第 7 节](docs/05-安全机制与硬件边界.md#7-真机检查清单非穷举)。
 
 人物档案包含可关联个人外观的特征数据。不要使用真实姓名作为档案名，不要提交或
 上传 `data/reid_profiles/`，比赛结束后按本人意愿删除。换人或明显换衣后应建立新档案。
@@ -186,7 +186,7 @@ ReID 只进行外观匹配，不识别真实姓名；俯视、遮挡、换衣、
 
 ## 障碍避让
 
-当前完整中文流程、优先级、参数和异常保护见 [`docs/避障逻辑说明.md`](docs/避障逻辑说明.md)。
+当前完整中文流程、优先级、参数和异常保护见 [docs/04-搜索避障与运动仲裁.md](docs/04-搜索避障与运动仲裁.md)。
 
 `follow`、`follow-dry-run`、`console` 和 `fixed-demo` 启动时会询问本次是否开启避障，默认值来自 `config.yaml` 的 `obstacle.enabled`。避障只读取 RoboMaster TT 顶部扩展前向 ToF：有效距离小于等于 `front_tof_blocked_distance_cm`（当前 60 cm）时输出 `BLOCKED`，大于阈值或超量程时不增加风险。摄像头只用于目标识别与跟随，不参与障碍判断。ReID 首次确认目标后，跟随和后续丢失恢复才经过 `MotionArbiter`；起飞爬升与首次搜索明确绕过前向 ToF 避障。所有最终命令仍经过 `SafetyManager`。
 
