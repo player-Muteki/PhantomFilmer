@@ -1,7 +1,7 @@
 """Console tools for high-level drone task scheduling."""
 
 from threading import Event, Lock, Thread, current_thread
-from typing import Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 
 from control.follow_control import FollowController
 from control.follow_session import FollowSession
@@ -36,6 +36,8 @@ class ConsoleTools:
         motion_arbiter: Optional[MotionArbiter] = None,
         follow_task_allowed: bool = True,
         follow_task_block_reason: Optional[str] = None,
+        frame_sink: Optional[Callable[[Any], None]] = None,
+        task_finished_callback: Optional[Callable[[], None]] = None,
     ) -> None:
         self._drone = drone
         self._safety_manager = safety_manager
@@ -50,6 +52,8 @@ class ConsoleTools:
         self._motion_arbiter = motion_arbiter
         self._follow_task_allowed = follow_task_allowed
         self._follow_task_block_reason = follow_task_block_reason
+        self._frame_sink = frame_sink
+        self._task_finished_callback = task_finished_callback
 
         self.current_mode = "未连接"
         self.connected = False
@@ -64,6 +68,15 @@ class ConsoleTools:
             1.0,
             float(self._config.get("task_stop_timeout_seconds", 10.0)),
         )
+
+    def set_web_callbacks(
+        self,
+        frame_sink: Optional[Callable[[Any], None]],
+        task_finished_callback: Optional[Callable[[], None]],
+    ) -> None:
+        """Attach optional WebUI observers without changing console behaviour."""
+        self._frame_sink = frame_sink
+        self._task_finished_callback = task_finished_callback
 
     def connect(self) -> None:
         """Connect through the selected DroneAdapter."""
@@ -125,6 +138,7 @@ class ConsoleTools:
             obstacle_detector=self._obstacle_detector,
             obstacle_planner=self._obstacle_planner,
             motion_arbiter=self._motion_arbiter,
+            frame_sink=self._frame_sink,
         )
         task_thread = Thread(
             target=self._run_follow_session,
@@ -252,6 +266,11 @@ class ConsoleTools:
             with self._task_lock:
                 if self._active_session is session:
                     self._active_session = None
+            if self._task_finished_callback is not None:
+                try:
+                    self._task_finished_callback()
+                except Exception as exc:
+                    print(f"WebUI 任务结束回调失败：{exc}")
 
     def _wait_for_session_shutdown(self, active_session: Optional[FollowSession]) -> None:
         """Wait for normal cleanup, then force a landing if shutdown stalls."""

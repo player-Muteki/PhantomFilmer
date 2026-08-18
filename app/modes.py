@@ -55,6 +55,29 @@ def run_status(use_fake: bool = False) -> int:
         drone.stop()
 
 
+def run_web(obstacle_enabled: Optional[bool] = None) -> int:
+    """Run the real-aircraft-only local browser control surface."""
+    try:
+        import uvicorn
+    except ModuleNotFoundError:
+        print("缺少 WebUI 依赖：请先安装 requirements.txt。")
+        return 1
+
+    from web.server import create_app
+
+    config = load_config()
+    web_config = config.get("web", {})
+    if not isinstance(web_config, dict):
+        web_config = {}
+    host = str(web_config.get("host", "0.0.0.0"))
+    port = int(web_config.get("port", 8080))
+    app = create_app(obstacle_enabled=obstacle_enabled)
+    print(f"WebUI 启动中: http://localhost:{port}")
+    print("WebUI 仅允许连接真实 RoboMaster TT / Tello，未验证前不会开启图传。")
+    uvicorn.run(app, host=host, port=port)
+    return 0
+
+
 def run_connection_test(use_fake: bool = False) -> int:
     """Verify SDK command/response communication without camera or flight."""
     drone = create_drone_adapter(use_fake)

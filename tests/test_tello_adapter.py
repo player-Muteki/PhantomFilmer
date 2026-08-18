@@ -157,21 +157,19 @@ class TelloDroneAdapterTestCase(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "SDK command rejected"):
                 adapter.connect()
 
-    def test_connect_keeps_sdk_connection_when_battery_query_fails(self) -> None:
+    def test_connect_closes_sdk_connection_when_battery_query_fails(self) -> None:
         adapter = TelloDroneAdapter()
         tello = RecordingTello()
         tello.responses["battery?"] = (
             "Aborting command 'battery?'. Did not receive a response after 5 seconds"
         )
 
-        with patch.object(adapter, "_create_tello", return_value=tello), redirect_stdout(
-            StringIO()
-        ) as output:
-            adapter.connect()
+        with patch.object(adapter, "_create_tello", return_value=tello):
+            with self.assertRaisesRegex(RuntimeError, "电量验证失败"):
+                adapter.connect()
 
-        self.assertTrue(adapter.connected)
+        self.assertFalse(adapter.connected)
         self.assertIsNone(adapter.last_connection_battery)
-        self.assertIn("WARNING", output.getvalue())
 
     def test_connect_reports_socket_error(self) -> None:
         adapter = TelloDroneAdapter()

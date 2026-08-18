@@ -168,3 +168,13 @@ llm_enabled: true
 llm_base_url: "https://api.deepseek.com/chat/completions"
 llm_model: "deepseek-chat"
 llm_timeout_seconds: 8
+web:
+  host: "0.0.0.0"
+  port: 8080
+  video_jpeg_quality: 80
+  telemetry_interval_seconds: 0.2
+  # 真机 SDK 只按低频轮询；WebSocket 5 Hz 仅广播缓存，不直接查询飞控。
+  health_interval_seconds: 2.0
+  health_failure_limit: 3
+  status_freshness_seconds: 5.0
+  cors_enabled: true

@@ -60,6 +60,7 @@ class FollowSession:
         pre_takeoff_confirmation: Optional[Callable[[Dict[str, object]], bool]] = None,
         window_takeoff_confirmation: bool = False,
         enable_target_search: Optional[bool] = None,
+        frame_sink: Optional[Callable[[Any], None]] = None,
     ) -> None:
         self.drone = drone
         self.safety_manager = safety_manager
@@ -97,6 +98,7 @@ class FollowSession:
         self.state_label = state_label
         self.allow_pause = allow_pause
         self.stop_event = stop_event or Event()
+        self.frame_sink = frame_sink
         self._lifecycle_lock = Lock()
         self.display_enabled = bool(config.get("display_console_camera", True))
         self.frame_failure_limit = int(config.get("frame_failure_limit", 30))
@@ -1238,7 +1240,13 @@ class FollowSession:
         if self.camera is None:
             return None
         try:
-            return self.camera.read_frame()
+            frame = self.camera.read_frame()
+            if frame is not None and self.frame_sink is not None:
+                try:
+                    self.frame_sink(frame)
+                except Exception as exc:
+                    print(f"发布 WebUI 视频帧失败：{exc}")
+            return frame
         except RuntimeError as exc:
             print(str(exc))
             return None

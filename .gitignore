@@ -15,3 +15,6 @@ data/reid_test/
 data/datasets/
 logs/
 reasonix.toml
+web/frontend/node_modules/
+web/frontend/dist/
+web/frontend/*.tsbuildinfo

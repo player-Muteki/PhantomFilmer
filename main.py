@@ -38,6 +38,7 @@ from app.modes import (
     run_reid_enroll,
     run_safety_test,
     run_status,
+    run_web,
 )
 
 
@@ -61,6 +62,7 @@ def parse_args() -> argparse.Namespace:
             "reid-enroll",
             "reid-demo",
             "console",
+            "web",
         ),
         default="demo",
         help="运行模式：fixed-demo 执行固定航线后进入目标跟随；其余模式保持原有用途。",
@@ -121,7 +123,7 @@ def main() -> int:
     """Run the selected project mode."""
     args = parse_args()
     obstacle_enabled = None
-    if args.mode in FOLLOW_MODES:
+    if args.mode in FOLLOW_MODES and args.mode != "web":
         config = load_config()
         obstacle_enabled = prompt_obstacle_enabled(
             configured_obstacle_enabled(config)
@@ -184,6 +186,11 @@ def main() -> int:
             use_fake=args.fake,
             obstacle_enabled=obstacle_enabled,
         )
+    if args.mode == "web":
+        if args.fake:
+            print("WebUI 已禁用 --fake：请连接真实 RoboMaster TT / Tello 后重试。")
+            return 2
+        return run_web(obstacle_enabled=obstacle_enabled)
 
     controller = build_system(use_fake=args.fake)
     controller.describe()

@@ -67,7 +67,15 @@ class TelloDroneAdapter(DroneAdapter):
             self.last_connection_battery = battery
             print(f"[Tello] Connection verified, battery={battery}%")
         except Exception as exc:
-            print(f"[Tello] WARNING: SDK connected, but battery verification failed: {exc}")
+            # Entering SDK mode alone is not sufficient evidence that the WebUI
+            # may control this aircraft.  Fail closed when the independent
+            # battery query cannot be verified.
+            try:
+                self.stop()
+            finally:
+                raise RuntimeError(
+                    "[Tello] SDK 已响应，但电量验证失败，连接已关闭。"
+                ) from exc
 
     def takeoff(self) -> None:
         """Take off only after the user explicitly confirms the action."""

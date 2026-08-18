@@ -5,7 +5,7 @@ from typing import Optional
 
 
 CONFIG_PATH = Path(__file__).resolve().parents[1] / "config.yaml"
-FOLLOW_MODES = {"follow", "follow-dry-run", "console", "fixed-demo", "reid-demo"}
+FOLLOW_MODES = {"follow", "follow-dry-run", "console", "fixed-demo", "reid-demo", "web"}
 
 
 def load_config(path: Path = CONFIG_PATH) -> dict:
@@ -91,6 +91,11 @@ def _load_config_without_yaml(path: Path) -> dict:
         if raw.startswith("target_search:"):
             target_search, index = _parse_flat_block(lines, index + 1)
             config["target_search"] = target_search
+            continue
+
+        if raw.startswith("web:"):
+            web, index = _parse_flat_block(lines, index + 1)
+            config["web"] = web
             continue
 
         if ":" in raw and not raw.startswith(" "):
