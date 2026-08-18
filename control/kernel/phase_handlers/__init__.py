@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict
 
 from control.kernel.phase_handlers.climb import ClimbHandler
+from control.kernel.phase_handlers.control_ready import ControlReadyHandler
 from control.kernel.phase_handlers.follow import FollowHandler
 from control.kernel.phase_handlers.ground_lock import GroundLockHandler
 from control.kernel.phase_handlers.height_verify import HeightVerifyHandler
@@ -35,6 +36,7 @@ def build_phase_handlers() -> Dict[KernelPhase, Any]:
         KernelPhase.STABILIZING: StabilizeHandler(),
         KernelPhase.HEIGHT_VERIFY: HeightVerifyHandler(),
         KernelPhase.CLIMB: ClimbHandler(),
+        KernelPhase.CONTROL_READY: ControlReadyHandler(),
         KernelPhase.PRE_FOLLOW: PreFollowHandler(),
         KernelPhase.FOLLOW: FollowHandler(),
     }

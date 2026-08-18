@@ -125,6 +125,11 @@ class FixedDemoManeuver:
             )
             if on_progress is not None and not on_progress(progress):
                 return False
+            # The progress callback handles live window keys.  Re-check after
+            # it returns so an ``m`` takeover on the exact final settling tick
+            # cannot be mistaken for a successfully completed route.
+            if should_abort():
+                return False
             if is_avoiding is not None and is_avoiding():
                 if not avoiding:
                     # 冻结 route 计时：仅把已流逝时间一次性转存，避障期间不再累加，

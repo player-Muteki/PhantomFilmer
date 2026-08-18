@@ -150,6 +150,33 @@ class FixedDemoManeuverTestCase(unittest.TestCase):
         self.assertEqual(commands[-1], RCCommand())
         self.assertNotIn(RCCommand(left_right=16), commands)
 
+    def test_takeover_on_exact_final_settle_tick_still_aborts(self) -> None:
+        clock = FakeClock()
+        commands = []
+        takeover = False
+        maneuver = FixedDemoManeuver(
+            steps=(FixedDemoStep("last", RCCommand(), 0.0, 0.1),),
+            control_interval=0.1,
+            clock=clock,
+            sleep_fn=clock.sleep,
+        )
+
+        def on_progress(progress) -> bool:
+            nonlocal takeover
+            if progress.settling and progress.elapsed_seconds >= 0.1:
+                takeover = True
+            return True
+
+        completed = maneuver.run(
+            commands.append,
+            lambda: takeover,
+            on_progress=on_progress,
+        )
+
+        self.assertFalse(completed)
+        self.assertTrue(takeover)
+        self.assertEqual(commands[-1], RCCommand())
+
     def test_obstacle_avoidance_pauses_route_timer(self) -> None:
         clock = FakeClock()
         commands = []

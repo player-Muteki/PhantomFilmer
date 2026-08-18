@@ -21,4 +21,4 @@ class ClimbHandler:
             if session.airborne:
                 session._safe_land()
             return None
-        return KernelPhase.PRE_FOLLOW
+        return KernelPhase.CONTROL_READY

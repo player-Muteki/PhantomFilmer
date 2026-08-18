@@ -4,17 +4,18 @@ from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from statistics import median
-from threading import Event, Lock
+from threading import Event, Lock, Timer
 from time import monotonic, sleep
 from typing import Any, Callable, Dict, Optional, Tuple
 
 from control.fixed_demo import FixedDemoManeuver, FixedDemoProgress
 from control.follow_control import FollowController, RCCommand
 from control.features import build_features
-from control.kernel.arbitration import ArbitrationEngine
+from control.kernel.arbitration import ArbitrationEngine, FollowTickOutcome
 from control.kernel.features import ArbitrationContext
 from control.kernel.phases import KernelPhase
 from control.kernel.session import KernelSession
+from control.manual_control import ManualControlController
 from control.motion_arbiter import MotionArbiter, MotionContext
 from control.obstacle_avoidance import AvoidanceDecision, ObstacleAvoidancePlanner
 from control.target_search import TargetSearchController
@@ -72,11 +73,20 @@ class FollowSession:
         self.obstacle_detector = obstacle_detector
         self.obstacle_planner = obstacle_planner
         self.motion_arbiter = motion_arbiter
+        self.manual_controller = ManualControlController.from_config(
+            config, safety_manager
+        )
         obstacle_config = config.get("obstacle", {}) if isinstance(config, dict) else {}
         front_tof_enabled = (
-            self.motion_arbiter is not None
-            and isinstance(obstacle_config, dict)
-            and bool(obstacle_config.get("front_tof_enabled", False))
+            (
+                self.motion_arbiter is not None
+                and isinstance(obstacle_config, dict)
+                and bool(obstacle_config.get("front_tof_enabled", False))
+            )
+            or (
+                self.manual_controller.config.enabled
+                and self.manual_controller.config.front_tof_guard_enabled
+            )
         )
         self.front_tof_monitor = (
             FrontToFMonitor.from_config(drone, config) if front_tof_enabled else None
@@ -147,12 +157,18 @@ class FollowSession:
         self.control_hz = 0.0
         self._control_rate_warning_shown = False
         self._state_label_font = None
+        self._manual_reacquire_tracker: Optional[TargetLockTracker] = None
+        self._manual_output_lock = Lock()
+        self._manual_watchdog: Optional[Timer] = None
+        self._manual_watchdog_generation = 0
+        self._manual_mode_switch_suppressed_until = 0.0
         self._features = build_features(
             follow_controller=self.follow_controller,
             safety_manager=self.safety_manager,
             target_search=self.target_search,
             search_enabled=self.target_search_enabled,
             motion_arbiter=self.motion_arbiter,
+            manual_controller=self.manual_controller,
             mode_label=self.mode_label,
         )
         self._arbitration = ArbitrationEngine(
@@ -679,8 +695,12 @@ class FollowSession:
         return False
 
     def _pre_follow_should_abort(self) -> bool:
-        """Stop a predefined maneuver after an external or emergency request."""
-        return self.stop_event.is_set() or self.emergency_stop
+        """Stop a predefined maneuver for stop, emergency, or manual takeover."""
+        return (
+            self.stop_event.is_set()
+            or self.emergency_stop
+            or self.manual_controller.active
+        )
 
     def _fixed_demo_is_avoiding(self) -> bool:
         """Hold the route timer while obstacle avoidance is overriding it."""
@@ -689,7 +709,7 @@ class FollowSession:
         return bool(self.last_obstacle_result.found)
 
     def _show_pre_follow_progress(self, progress: FixedDemoProgress) -> bool:
-        """Display the raw camera during the route and keep q/e responsive."""
+        """Display the raw camera during the route and keep m/q/e responsive."""
         if not self.display_enabled:
             return not self._pre_follow_should_abort()
 
@@ -711,7 +731,7 @@ class FollowSession:
         )
         cv2.putText(
             frame,
-            "q: stop + land, e: emergency + land",
+            "m: manual takeover, q: stop + land, e: emergency + land",
             (20, 68),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.55,
@@ -787,10 +807,30 @@ class FollowSession:
 
     def send_command(self, command: RCCommand) -> None:
         """Send a command through the kernel's single RC emission seam."""
+        if self.manual_controller.active:
+            # Revalidate the short lease at the actual emission boundary.  The
+            # watchdog uses the same lock, so an expired command can never be
+            # re-sent after the watchdog has emitted its zero.
+            with self._manual_output_lock:
+                if self.manual_controller.active:
+                    command = self.manual_controller.command_for(
+                        now=monotonic(),
+                        height_cm=self.last_height,
+                        front_tof_snapshot=self._front_tof_snapshot(),
+                    )
+                self._kernel._emit(command)
+            return
         self._kernel._emit(command)
 
     def send_motion_command(self, command: RCCommand) -> None:
         """Apply the shared obstacle arbiter before sending an autonomous command."""
+        if self.manual_controller.active:
+            # A fixed-demo callback can observe ``m`` between two route ticks.
+            # Its ``finally`` block still sends one last zero command through
+            # this seam; never let that cleanup call restart an old autonomous
+            # obstacle plan after the operator has taken control.
+            self._safe_zero_output()
+            return
         if self.motion_arbiter is None:
             self.send_command(command)
             return
@@ -811,18 +851,9 @@ class FollowSession:
         self.send_command(decision.command)
 
     def handle_key(self, key: int) -> Optional[str]:
-        """Handle q/e and optional p window keys."""
-        if self.allow_pause and key == ord("p"):
-            self.paused = not self.paused
-            self.session_state = "PAUSED" if self.paused else "FOLLOWING"
-            self._safe_zero_output()
-            if not self.paused and self.motion_arbiter is not None:
-                # 恢复时强制下一帧重新检测，避免复用暂停前可能已过期的观测。
-                self.motion_arbiter.invalidate_observation()
-            print("跟随已暂停。" if self.paused else "跟随已恢复。")
-            return None
-
-        if key == ord("e"):
+        """Handle global safety keys plus manual takeover and motion keys."""
+        if key in (ord("e"), ord("E")):
+            self._cancel_manual_watchdog(force_hover=True)
             self.emergency_stop = True
             self.paused = False
             self.session_state = "EMERGENCY_STOP"
@@ -830,11 +861,63 @@ class FollowSession:
             print("急停：已清零控制输出，准备安全降落。")
             return "emergency"
 
-        if key == ord("q"):
+        if key in (ord("q"), ord("Q")):
+            self._cancel_manual_watchdog(force_hover=True)
             self.session_state = "STOPPED"
             self._safe_zero_output()
             print("跟随停止：准备降落。")
             return "stop"
+
+        if self.allow_pause and key == ord("p"):
+            self._cancel_manual_watchdog(force_hover=True)
+            self.paused = not self.paused
+            if self._manual_reacquire_tracker is not None:
+                self._manual_reacquire_tracker.reset()
+            self.session_state = (
+                "PAUSED"
+                if self.paused
+                else ("MANUAL" if self.manual_controller.active else "FOLLOWING")
+            )
+            self._safe_zero_output()
+            if not self.paused and self.motion_arbiter is not None:
+                # 恢复时强制下一帧重新检测，避免复用暂停前可能已过期的观测。
+                self.motion_arbiter.invalidate_observation()
+            print("跟随已暂停。" if self.paused else "跟随已恢复。")
+            return None
+
+        if (
+            key in (ord("m"), ord("M"))
+            and self.manual_controller.available
+            and not self.paused
+        ):
+            now = monotonic()
+            if now < self._manual_mode_switch_suppressed_until:
+                # Key-repeat events extend the quiet period.  A long-held ``m``
+                # therefore cannot toggle again as soon as the first fixed
+                # cooldown expires; the operator must release, wait, and press.
+                self._manual_mode_switch_suppressed_until = (
+                    now
+                    + self.manual_controller.config.mode_switch_debounce_seconds
+                )
+                return None
+            if self.manual_controller.active:
+                self._leave_manual_mode()
+                print("已退出手动控制，重新搜索并确认目标。")
+            elif self._enter_manual_mode():
+                print("已进入手动控制；无新方向按键时自动悬停。")
+            return None
+
+        if self.manual_controller.active:
+            if self.paused:
+                return None
+            with self._manual_output_lock:
+                consumed = self.manual_controller.handle_key(key, monotonic())
+                if consumed:
+                    if key == ord(" "):
+                        self._cancel_manual_watchdog_locked(force_hover=False)
+                        self._kernel._emit(self.follow_controller.hover())
+                    else:
+                        self._arm_manual_watchdog_locked()
 
         return None
 
@@ -894,6 +977,8 @@ class FollowSession:
             "FOLLOW": (0, 255, 0),
             "SEARCH": (0, 255, 255),
             "OBSTACLE": (0, 165, 255),
+            "MANUAL": (255, 120, 0),
+            "CONTROL_READY": (255, 160, 0),
             "HOVER": (255, 160, 0),
             "LANDING": (0, 0, 255),
             "PAUSED": (160, 160, 160),
@@ -911,6 +996,8 @@ class FollowSession:
             "FOLLOW": "跟随",
             "SEARCH": "搜索",
             "OBSTACLE": "避障",
+            "MANUAL": "手动控制",
+            "CONTROL_READY": "等待选择",
             "HOVER": "悬停",
             "LANDING": "降落",
             "PAUSED": "暂停",
@@ -968,6 +1055,12 @@ class FollowSession:
             return "LANDING"
         if self.paused or session_state == "PAUSED":
             return "PAUSED"
+        if session_state == "CONTROL_READY":
+            return "CONTROL_READY"
+        if self.manual_controller.active or session_state == "MANUAL":
+            return "MANUAL"
+        if session_state in {"REACQUIRE_VERIFY", "TARGET_REACQUIRED"}:
+            return "SEARCH"
 
         avoidance_state = str(
             getattr(self.last_avoidance_decision, "state", "") or ""
@@ -987,6 +1080,246 @@ class FollowSession:
             return "FOLLOW"
         return "HOVER"
 
+    def _wait_for_control_selection(self) -> Optional[str]:
+        """Hover indefinitely at base height until M/manual or A/auto is chosen."""
+        if not self.display_enabled:
+            print("手动/自动选择需要启用摄像头窗口；当前已停止并准备降落。")
+            self.session_state = "STOPPED"
+            self._safe_zero_output()
+            return None
+
+        import cv2
+
+        self.session_state = "CONTROL_READY"
+        self._safe_zero_output()
+        print("已到达基础悬停高度。按 m 进入手动，按 a 进入自动；将持续悬停等待。")
+        frame_failures = 0
+        height_failures = 0
+        next_battery_check = monotonic()
+
+        while not self.stop_event.is_set():
+            loop_started_at = monotonic()
+            now = loop_started_at
+            if now >= next_battery_check:
+                battery = self._read_battery()
+                next_battery_check = now + 1.0
+                if battery is not None and self.safety_manager.should_land(battery):
+                    print(f"等待控制选择时电量已降至 {battery}%，准备安全降落。")
+                    self.session_state = "LOW_BATTERY_LANDING"
+                    self._safe_zero_output()
+                    return None
+
+            height = self._read_height()
+            if height is None:
+                height_failures += 1
+                self._safe_zero_output()
+                if height_failures >= self.height_failure_limit:
+                    print("等待控制选择时连续无法读取高度，准备安全降落。")
+                    self.session_state = "HEIGHT_SENSOR_LANDING"
+                    return None
+            else:
+                height_failures = 0
+                if not self.safety_manager.check_height(height):
+                    print(f"等待控制选择时高度达到 {height} cm，准备安全降落。")
+                    self.session_state = "HEIGHT_LIMIT_LANDING"
+                    self._safe_zero_output()
+                    return None
+
+            frame = self._read_frame()
+            if frame is None:
+                frame_failures += 1
+                self._safe_zero_output()
+                if frame_failures >= self.frame_failure_limit:
+                    print("等待控制选择时连续无法读取视频流，准备安全降落。")
+                    self.session_state = "FRAME_LOST_LANDING"
+                    return None
+                sleep(self.control_interval)
+                continue
+
+            frame_failures = 0
+            self._safe_zero_output()
+            preview = frame.copy()
+            shown_height = "N/A" if height is None else f"{height} cm"
+            shown_battery = (
+                "N/A" if self.last_battery is None else f"{self.last_battery}%"
+            )
+            cv2.putText(
+                preview,
+                "M: MANUAL   A: AUTO   Q: LAND   E: EMERGENCY",
+                (20, max(36, preview.shape[0] - 48)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.58,
+                (255, 255, 255),
+                2,
+            )
+            cv2.putText(
+                preview,
+                f"HOVERING | height={shown_height} battery={shown_battery}",
+                (20, max(68, preview.shape[0] - 20)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
+                (0, 255, 255),
+                2,
+            )
+            preview = self._draw_state_label(
+                preview, "STATE: 等待选择", (255, 160, 0)
+            )
+            cv2.imshow(self.window_name, preview)
+            key = cv2.waitKey(1) & 0xFF
+            if key in (ord("m"), ord("M")):
+                self.paused = False
+                if self._enter_manual_mode():
+                    print("已选择手动控制。")
+                    return "manual"
+            elif key in (ord("a"), ord("A")):
+                self.paused = False
+                self.manual_controller.disable()
+                self._safe_zero_output()
+                self.session_state = "FOLLOWING"
+                print("已选择自动控制。")
+                return "auto"
+            elif key in (ord("q"), ord("Q"), ord("e"), ord("E")):
+                action = self.handle_key(key)
+                if action in ("stop", "emergency"):
+                    return None
+
+            loop_elapsed = monotonic() - loop_started_at
+            sleep(max(0.0, self.control_interval - loop_elapsed))
+
+        self._safe_zero_output()
+        if self.session_state != "EMERGENCY_STOP":
+            self.session_state = "STOPPED"
+        return None
+
+    def _enter_manual_mode(self) -> bool:
+        """Atomically zero autonomous output and give control to the operator."""
+        self._cancel_manual_watchdog(force_hover=True)
+        now = monotonic()
+        if not self.manual_controller.enable(now):
+            return False
+        self._manual_mode_switch_suppressed_until = (
+            now + self.manual_controller.config.mode_switch_debounce_seconds
+        )
+        self.paused = False
+        self._manual_reacquire_tracker = None
+        # Stop the previous owner before any detector/search/arbiter reset can
+        # block on model or log cleanup.  This is the actual ownership handoff.
+        self.session_state = "MANUAL"
+        self._safe_zero_output()
+        # Discard every autonomous state machine at the ownership boundary.
+        # Manual ticks never call these modules, and exiting manual starts from
+        # another clean state plus an explicit consecutive-ReID gate.
+        reset_detector = getattr(self.detector, "reset", None)
+        if callable(reset_detector):
+            reset_detector()
+        self.follow_controller.reset()
+        self.target_search.reset()
+        if self.motion_arbiter is not None:
+            self.motion_arbiter.reset(self.mode_label)
+        else:
+            reset_obstacle = getattr(self.obstacle_detector, "reset", None)
+            if callable(reset_obstacle):
+                reset_obstacle()
+            if self.obstacle_planner is not None:
+                self.obstacle_planner.reset()
+        self.last_obstacle_result = None
+        self.last_avoidance_decision = None
+        self._arbitration.reset()
+        self.safety_manager.update_target_lost(True)
+        return True
+
+    def _leave_manual_mode(self) -> None:
+        """Hover, discard stale autonomy state, and restart fresh acquisition."""
+        self._manual_mode_switch_suppressed_until = (
+            monotonic()
+            + self.manual_controller.config.mode_switch_debounce_seconds
+        )
+        self._cancel_manual_watchdog(force_hover=True)
+        self._safe_zero_output()
+        self.manual_controller.disable()
+        reset_detector = getattr(self.detector, "reset", None)
+        if callable(reset_detector):
+            reset_detector()
+        self.follow_controller.reset()
+        self.target_search.reset()
+        if self.motion_arbiter is not None:
+            self.motion_arbiter.reset(self.mode_label)
+        else:
+            reset_obstacle = getattr(self.obstacle_detector, "reset", None)
+            if callable(reset_obstacle):
+                reset_obstacle()
+            if self.obstacle_planner is not None:
+                self.obstacle_planner.reset()
+        self.last_obstacle_result = None
+        self.last_avoidance_decision = None
+        self._arbitration.reset()
+        self.safety_manager.update_target_lost(True)
+        self._manual_reacquire_tracker = TargetLockTracker(
+            self.manual_controller.config.reacquire_frames
+        )
+        self.search_reason = "manual released; reacquiring target"
+        self.session_state = "REACQUIRE_VERIFY"
+
+    def _arm_manual_watchdog_locked(self) -> None:
+        """Arm one exact deadman timer; caller owns ``_manual_output_lock``."""
+        self._cancel_manual_watchdog_locked(force_hover=False)
+        generation = self._manual_watchdog_generation
+        timer = Timer(
+            self.manual_controller.config.command_timeout_seconds,
+            self._manual_watchdog_expired,
+            args=(generation,),
+        )
+        timer.daemon = True
+        self._manual_watchdog = timer
+        timer.start()
+
+    def _manual_watchdog_expired(self, generation: int) -> None:
+        """Collapse manual output even if camera or telemetry work is blocked."""
+        with self._manual_output_lock:
+            if generation != self._manual_watchdog_generation:
+                return
+            self._manual_watchdog = None
+            if not self.manual_controller.active:
+                return
+            self.manual_controller.force_hover("manual command timed out")
+            try:
+                self._kernel._emit(self.follow_controller.hover())
+            except RuntimeError as exc:
+                print(f"手动控制看门狗清零失败：{exc}")
+
+    def _cancel_manual_watchdog(self, *, force_hover: bool) -> None:
+        with self._manual_output_lock:
+            self._cancel_manual_watchdog_locked(force_hover=force_hover)
+
+    def _cancel_manual_watchdog_locked(self, *, force_hover: bool) -> None:
+        """Cancel a pending timer; caller owns ``_manual_output_lock``."""
+        self._manual_watchdog_generation += 1
+        timer = self._manual_watchdog
+        self._manual_watchdog = None
+        if timer is not None:
+            timer.cancel()
+        if force_hover and self.manual_controller.active:
+            self.manual_controller.force_hover()
+
+    @staticmethod
+    def _manual_target_result() -> Dict[str, object]:
+        """Neutral result used while expensive target inference is suspended."""
+        return {
+            "found": False,
+            "is_predicted": False,
+            "ambiguous": False,
+            "center": None,
+            "area": 0.0,
+            "area_ratio": 0.0,
+            "bbox": None,
+            "candidates": [],
+            "visual_objects": [],
+        }
+
+    def _front_tof_snapshot(self) -> Optional[object]:
+        monitor = self.front_tof_monitor
+        return None if monitor is None else monitor.snapshot()
+
     def _loop(self) -> None:
         """Run the real-time visual follow loop."""
         cv2 = None
@@ -1000,6 +1333,7 @@ class FollowSession:
         stats_started_at = monotonic()
         frame_counter = 0
         command_counter = 0
+        next_manual_battery_check = monotonic()
 
         while True:
             if self.stop_event.is_set():
@@ -1016,8 +1350,47 @@ class FollowSession:
                 break
 
             loop_started_at = monotonic()
+            battery = self.last_battery
+            height = self.last_height
+            if self.manual_controller.active:
+                if loop_started_at >= next_manual_battery_check:
+                    battery = self._read_battery()
+                    next_manual_battery_check = monotonic() + 1.0
+                height = self._read_height()
+                if height is None:
+                    height_failures += 1
+                    self._safe_zero_output()
+                    print(
+                        "TOF 离地高度无效，正在重试"
+                        f"（{height_failures}/{self.height_failure_limit}）。"
+                    )
+                    if height_failures >= self.height_failure_limit:
+                        print("连续无法获得有效 TOF 离地高度，准备安全降落。")
+                        self.session_state = "HEIGHT_SENSOR_LANDING"
+                        break
+                    sleep(self.control_interval)
+                    continue
+                height_failures = 0
+                if battery is not None and self.safety_manager.should_land(battery):
+                    print(f"电量已降至 {battery}%，准备安全降落。")
+                    self.session_state = "LOW_BATTERY_LANDING"
+                    self._safe_zero_output()
+                    break
+                if not self.safety_manager.check_height(height):
+                    print(
+                        f"飞行高度 {height} cm 已超过安全上限 "
+                        f"{self.safety_manager.config.max_height_cm} cm，准备安全降落。"
+                    )
+                    self.session_state = "HEIGHT_LIMIT_LANDING"
+                    self._safe_zero_output()
+                    break
+
             frame = self._read_frame()
             if frame is None:
+                if self._manual_reacquire_tracker is not None:
+                    # "Consecutive" ReID confirmation cannot bridge a missing
+                    # video frame; restart the proof after any stream gap.
+                    self._manual_reacquire_tracker.reset()
                 frame_failures += 1
                 self._safe_zero_output()
                 print(f"未读取到视频帧，正在重试（{frame_failures}/{self.frame_failure_limit}）。")
@@ -1031,55 +1404,88 @@ class FollowSession:
             frame_failures = 0
             frame_counter += 1
             frame_height, frame_width = frame.shape[:2]
-            try:
-                target_result = self.detector.detect(frame)
-            except Exception as exc:
-                # 检测器异常（如 ReID 推理失败）不中断整个任务：先零输出并重试，
-                # 连续失败达到帧数上限后按视频丢失同样的安全策略降落。
-                detect_failures += 1
-                print(f"目标检测异常（{detect_failures}/{self.frame_failure_limit}）：{exc}")
-                self._safe_zero_output()
-                if detect_failures >= self.frame_failure_limit:
-                    print("检测器连续异常，准备安全降落。")
-                    self.session_state = "FRAME_LOST_LANDING"
-                    break
-                sleep(0.05)
-                continue
-            detect_failures = 0
-            yaw = self._read_yaw()
-            # 每 tick 的仲裁由 ArbitrationEngine 配方表（1-6）唯一决定：暂停/急停悬停、
-            # 目标丢失+障碍避障接管、目标存在跟随仲裁、目标丢失+无障碍搜索透传。
-            try:
-                outcome = self._arbitration.arbitrate(
-                    ArbitrationContext(
-                        phase=KernelPhase.FOLLOW,
-                        target_result=target_result,
-                        frame=frame,
-                        frame_width=frame_width,
-                        frame_height=frame_height,
-                        height_cm=self.last_height,
-                        yaw_deg=yaw,
-                        paused=self.paused,
-                        emergency=self.emergency_stop,
-                        stop_requested=self.stop_event.is_set(),
-                        now=monotonic(),
+            if self.manual_controller.active:
+                # Manual control must remain responsive even when ReID inference
+                # is expensive.  Camera/telemetry stay live, but target inference
+                # resumes only after manual release and a fresh state reset.
+                target_result = self._manual_target_result()
+                detect_failures = 0
+            else:
+                try:
+                    target_result = self.detector.detect(frame)
+                except Exception as exc:
+                    if self._manual_reacquire_tracker is not None:
+                        # An inference gap is just as discontinuous as a lost
+                        # frame, so matches on either side must not be combined.
+                        self._manual_reacquire_tracker.reset()
+                    # 检测器异常（如 ReID 推理失败）不中断整个任务：先零输出并重试，
+                    # 连续失败达到帧数上限后按视频丢失同样的安全策略降落。
+                    detect_failures += 1
+                    print(
+                        f"目标检测异常（{detect_failures}/{self.frame_failure_limit}）：{exc}"
                     )
+                    self._safe_zero_output()
+                    if detect_failures >= self.frame_failure_limit:
+                        print("检测器连续异常，准备安全降落。")
+                        self.session_state = "FRAME_LOST_LANDING"
+                        break
+                    sleep(0.05)
+                    continue
+                detect_failures = 0
+            yaw = self._read_yaw()
+            tracker = self._manual_reacquire_tracker
+            if tracker is not None and (self.paused or self.emergency_stop):
+                outcome = FollowTickOutcome(
+                    command=self.follow_controller.hover(),
+                    state="PAUSED" if self.paused else "",
                 )
-            except Exception as exc:
-                # 任一 feature 异常 → 内核 fail-safe 零输出；连续失败达到帧数上限后
-                # 按视频丢失同样的安全策略降落（不变量 2：绝不把异常传到飞控）。
-                engine_failures += 1
-                print(
-                    f"仲裁引擎异常"
-                    f"（{engine_failures}/{self.frame_failure_limit}）：{exc}"
-                )
-                self._kernel._failsafe(exc)
-                if engine_failures >= self.frame_failure_limit:
-                    print("仲裁引擎连续异常，准备安全降落。")
-                    self.session_state = "FRAME_LOST_LANDING"
-                    break
-                sleep(0.05)
-                continue
+            elif tracker is not None:
+                if tracker.observe(target_result):
+                    self._manual_reacquire_tracker = None
+                    outcome = FollowTickOutcome(
+                        command=self.follow_controller.hover(),
+                        state="TARGET_REACQUIRED",
+                        reason="manual release target confirmed",
+                    )
+                else:
+                    outcome = FollowTickOutcome(
+                        command=self.follow_controller.hover(),
+                        state="REACQUIRE_VERIFY",
+                        reason=f"manual release ReID {tracker.progress}",
+                    )
+            else:
+                # 每 tick 的仲裁由 ArbitrationEngine 唯一决定：暂停/急停、手动、
+                # 首次目标门控、避障接管、自动跟随或目标搜索。
+                try:
+                    outcome = self._arbitration.arbitrate(
+                        ArbitrationContext(
+                            phase=KernelPhase.FOLLOW,
+                            target_result=target_result,
+                            frame=frame,
+                            frame_width=frame_width,
+                            frame_height=frame_height,
+                            height_cm=height,
+                            yaw_deg=yaw,
+                            paused=self.paused,
+                            emergency=self.emergency_stop,
+                            stop_requested=self.stop_event.is_set(),
+                            front_tof_snapshot=self._front_tof_snapshot(),
+                            now=monotonic(),
+                        )
+                    )
+                except Exception as exc:
+                    engine_failures += 1
+                    print(
+                        f"仲裁引擎异常"
+                        f"（{engine_failures}/{self.frame_failure_limit}）：{exc}"
+                    )
+                    self._kernel._failsafe(exc)
+                    if engine_failures >= self.frame_failure_limit:
+                        print("仲裁引擎连续异常，准备安全降落。")
+                        self.session_state = "FRAME_LOST_LANDING"
+                        break
+                    sleep(0.05)
+                    continue
             engine_failures = 0
             command = outcome.command
             if outcome.state:
@@ -1094,22 +1500,24 @@ class FollowSession:
                 self._safe_zero_output()
                 break
 
-            battery = self._read_battery()
-            height = self._read_height()
-            if height is None:
-                height_failures += 1
-                self._safe_zero_output()
-                print(
-                    "TOF 离地高度无效，正在重试"
-                    f"（{height_failures}/{self.height_failure_limit}）。"
-                )
-                if height_failures >= self.height_failure_limit:
-                    print("连续无法获得有效 TOF 离地高度，准备安全降落。")
-                    self.session_state = "HEIGHT_SENSOR_LANDING"
-                    break
-                sleep(self.control_interval)
-                continue
-            height_failures = 0
+            if not self.manual_controller.active:
+                battery = self._read_battery()
+                height = self._read_height()
+                if height is None:
+                    height_failures += 1
+                    self._safe_zero_output()
+                    print(
+                        "TOF 离地高度无效，正在重试"
+                        f"（{height_failures}/{self.height_failure_limit}）。"
+                    )
+                    if height_failures >= self.height_failure_limit:
+                        print("连续无法获得有效 TOF 离地高度，准备安全降落。")
+                        self.session_state = "HEIGHT_SENSOR_LANDING"
+                        break
+                    sleep(self.control_interval)
+                    continue
+                height_failures = 0
+
             if self.stop_event.is_set():
                 if self.emergency_stop:
                     self.session_state = "EMERGENCY_STOP"
@@ -1210,13 +1618,15 @@ class FollowSession:
 
     def _reset_tracking_state(self) -> None:
         """Clear detector and controller state before every independent follow task."""
+        self._cancel_manual_watchdog(force_hover=True)
+        self.manual_controller.reset()
+        self._manual_reacquire_tracker = None
         reset_method = getattr(self.detector, "reset", None)
         if callable(reset_method):
             reset_method()
         self.follow_controller.reset()
         if self.motion_arbiter is not None:
-            if not self.motion_arbiter.is_active:
-                self.motion_arbiter.reset(self.mode_label)
+            self.motion_arbiter.reset(self.mode_label)
         else:
             obstacle_reset_method = getattr(self.obstacle_detector, "reset", None)
             if callable(obstacle_reset_method):
@@ -1244,9 +1654,11 @@ class FollowSession:
             return None
 
     def _read_battery(self) -> Optional[int]:
-        """Read battery, returning None when unavailable."""
+        """Read non-blocking runtime battery telemetry when the adapter supports it."""
         try:
-            self.last_battery = self.drone.get_battery()
+            cached_reader = getattr(self.drone, "get_cached_battery", None)
+            reader = cached_reader if callable(cached_reader) else self.drone.get_battery
+            self.last_battery = int(reader())
         except RuntimeError as exc:
             print(f"读取电量失败：{exc}")
             self.last_battery = None
@@ -1280,12 +1692,9 @@ class FollowSession:
         return self.last_height
 
     def _safe_zero_output(self) -> None:
-        """Send a zero RC command through the same safety path."""
-        zero = self.follow_controller.hover()
-        limited = self.safety_manager.limit_rc_command(*zero.as_tuple())
-        self.last_command = RCCommand(*limited)
+        """Send zero through the kernel's single bounded RC emission seam."""
         try:
-            self.drone.move_rc(*self.last_command.as_tuple())
+            self._kernel._emit(self.follow_controller.hover())
         except RuntimeError as exc:
             print(f"控制输出清零失败：{exc}")
 

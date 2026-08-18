@@ -88,6 +88,11 @@ def _load_config_without_yaml(path: Path) -> dict:
             config["obstacle"] = obstacle
             continue
 
+        if raw.startswith("manual_control:"):
+            manual_control, index = _parse_flat_block(lines, index + 1)
+            config["manual_control"] = manual_control
+            continue
+
         if raw.startswith("target_search:"):
             target_search, index = _parse_flat_block(lines, index + 1)
             config["target_search"] = target_search

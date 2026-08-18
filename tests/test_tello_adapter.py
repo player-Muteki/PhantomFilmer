@@ -17,6 +17,7 @@ class RecordingTello:
         }
         self.background_frame_read = None
         self.stream_on = False
+        self.state_battery = 86
 
     def streamon(self) -> None:
         self.stream_on = True
@@ -29,6 +30,9 @@ class RecordingTello:
 
     def get_distance_tof(self) -> int:
         return 147
+
+    def get_battery(self) -> int:
+        return self.state_battery
 
     def get_height(self) -> int:
         return -20
@@ -187,6 +191,13 @@ class TelloDroneAdapterTestCase(unittest.TestCase):
 
         self.assertEqual(adapter.get_battery(), 87)
         self.assertEqual(tello.last_read_command, "battery?")
+
+    def test_cached_battery_uses_nonblocking_state_stream(self) -> None:
+        adapter, tello = self.build_adapter()
+        tello.last_read_command = "sentinel"
+
+        self.assertEqual(adapter.get_cached_battery(), 86)
+        self.assertEqual(tello.last_read_command, "sentinel")
 
     def test_connection_mode_only_connects_queries_battery_and_stops(self) -> None:
         drone = ConnectionTestDrone()

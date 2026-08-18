@@ -138,6 +138,17 @@ class TelloDroneAdapter(DroneAdapter):
         except Exception as exc:
             raise RuntimeError("读取电量失败：请确认无人机连接正常。") from exc
 
+    def get_cached_battery(self) -> int:
+        """Read djitellopy's state-stream battery field without an SDK query."""
+        self._require_connection()
+        try:
+            battery = int(self._tello.get_battery())
+            if not 0 <= battery <= 100:
+                raise ValueError(f"电量超出范围：{battery}")
+            return battery
+        except Exception as exc:
+            raise RuntimeError("读取缓存电量失败：请确认状态遥测正常。") from exc
+
     def get_height(self) -> int:
         """Return downward TOF ground clearance in centimeters."""
         self._require_connection()

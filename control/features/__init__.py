@@ -6,6 +6,7 @@ state — the kernel decides who runs via the arbitration table.
 """
 
 from control.features.follow import FollowFeature
+from control.features.manual import ManualFeature
 from control.features.obstacle import ObstacleFeature
 from control.features.safety import SafetyFeature
 from control.features.search import SearchFeature
@@ -18,6 +19,7 @@ def build_features(
     target_search=None,
     search_enabled=False,
     motion_arbiter=None,
+    manual_controller=None,
     mode_label="FOLLOW",
 ):
     """Assemble the feature registry for one session from existing controllers.
@@ -48,11 +50,14 @@ def build_features(
             arbiter=motion_arbiter,
             mode_label=mode_label,
         )
+    if manual_controller is not None and manual_controller.config.enabled:
+        features["manual"] = ManualFeature(manual_controller)
     return features
 
 
 __all__ = [
     "FollowFeature",
+    "ManualFeature",
     "ObstacleFeature",
     "SafetyFeature",
     "SearchFeature",

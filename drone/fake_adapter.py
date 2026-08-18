@@ -93,6 +93,10 @@ class FakeDroneAdapter(DroneAdapter):
         """Return simulated battery percentage."""
         return self.battery_percent
 
+    def get_cached_battery(self) -> int:
+        """Return the already-local simulated battery state."""
+        return self.battery_percent
+
     def get_height(self) -> int:
         """Return simulated downward ground clearance in centimeters."""
         return self.height_cm

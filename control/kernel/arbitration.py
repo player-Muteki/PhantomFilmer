@@ -8,10 +8,11 @@ state machines and timers while preempted.
 Recipes (see the architecture plan §3.1):
   1. paused / emergency → kernel hover, no feature called
   2. safety wants_landing (battery / height) → handled in the kernel loop
-  3. target lost + obstacle present → ObstacleFeature.own (OBSTACLE_FIRST)
-  4. target lost + no obstacle + search enabled → SearchFeature.propose
-  5. target lost + no obstacle + search disabled → SafetyFeature.lost_hover
-  6. target found → FollowFeature.propose → ObstacleFeature.arbitrate
+  3. manual takeover → ManualFeature.propose
+  4. target lost + obstacle present → ObstacleFeature.own (OBSTACLE_FIRST)
+  5. target lost + no obstacle + search enabled → SearchFeature.propose
+  6. target lost + no obstacle + search disabled → SafetyFeature.lost_hover
+  7. target found → FollowFeature.propose → ObstacleFeature.arbitrate
 """
 
 from dataclasses import dataclass
@@ -51,6 +52,7 @@ class ArbitrationEngine:
     ) -> None:
         self._features = features
         self._follow = features.get("follow")
+        self._manual = features.get("manual")
         self._obstacle = features.get("obstacle")
         self._search = features.get("search")
         self._safety = features.get("safety")
@@ -79,6 +81,13 @@ class ArbitrationEngine:
             return FollowTickOutcome(
                 command=hover, state="PAUSED" if ctx.paused else ""
             )
+
+        # Manual takeover is available after the 150 cm base-height phase and
+        # deliberately precedes first-target acquisition, search, and obstacle
+        # route ownership.  Its own controller applies only conservative
+        # forward/height guards; it never starts an autonomous bypass.
+        if self._manual is not None and self._manual.active:
+            return self._finish(self._manual.propose(ctx, ctx.now))
 
         # Before the first accepted target, ToF must not influence motion: a
         # missing target goes directly to the bounded search, while a visible

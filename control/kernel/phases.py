@@ -19,6 +19,7 @@ class KernelPhase(Enum):
     STABILIZING = "stabilizing"
     HEIGHT_VERIFY = "height_verify"
     CLIMB = "climb"
+    CONTROL_READY = "control_ready"
     PRE_FOLLOW = "pre_follow"
     FOLLOW = "follow"
     FAILSAFE = "failsafe"

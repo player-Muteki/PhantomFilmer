@@ -56,6 +56,7 @@ class ArbitrationContext:
     emergency: bool = False
     stop_requested: bool = False
     last_obstacle: Optional[ObstacleResult] = None
+    front_tof_snapshot: Optional[Any] = None
     now: float = 0.0
     extra: Dict[str, Any] = field(default_factory=dict)
 

@@ -88,6 +88,25 @@ control_interval: 0.05
 min_control_hz: 8
 detector_min_area_ratio: 0.002
 detector_min_area: 500
+manual_control:
+  enabled: true
+  # 到达150 cm后持续悬停，必须在摄像头窗口按 m（手动）或 a（自动）。
+  forward_speed: 20
+  lateral_speed: 20
+  vertical_speed: 15
+  yaw_speed: 20
+  # OpenCV没有可靠的按键松开事件；方向指令超过该时间未刷新便自动悬停。
+  command_timeout_seconds: 0.25
+  # 防止一次长按m的系统重复事件在刚进入手动后又立刻退出。
+  mode_switch_debounce_seconds: 0.75
+  # 手动切回自动后，连续识别达到该帧数才允许自动运动。
+  reacquire_frames: 5
+  # 手动模式只阻止危险前进，不会触发自动横移绕障。
+  front_tof_guard_enabled: true
+  front_stop_distance_cm: 60
+  block_forward_when_tof_invalid: true
+  minimum_descent_height_cm: 40
+  maximum_ascent_height_cm: 200
 obstacle:
   enabled: false
   # RoboMaster TT 顶部扩展红外 ToF：有效距离 <= 60 cm 时进入 BLOCKED。

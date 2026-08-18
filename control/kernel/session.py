@@ -10,6 +10,7 @@ Blocking lifecycle loops (ground lock / stabilization / height verify / climb
 those loops via the phase handlers instead of reimplementing them.
 """
 
+from threading import Lock
 from typing import Any
 
 from control.kernel.phase_handlers import LifecycleContext, build_phase_handlers
@@ -21,6 +22,7 @@ class KernelSession:
 
     def __init__(self, session: Any) -> None:
         self._session = session
+        self._emit_lock = Lock()
 
     def run(self) -> Any:
         """Drive the lifecycle: reset → camera → phase FSM → safe cleanup.
@@ -75,11 +77,16 @@ class KernelSession:
         ``DroneAdapter.move_rc``. No other module emits autonomous motion.
         """
         session = self._session
-        if session.emergency_stop or session.paused or session.stop_event.is_set():
-            command = session.follow_controller.hover()
-        limited = session.safety_manager.limit_rc_command(*command.as_tuple())
-        session.last_command = type(command)(*limited)
-        session.drone.move_rc(*session.last_command.as_tuple())
+        # Keep state validation and the physical SDK write atomic.  Without a
+        # global emission lock, an external emergency zero could complete while
+        # an older non-zero tick was paused immediately before move_rc(), then
+        # that stale tick could resume and become the final aircraft command.
+        with self._emit_lock:
+            if session.emergency_stop or session.paused or session.stop_event.is_set():
+                command = session.follow_controller.hover()
+            limited = session.safety_manager.limit_rc_command(*command.as_tuple())
+            session.last_command = type(command)(*limited)
+            session.drone.move_rc(*session.last_command.as_tuple())
 
     def _failsafe(self, exc: Exception) -> None:
         """Feature fail-safe (invariant 2): any feature error → zero output.
@@ -93,12 +100,18 @@ class KernelSession:
         self._emit(session.follow_controller.hover())
 
     def _land_and_cleanup(self) -> None:
-        """Land and release resources in the historical cleanup order."""
+        """Zero motion, land, and release resources in a safe order."""
         session = self._session
+        cancel_manual_watchdog = getattr(session, "_cancel_manual_watchdog", None)
+        if callable(cancel_manual_watchdog):
+            cancel_manual_watchdog(force_hover=True)
+        # Stop motion before waiting for a sensor thread or issuing a blocking
+        # landing command.  The previous order could leave the final manual
+        # direction active during FrontToFMonitor.stop().
+        session._safe_zero_output()
         stop_front_tof = getattr(session, "_stop_front_tof", None)
         if callable(stop_front_tof):
             stop_front_tof()
-        session._safe_zero_output()
         if session.airborne:
             session._safe_land()
         session._stop_camera()

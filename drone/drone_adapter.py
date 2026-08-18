@@ -35,6 +35,14 @@ class DroneAdapter(ABC):
     def get_battery(self) -> int:
         """Return the current battery percentage."""
 
+    def get_cached_battery(self) -> int:
+        """Return non-blocking runtime battery telemetry when available.
+
+        Adapters without a state stream retain the historical query as a safe
+        compatibility fallback.  Real-time adapters should override this.
+        """
+        return self.get_battery()
+
     @abstractmethod
     def get_height(self) -> int:
         """Return downward ground clearance in centimeters."""

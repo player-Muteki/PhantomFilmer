@@ -18,6 +18,7 @@ class ConfigFallbackTestCase(unittest.TestCase):
             config = main._load_config_without_yaml(path)
         self.assertEqual(config["vision"]["detector_type"], "aruco")
         self.assertEqual(config["vision"]["temporary_lost_frames"], 0)
+
     def test_obstacle_block_is_available_without_pyyaml(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "config.yaml"
@@ -29,6 +30,26 @@ class ConfigFallbackTestCase(unittest.TestCase):
         self.assertTrue(config["obstacle"]["enabled"])
         self.assertEqual(config["obstacle"]["recovery_clear_frames"], 4)
         self.assertEqual(config["obstacle"]["forward_speed_in_caution_ratio"], 0.25)
+
+    def test_manual_control_block_is_available_without_pyyaml(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "config.yaml"
+            path.write_text(
+                "manual_control:\n"
+                "  enabled: true\n"
+                "  command_timeout_seconds: 0.25\n"
+                "  reacquire_frames: 5\n"
+                "  front_stop_distance_cm: 60\n",
+                encoding="utf-8",
+            )
+            config = main._load_config_without_yaml(path)
+
+        self.assertTrue(config["manual_control"]["enabled"])
+        self.assertEqual(
+            config["manual_control"]["command_timeout_seconds"], 0.25
+        )
+        self.assertEqual(config["manual_control"]["reacquire_frames"], 5)
+        self.assertEqual(config["manual_control"]["front_stop_distance_cm"], 60)
 
     def test_target_search_block_is_available_without_pyyaml(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
