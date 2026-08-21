@@ -26,6 +26,8 @@ const api: PhantomFilmerApi = {
   toggleMissionPause: () => invoke('mission:pause-toggle'),
   listProfiles: () => invoke('profiles:list'),
   enrollProfile: (name, overwrite) => invoke('profiles:enroll', { name, overwrite }),
+  startPreview: (profileName) => invoke('preview:start', profileName),
+  stopPreview: () => invoke('preview:stop'),
   onBackendState: (listener) => {
     const handler = (_event: Electron.IpcRendererEvent, state: BackendState): void => listener(state)
     ipcRenderer.on('backend:state-changed', handler)

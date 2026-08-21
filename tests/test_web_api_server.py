@@ -1,17 +1,21 @@
 import json
+import sys
 import unittest
+from unittest.mock import patch
 from http.client import HTTPConnection
 from pathlib import Path
 from types import SimpleNamespace
 from tempfile import TemporaryDirectory
 from threading import Event, Thread
-from time import sleep, time
+from time import monotonic, sleep, time
 
 from app.runtime.commands import (
     ConnectCommand,
     SelectControlModeCommand,
     StartMissionCommand,
+    StartPreviewCommand,
     StopMissionCommand,
+    StopPreviewCommand,
     TakeoffCommand,
     command_from_payload,
 )
@@ -38,6 +42,9 @@ class RealAdapterStub:
         self.takeoff_authorized = False
         self.rc_commands = []
         self.front_distance = front_distance
+        self.height = 12
+        self.battery_failure = False
+        self.height_failure = False
 
     def connect(self) -> None:
         self.connected = True
@@ -53,10 +60,14 @@ class RealAdapterStub:
         return FrameStub()
 
     def get_cached_battery(self) -> int:
+        if self.battery_failure:
+            raise RuntimeError("battery unavailable")
         return self.battery
 
     def get_height(self) -> int:
-        return 12
+        if self.height_failure:
+            raise RuntimeError("height unavailable")
+        return self.height
 
     def get_front_distance_cm(self):
         return self.front_distance
@@ -117,7 +128,60 @@ class MissionSessionStub:
         self.finished.set()
 
 
+class PreviewDetectorStub:
+    def __init__(self) -> None:
+        self.prepared = False
+        self.reset_count = 0
+
+    def prepare(self) -> None:
+        self.prepared = True
+
+    def reset(self) -> None:
+        self.reset_count += 1
+
+    def detect(self, _frame):
+        return {
+            "found": True,
+            "is_predicted": False,
+            "similarity": 0.82,
+            "similarity_threshold": 0.65,
+            "candidate_count": 1,
+            "area_ratio": 0.25,
+            "body_orientation_angle": 90.0,
+        }
+
+    def draw_debug(self, frame, _result):
+        return frame
+
+
+class Cv2Stub:
+    IMWRITE_JPEG_QUALITY = 1
+
+    @staticmethod
+    def imencode(_extension, _frame, _options):
+        return True, SimpleNamespace(tobytes=lambda: b"preview-jpeg")
+
+
 class DroneWebServiceTests(unittest.TestCase):
+    @staticmethod
+    def _fast_runtime_config() -> dict:
+        return {
+            "min_battery_takeoff": 20,
+            "low_battery_land": 8,
+            "max_height_cm": 220,
+            "min_height_cm": 60,
+            "max_rc_speed": 35,
+            "height_failure_limit": 2,
+            "desktop_telemetry_poll_seconds": 0.01,
+            "desktop_telemetry_max_age_seconds": 0.05,
+            "manual_control": {
+                "minimum_descent_height_cm": 40,
+                "maximum_ascent_height_cm": 200,
+                "front_stop_distance_cm": 60,
+            },
+            "obstacle": {"front_tof_max_age_seconds": 0.8},
+        }
+
     def test_mission_payload_parses_profile_mode_and_obstacle_choice(self) -> None:
         command = command_from_payload(
             {
@@ -133,6 +197,111 @@ class DroneWebServiceTests(unittest.TestCase):
         self.assertEqual(command.profile_name, "operator-a")
         self.assertEqual(command.initial_control_mode, ControlMode.SIDE)
         self.assertTrue(command.obstacle_enabled)
+
+    def test_preview_payload_requires_profile_name(self) -> None:
+        command = command_from_payload(
+            {"type": "preview.start", "profileName": "operator-a"}
+        )
+        self.assertIsInstance(command, StartPreviewCommand)
+        self.assertEqual(command.profile_name, "operator-a")
+
+        with self.assertRaisesRegex(ValueError, "profileName"):
+            command_from_payload({"type": "preview.start", "profileName": ""})
+
+    def test_ground_preview_gates_automatic_mission_until_target_is_fresh(self) -> None:
+        adapter = RealAdapterStub()
+        detector = PreviewDetectorStub()
+        service = DroneWebService(adapter_factory=lambda: adapter)
+        self.addCleanup(service.shutdown)
+        service.connect()
+
+        with patch("web_api.server.create_detector", return_value=detector):
+            result = service.execute(StartPreviewCommand(profile_name="operator-a"))
+
+        self.assertTrue(result["active"])
+        self.assertTrue(detector.prepared)
+        snapshot = service.runtime_snapshot()
+        self.assertIn(AllowedAction.STOP_PREVIEW, snapshot.allowed_actions)
+        self.assertNotIn(AllowedAction.START_MISSION, snapshot.allowed_actions)
+        with self.assertRaisesRegex(RuntimeError, "地面预览尚未稳定确认"):
+            service.start_mission(
+                StartMissionCommand(
+                    mission=MissionKind.REID_FOLLOW,
+                    profile_name="operator-a",
+                )
+            )
+
+        with service._lock:
+            service._preview_confirmed = True
+            service._preview_found_frames = service._preview_stable_frames
+            service._preview_last_at = monotonic()
+        self.assertIn(
+            AllowedAction.START_MISSION,
+            service.runtime_snapshot().allowed_actions,
+        )
+
+        stopped = service.execute(StopPreviewCommand())
+        self.assertFalse(stopped["active"])
+        self.assertEqual(detector.reset_count, 1)
+
+    def test_ground_preview_annotates_stream_and_reaches_stable_confirmation(self) -> None:
+        adapter = RealAdapterStub()
+        detector = PreviewDetectorStub()
+        config = self._fast_runtime_config()
+        config["reid_lock_stable_frames"] = 1
+        service = DroneWebService(
+            adapter_factory=lambda: adapter,
+            runtime_config=config,
+        )
+        self.addCleanup(service.shutdown)
+        service.connect()
+        with patch("web_api.server.create_detector", return_value=detector):
+            service.start_preview(StartPreviewCommand(profile_name="operator-a"))
+
+        with patch.dict(sys.modules, {"cv2": Cv2Stub}):
+            payload = next(service.mjpeg_frames())
+
+        preview = service.runtime_snapshot().telemetry["preview"]
+        self.assertIn(b"preview-jpeg", payload)
+        self.assertTrue(preview["confirmed"])
+        self.assertEqual(preview["stableFrames"], 1)
+        self.assertEqual(preview["orientationDeg"], 90.0)
+
+    def test_stopping_preview_while_models_prepare_cannot_reactivate_it(self) -> None:
+        adapter = RealAdapterStub()
+        detector = PreviewDetectorStub()
+        prepare_started = Event()
+        release_prepare = Event()
+        errors = []
+
+        def prepare() -> None:
+            prepare_started.set()
+            release_prepare.wait(timeout=1)
+
+        detector.prepare = prepare
+        service = DroneWebService(adapter_factory=lambda: adapter)
+        self.addCleanup(service.shutdown)
+        service.connect()
+
+        def start_preview() -> None:
+            try:
+                service.start_preview(StartPreviewCommand(profile_name="operator-a"))
+            except RuntimeError as exc:
+                errors.append(str(exc))
+
+        with patch("web_api.server.create_detector", return_value=detector):
+            worker = Thread(target=start_preview)
+            worker.start()
+            self.assertTrue(prepare_started.wait(timeout=1))
+            stopped = service.stop_preview()
+            release_prepare.set()
+            worker.join(timeout=1)
+
+        self.assertFalse(worker.is_alive())
+        self.assertFalse(stopped["active"])
+        self.assertEqual(service.runtime_snapshot().telemetry["preview"]["state"], "idle")
+        self.assertEqual(detector.reset_count, 1)
+        self.assertTrue(any("状态已变化" in error for error in errors))
 
     def test_background_mission_updates_snapshot_accepts_mode_and_stops(self) -> None:
         adapter = RealAdapterStub()
@@ -162,6 +331,7 @@ class DroneWebServiceTests(unittest.TestCase):
         self.assertEqual(snapshot.phase, RuntimePhase.AIRBORNE)
         self.assertEqual(snapshot.mission, MissionKind.FOLLOW)
         self.assertIn(AllowedAction.STOP_MISSION, snapshot.allowed_actions)
+        self.assertIn(AllowedAction.TOGGLE_MISSION_PAUSE, snapshot.allowed_actions)
         self.assertEqual(mode_result["mode"], "front")
         self.assertFalse(service.runtime_snapshot().airborne)
         self.assertTrue(service.connected)
@@ -223,6 +393,13 @@ class DroneWebServiceTests(unittest.TestCase):
             service._operator_commands.receive().command.value,
             "move_right",
         )
+        service._operator_commands.clear()
+        hover_status = service.hover()
+        self.assertEqual(
+            service._operator_commands.receive().command.value,
+            "hover",
+        )
+        self.assertTrue(hover_status["rcEnabled"])
         service.stop_mission()
 
     def test_typed_commands_publish_authoritative_snapshots(self) -> None:
@@ -328,6 +505,59 @@ class DroneWebServiceTests(unittest.TestCase):
             service.takeoff()
 
         self.assertFalse(adapter.taken_off)
+
+    def test_manual_safety_monitor_lands_on_low_battery(self) -> None:
+        adapter = RealAdapterStub()
+        service = DroneWebService(
+            adapter_factory=lambda: adapter,
+            runtime_config=self._fast_runtime_config(),
+        )
+        self.addCleanup(service.shutdown)
+        service.connect()
+        service.takeoff()
+
+        adapter.battery = 8
+        deadline = time() + 1
+        while not adapter.landed and time() < deadline:
+            sleep(0.01)
+
+        self.assertTrue(adapter.landed)
+        self.assertFalse(service.runtime_snapshot().airborne)
+        self.assertIn("电量降至", service.runtime_snapshot().telemetry["safetyReason"])
+        self.assertIn(
+            "flight.safety_landing.completed",
+            [event.event_type for event in service.events.events_since(0)],
+        )
+
+    def test_manual_safety_monitor_lands_after_height_telemetry_failures(self) -> None:
+        adapter = RealAdapterStub()
+        service = DroneWebService(
+            adapter_factory=lambda: adapter,
+            runtime_config=self._fast_runtime_config(),
+        )
+        self.addCleanup(service.shutdown)
+        service.connect()
+        service.takeoff()
+
+        adapter.height_failure = True
+        deadline = time() + 1
+        while not adapter.landed and time() < deadline:
+            sleep(0.01)
+
+        self.assertTrue(adapter.landed)
+        self.assertIn("底部 ToF", service.runtime_snapshot().telemetry["safetyReason"])
+
+    def test_vertical_manual_control_rejects_missing_height_sample(self) -> None:
+        adapter = RealAdapterStub()
+        service = DroneWebService(adapter_factory=lambda: adapter)
+        self.addCleanup(service.shutdown)
+        service.connect()
+        service.takeoff()
+        adapter.height_failure = True
+        service.status()
+
+        with self.assertRaisesRegex(RuntimeError, "底部 ToF 数据无效或过期"):
+            service.move_rc({"upDown": 20})
 
     def test_front_obstacle_blocks_takeoff(self) -> None:
         adapter = RealAdapterStub(front_distance=45)

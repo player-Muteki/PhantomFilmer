@@ -72,3 +72,30 @@ test('treats a backend crash during takeoff as possibly airborne', async () => {
   await expect(window.getByRole('button', { name: /禁止自动重启/ })).toBeDisabled()
   await forceClose(application)
 })
+
+test('previews a profile and starts an automatic mission through every process boundary', async () => {
+  const application = await electron.launch({
+    args: [appEntry],
+    env: { ...process.env, PHANTOMFILMER_SIDECAR_PATH: sidecar }
+  })
+  const window = await application.firstWindow()
+  await window.getByRole('button', { name: '连接真机' }).click()
+  await expect(window.getByText('真机已连接')).toBeVisible()
+  await window.getByRole('button', { name: '任务与人物' }).click()
+
+  const preview = window.getByRole('region', { name: '地面人物识别预览' })
+  await expect(preview.getByRole('button', { name: '启动识别预览' })).toBeEnabled()
+  await preview.getByRole('button', { name: '启动识别预览' }).click()
+  await expect(window.getByText('目标人物已确认')).toBeVisible()
+
+  const card = window.getByRole('heading', { name: '普通自动跟随' }).locator('..')
+  await expect(card.getByRole('button', { name: '启动任务' })).toBeEnabled()
+  await card.getByRole('button', { name: '启动任务' }).click()
+  await card.getByRole('button', { name: '再次点击确认起飞' }).click()
+  await expect(window.getByText(/普通自动跟随 · FOLLOWING/)).toBeVisible()
+
+  await window.getByRole('button', { name: '停止并降落' }).click()
+  await window.getByRole('button', { name: '再次确认停止并降落' }).click()
+  await expect(window.getByText('任务已停止并降落。')).toBeVisible()
+  await application.close()
+})

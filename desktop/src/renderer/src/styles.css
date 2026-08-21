@@ -190,12 +190,36 @@ button:focus-visible { outline: 3px solid rgba(45, 120, 183, .25); outline-offse
 .phase.active i { border-color: var(--blue); background: var(--blue); color: #fff; }
 
 .secondary-workspace { width: min(1440px, calc(100% - clamp(32px, 6vw, 88px))); margin: 16px auto 0; }
+.mission-command-bar { width: min(1440px, calc(100% - clamp(32px, 6vw, 88px))); min-height: 76px; margin: 16px auto 0; padding: 14px 18px; display: grid; grid-template-columns: minmax(220px, 1fr) auto auto; align-items: center; gap: 18px; border: 1px solid #d7b56d; border-left: 4px solid var(--amber); background: #fff8ec; box-sizing: border-box; }
+.mission-command-bar > div:first-child { display: grid; gap: 4px; }
+.mission-command-bar strong { font-size: 13px; }
+.mission-command-bar span { color: var(--slate); font-size: 9px; }
+.mission-command-modes, .mission-command-safety { display: flex; flex-wrap: wrap; gap: 6px; }
+.mission-command-bar button { min-height: 34px; padding: 0 10px; border: 1px solid #c9b98e; background: #fff; color: var(--navy-soft); cursor: pointer; font-size: 9px; }
+.mission-command-bar button.active { border-color: var(--blue); background: var(--blue-soft); color: var(--blue); }
+.mission-command-bar button.danger { border-color: #d78d8d; color: var(--red); }
+.mission-command-bar button.armed { background: var(--red); color: #fff; }
+.mission-command-bar button:disabled { cursor: not-allowed; opacity: .45; }
 .workspace-title { min-height: 104px; display: flex; align-items: center; justify-content: space-between; gap: 32px; padding: 24px 28px; border: 1px solid var(--line); background: var(--paper); }
 .workspace-title h1 { margin: 4px 0 0; font: 600 30px/1.1 "Arial Narrow", "Segoe UI", sans-serif; letter-spacing: -.025em; }
 .workspace-title > p { max-width: 570px; margin: 0; color: var(--slate); font-size: 11px; line-height: 1.7; text-align: right; }
 .mission-layout, .diagnostics-grid { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(330px, .8fr); gap: 16px; margin-top: 16px; }
 .mission-catalog, .mission-flow, .runtime-summary, .event-log { padding: 24px; border: 1px solid var(--line); background: var(--paper); box-shadow: 0 12px 36px rgba(32, 62, 81, .045); }
 .mission-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-top: 18px; }
+.ground-preview { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(230px, .8fr); margin-top: 18px; border: 1px solid var(--line); background: #f4f8fa; overflow: hidden; }
+.ground-preview.confirmed { border-color: #77aa9d; }
+.ground-preview-feed { min-height: 250px; display: grid; place-items: center; background: #102330; color: #dce8ee; }
+.ground-preview-feed img { width: 100%; height: 100%; max-height: 340px; object-fit: contain; }
+.ground-preview-feed > div { display: grid; gap: 8px; padding: 24px; text-align: center; }
+.ground-preview-feed span { color: #9eb1bc; font-size: 9px; }
+.ground-preview-status { padding: 18px; }
+.ground-preview-status h3 { margin: 7px 0 14px; font-size: 16px; }
+.ground-preview-status dl { display: grid; grid-template-columns: repeat(2, 1fr); gap: 6px; margin: 0 0 14px; }
+.ground-preview-status dl div { padding: 8px; background: #fff; }
+.ground-preview-status dt { color: var(--slate); font-size: 8px; }
+.ground-preview-status dd { margin: 4px 0 0; font: 9px "SFMono-Regular", Consolas, monospace; }
+.ground-preview-status > button { width: 100%; min-height: 36px; border: 1px solid #9cb2c1; background: #fff; color: var(--navy-soft); cursor: pointer; font-size: 10px; }
+.ground-preview-status > button:disabled { cursor: not-allowed; opacity: .45; }
 .mission-grid article { min-height: 176px; padding: 18px; border: 1px solid var(--line); border-top: 3px solid #9bb5c8; background: #fff; }
 .mission-grid article.available { border-top-color: var(--teal); }
 .mission-grid article.unavailable { background: #f5f8fa; }
@@ -219,6 +243,8 @@ button:focus-visible { outline: 3px solid rgba(45, 120, 183, .25); outline-offse
 .mission-live > div { display: flex; flex-wrap: wrap; gap: 6px; }
 .mission-live button { min-height: 32px; border: 1px solid var(--line); background: #fff; cursor: pointer; }
 .mission-live button.danger { border-color: #d78d8d; color: var(--red); }
+.mission-live button.active { border-color: var(--blue); background: var(--blue-soft); color: var(--blue); }
+.mission-live button:disabled { cursor: not-allowed; opacity: .45; }
 .mission-flow ol { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
 .mission-flow li { display: flex; gap: 12px; padding: 14px 0; border-bottom: 1px solid #e4ebf0; }
 .mission-flow li b { width: 25px; height: 25px; display: grid; place-items: center; flex: 0 0 auto; border: 1px solid var(--line); border-radius: 50%; color: var(--blue); font: 9px "SFMono-Regular", Consolas, monospace; }
@@ -234,6 +260,7 @@ button:focus-visible { outline: 3px solid rgba(45, 120, 183, .25); outline-offse
 .action-tags { display: flex; flex-wrap: wrap; gap: 6px; }
 .action-tags span { padding: 5px 7px; background: var(--blue-soft); color: var(--blue); font: 8px "SFMono-Regular", Consolas, monospace; }
 .runtime-error { padding: 10px; background: #fff0f0; color: var(--red); font-size: 10px; }
+.runtime-notice { padding: 10px; background: #edf8f5; color: #27695c; font-size: 10px; }
 .event-log ol { max-height: 500px; margin: 18px 0 0; padding: 0; overflow: auto; list-style: none; }
 .event-log li { display: grid; grid-template-columns: 48px minmax(150px, .8fr) 1fr; gap: 12px; padding: 10px 6px; border-bottom: 1px solid #e7edf1; font-size: 9px; }
 .event-log time, .event-log li span { overflow: hidden; color: var(--slate); font-family: "SFMono-Regular", Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
@@ -245,6 +272,7 @@ button:focus-visible { outline: 3px solid rgba(45, 120, 183, .25); outline-offse
   .workspace { grid-template-columns: minmax(0, 1.8fr) minmax(290px, .8fr); }
   .control-deck { grid-template-columns: 1fr; }
   .mission-layout, .diagnostics-grid { grid-template-columns: 1fr; }
+  .mission-command-bar { grid-template-columns: 1fr; }
 }
 
 @media (prefers-reduced-motion: reduce) {

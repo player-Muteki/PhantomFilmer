@@ -71,6 +71,31 @@ function createApi(overrides: Partial<PhantomFilmerApi> = {}): PhantomFilmerApi 
     toggleMissionPause: vi.fn().mockResolvedValue({ ok: true }),
     listProfiles: vi.fn().mockResolvedValue([]),
     enrollProfile: vi.fn().mockResolvedValue(null),
+    startPreview: vi.fn().mockResolvedValue({
+      ok: true,
+      active: true,
+      state: 'running',
+      profileName: 'operator-a',
+      confirmed: false,
+      stableFrames: 0,
+      requiredStableFrames: 10,
+      found: false,
+      ambiguous: false,
+      candidateCount: 0,
+      fps: 0
+    }),
+    stopPreview: vi.fn().mockResolvedValue({
+      ok: true,
+      active: false,
+      state: 'idle',
+      confirmed: false,
+      stableFrames: 0,
+      requiredStableFrames: 10,
+      found: false,
+      ambiguous: false,
+      candidateCount: 0,
+      fps: 0
+    }),
     onBackendState: vi.fn().mockReturnValue(() => undefined),
     ...overrides
   }
@@ -181,7 +206,34 @@ describe('desktop flight console', () => {
         missions: ['manual', 'follow', 'reid_follow', 'fixed_demo'],
         eventReplay: true,
         rcLease: { required: true, ttlMs: 1000 },
+        preview: { requiredForAutomaticMission: true, stableFrames: 10, maxAgeMs: 2000 },
         missionReadiness: { available: true, missingAssets: [], profileRequired: true }
+      }),
+      getRuntimeSnapshot: vi.fn().mockResolvedValue({
+        sequence: 8,
+        phase: 'preflight',
+        mission: 'manual',
+        controlMode: 'none',
+        connected: true,
+        airborne: false,
+        streaming: true,
+        flightState: '地面待机',
+        allowedActions: ['refresh_status', 'start_mission'],
+        telemetry: {
+          preview: {
+            active: true,
+            state: 'running',
+            profileName: 'operator-a',
+            confirmed: true,
+            stableFrames: 10,
+            requiredStableFrames: 10,
+            found: true,
+            ambiguous: false,
+            similarity: 0.82,
+            candidateCount: 1,
+            fps: 10
+          }
+        }
       }),
       listProfiles: vi.fn().mockResolvedValue([{ name: 'operator-a', photoCount: 3 }])
     })
@@ -202,5 +254,80 @@ describe('desktop flight console', () => {
       initialControlMode: 'normal',
       obstacleEnabled: false
     }))
+  })
+
+  it('starts a capability-gated ground ReID preview for the selected profile', async () => {
+    window.phantomFilmer = createApi({
+      getRuntimeCapabilities: vi.fn().mockResolvedValue({
+        apiVersion: '1',
+        commands: ['preview.start', 'preview.stop'],
+        missions: ['manual', 'reid_follow'],
+        eventReplay: true,
+        rcLease: { required: true, ttlMs: 1000 },
+        preview: { requiredForAutomaticMission: true, stableFrames: 10, maxAgeMs: 2000 },
+        missionReadiness: { available: true, missingAssets: [], profileRequired: true }
+      }),
+      getRuntimeSnapshot: vi.fn().mockResolvedValue({
+        sequence: 5,
+        phase: 'preflight',
+        mission: 'manual',
+        controlMode: 'none',
+        connected: true,
+        airborne: false,
+        streaming: true,
+        flightState: '地面待机',
+        allowedActions: ['refresh_status', 'start_preview'],
+        telemetry: {}
+      }),
+      listProfiles: vi.fn().mockResolvedValue([{ name: 'operator-a', photoCount: 3 }])
+    })
+    render(<App />)
+    fireEvent.click(await screen.findByRole('button', { name: '任务与人物' }))
+    const previewRegion = await screen.findByRole('region', { name: '地面人物识别预览' })
+    await waitFor(() => expect(within(previewRegion).getByRole('button', { name: '启动识别预览' })).toBeEnabled())
+
+    fireEvent.click(within(previewRegion).getByRole('button', { name: '启动识别预览' }))
+
+    await waitFor(() => expect(window.phantomFilmer.startPreview).toHaveBeenCalledWith('operator-a'))
+    expect(await screen.findByText('模型已就绪；请让目标人物进入画面并等待连续确认。')).toBeInTheDocument()
+  })
+
+  it('exposes in-flight mission mode control and requires emergency confirmation', async () => {
+    const missionStatus: DroneStatus = {
+      ...groundStatus,
+      airborne: true,
+      canTakeoff: false,
+      rcEnabled: false,
+      phase: '手动飞行',
+      flightState: 'FOLLOWING'
+    }
+    window.phantomFilmer = createApi({
+      connect: vi.fn().mockResolvedValue(missionStatus),
+      status: vi.fn().mockResolvedValue(missionStatus),
+      getRuntimeSnapshot: vi.fn().mockResolvedValue({
+        sequence: 12,
+        phase: 'airborne',
+        mission: 'reid_follow',
+        controlMode: 'normal',
+        connected: true,
+        airborne: true,
+        streaming: true,
+        flightState: 'FOLLOWING',
+        allowedActions: ['stop_mission', 'emergency_stop_mission', 'select_control_mode', 'toggle_mission_pause'],
+        telemetry: { paused: false }
+      })
+    })
+    render(<App />)
+    fireEvent.click(await screen.findByRole('button', { name: '连接真机' }))
+
+    const missionControls = await screen.findByRole('region', { name: '自动任务空中控制' })
+    fireEvent.click(within(missionControls).getByRole('button', { name: '手动接管' }))
+    await waitFor(() => expect(window.phantomFilmer.selectControlMode).toHaveBeenCalledWith('manual'))
+
+    const emergency = within(missionControls).getByRole('button', { name: '任务急停' })
+    fireEvent.click(emergency)
+    expect(window.phantomFilmer.emergencyStopMission).not.toHaveBeenCalled()
+    fireEvent.click(within(missionControls).getByRole('button', { name: '再次确认急停' }))
+    await waitFor(() => expect(window.phantomFilmer.emergencyStopMission).toHaveBeenCalledTimes(1))
   })
 })

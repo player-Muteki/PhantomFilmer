@@ -16,7 +16,7 @@ from functools import partial
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from threading import Event, RLock, Thread
+from threading import Event, Lock, RLock, Thread
 from time import monotonic, sleep, time
 from typing import Any, Callable, Iterator, Optional
 from urllib.parse import parse_qs, urlsplit
@@ -31,8 +31,10 @@ from app.runtime.commands import (
     RefreshStatusCommand,
     SelectControlModeCommand,
     StartMissionCommand,
+    StartPreviewCommand,
     StopCommand,
     StopMissionCommand,
+    StopPreviewCommand,
     TakeoffCommand,
     ToggleMissionPauseCommand,
     command_from_payload,
@@ -65,12 +67,39 @@ HOST = "127.0.0.1"
 PORT = 0
 API_VERSION = "1"
 VIDEO_BOUNDARY = "frame"
-MIN_TAKEOFF_BATTERY = 20
-MAX_RC_SPEED = 35
 RC_WATCHDOG_SECONDS = 0.4
-FRONT_STOP_DISTANCE_CM = 60.0
-MIN_DESCENT_HEIGHT_CM = 40
-MAX_ASCENT_HEIGHT_CM = 200
+DEFAULT_TELEMETRY_POLL_SECONDS = 0.5
+DEFAULT_TELEMETRY_MAX_AGE_SECONDS = 2.0
+
+
+def _load_sidecar_runtime_config() -> dict[str, Any]:
+    """Load the shared config, retaining a conservative dependency-light fallback."""
+
+    try:
+        return load_runtime_config()
+    except ValueError as exc:
+        # Source-only smoke tests intentionally run without PyYAML. The project's
+        # fallback parser rejects complex nested blocks instead of guessing their
+        # meaning, so keep manual flight conservative and report mission assets as
+        # unavailable. Packaged sidecars include PyYAML and use the full config.
+        logging.warning("完整运行配置不可用，sidecar 使用保守默认值：%s", exc)
+        return {
+            "min_battery_takeoff": 20,
+            "low_battery_land": 5,
+            "max_height_cm": 220,
+            "min_height_cm": 60,
+            "max_rc_speed": 35,
+            "height_failure_limit": 10,
+            "desktop_telemetry_poll_seconds": DEFAULT_TELEMETRY_POLL_SECONDS,
+            "desktop_telemetry_max_age_seconds": DEFAULT_TELEMETRY_MAX_AGE_SECONDS,
+            "manual_control": {
+                "minimum_descent_height_cm": 40,
+                "maximum_ascent_height_cm": 200,
+                "front_stop_distance_cm": 60,
+            },
+            "obstacle": {"front_tof_max_age_seconds": 0.8},
+            "vision": {},
+        }
 
 
 class DroneWebService(MissionManager):
@@ -84,6 +113,7 @@ class DroneWebService(MissionManager):
         mission_session_factory: Optional[
             Callable[[StartMissionCommand, Any, OperatorCommandChannel], Any]
         ] = None,
+        runtime_config: Optional[dict[str, Any]] = None,
     ) -> None:
         super().__init__()
         self.data_dir = Path(data_dir).expanduser().resolve()
@@ -93,17 +123,75 @@ class DroneWebService(MissionManager):
         self._mission_session_factory = (
             mission_session_factory or self._build_mission_session
         )
+        self._runtime_config = (
+            runtime_config
+            if runtime_config is not None
+            else _load_sidecar_runtime_config()
+        )
+        safety_config = SafetyManager.from_dict(self._runtime_config).config
+        manual_config = self._runtime_config.get("manual_control", {})
+        if not isinstance(manual_config, dict):
+            manual_config = {}
+        obstacle_config = self._runtime_config.get("obstacle", {})
+        if not isinstance(obstacle_config, dict):
+            obstacle_config = {}
+        self._min_takeoff_battery = safety_config.min_battery_takeoff
+        self._low_battery_land = safety_config.low_battery_land
+        self._max_height_cm = safety_config.max_height_cm
+        self._max_rc_speed = safety_config.max_rc_speed
+        self._min_descent_height_cm = int(
+            manual_config.get("minimum_descent_height_cm", safety_config.min_height_cm)
+        )
+        self._max_ascent_height_cm = int(
+            manual_config.get("maximum_ascent_height_cm", safety_config.max_height_cm)
+        )
+        self._front_stop_distance_cm = float(
+            manual_config.get(
+                "front_stop_distance_cm",
+                obstacle_config.get("front_tof_blocked_distance_cm", 60.0),
+            )
+        )
+        self._front_tof_max_age_seconds = float(
+            obstacle_config.get("front_tof_max_age_seconds", 0.8)
+        )
+        self._telemetry_poll_seconds = max(
+            0.05,
+            float(
+                self._runtime_config.get(
+                    "desktop_telemetry_poll_seconds",
+                    DEFAULT_TELEMETRY_POLL_SECONDS,
+                )
+            ),
+        )
+        self._telemetry_max_age_seconds = max(
+            self._telemetry_poll_seconds,
+            float(
+                self._runtime_config.get(
+                    "desktop_telemetry_max_age_seconds",
+                    DEFAULT_TELEMETRY_MAX_AGE_SECONDS,
+                )
+            ),
+        )
+        self._telemetry_failure_limit = max(
+            1, int(self._runtime_config.get("height_failure_limit", 10))
+        )
         self._adapter: Optional[Any] = None
         self._lock = RLock()
         self._video_ready = False
         self._last_frame_at: Optional[float] = None
         self._control_hz = 0.0
         self._battery: Optional[int] = None
+        self._battery_checked_at = 0.0
+        self._battery_failures = 0
         self._front_tof: Optional[float] = None
         self._front_tof_checked_at = 0.0
         self._front_tof_state = "unavailable"
         self._height: Optional[int] = None
+        self._height_checked_at = 0.0
+        self._height_failures = 0
         self._airborne = False
+        self._safety_landing = False
+        self._safety_reason: Optional[str] = None
         self._flight_state = "未连接"
         self._phase = "连接"
         self._last_rc_at = 0.0
@@ -114,11 +202,36 @@ class DroneWebService(MissionManager):
         self._mission_session: Optional[Any] = None
         self._mission_thread: Optional[Thread] = None
         self._mission_error: Optional[str] = None
+        self._preview_detector: Optional[Any] = None
+        self._preview_generation = 0
+        self._preview_profile: Optional[str] = None
+        self._preview_state = "idle"
+        self._preview_error: Optional[str] = None
+        self._preview_result: dict[str, Any] = {}
+        self._preview_found_frames = 0
+        self._preview_confirmed = False
+        self._preview_last_at = 0.0
+        self._preview_frame_count = 0
+        self._preview_fps = 0.0
+        self._preview_stable_frames = max(
+            1, int(self._runtime_config.get("reid_lock_stable_frames", 10))
+        )
+        self._preview_max_age_seconds = max(
+            0.5,
+            float(self._runtime_config.get("desktop_preview_max_age_seconds", 2.0)),
+        )
+        self._preview_inference_lock = Lock()
         self._watchdog_stop = Event()
         self._watchdog = Thread(target=self._watch_rc, daemon=True)
         self._tof_monitor = Thread(target=self._monitor_front_tof, daemon=True)
+        self._telemetry_monitor = Thread(
+            target=self._monitor_manual_telemetry,
+            name="phantomfilmer-manual-safety",
+            daemon=True,
+        )
         self._watchdog.start()
         self._tof_monitor.start()
+        self._telemetry_monitor.start()
 
     def capabilities(self) -> dict[str, Any]:
         """Describe implemented commands separately from local asset readiness."""
@@ -126,7 +239,7 @@ class DroneWebService(MissionManager):
         missing_assets: list[str] = []
         if not self._custom_mission_session_factory:
             try:
-                config = load_runtime_config()
+                config = self._runtime_config
                 vision = config.get("vision", {})
                 cfg = vision if isinstance(vision, dict) else {}
                 project_root = Path(__file__).resolve().parents[1]
@@ -160,10 +273,27 @@ class DroneWebService(MissionManager):
                 "mission.emergency_stop",
                 "mission.control_mode.select",
                 "mission.pause.toggle",
+                "preview.start",
+                "preview.stop",
             ],
             "missions": ["manual", "follow", "reid_follow", "fixed_demo"],
             "eventReplay": True,
             "rcLease": {"required": True, "ttlMs": 1000},
+            "safety": {
+                "minTakeoffBattery": self._min_takeoff_battery,
+                "lowBatteryLand": self._low_battery_land,
+                "maxHeightCm": self._max_height_cm,
+                "maxRcSpeed": self._max_rc_speed,
+                "minDescentHeightCm": self._min_descent_height_cm,
+                "maxAscentHeightCm": self._max_ascent_height_cm,
+                "frontStopDistanceCm": self._front_stop_distance_cm,
+                "telemetryMaxAgeMs": round(self._telemetry_max_age_seconds * 1000),
+            },
+            "preview": {
+                "requiredForAutomaticMission": not self._custom_mission_session_factory,
+                "stableFrames": self._preview_stable_frames,
+                "maxAgeMs": round(self._preview_max_age_seconds * 1000),
+            },
             "missionReadiness": {
                 "available": not missing_assets,
                 "missingAssets": missing_assets,
@@ -194,7 +324,7 @@ class DroneWebService(MissionManager):
         if not isinstance(overwrite, bool):
             raise RuntimeError("覆盖选项格式无效。")
         selected_images = validate_reference_images(image_paths)
-        config = build_reid_runtime_config(load_runtime_config(), selected_images)
+        config = build_reid_runtime_config(self._runtime_config, selected_images)
         config = dict(config)
         vision = config.get("vision", {})
         runtime_vision = dict(vision) if isinstance(vision, dict) else {}
@@ -286,6 +416,7 @@ class DroneWebService(MissionManager):
                         AllowedAction.STOP_MISSION,
                         AllowedAction.EMERGENCY_STOP_MISSION,
                         AllowedAction.SELECT_CONTROL_MODE,
+                        AllowedAction.TOGGLE_MISSION_PAUSE,
                     )
                 )
                 manual_controller = getattr(mission_session, "manual_controller", None)
@@ -293,18 +424,33 @@ class DroneWebService(MissionManager):
                     allowed.extend((AllowedAction.HOVER, AllowedAction.MOVE_RC))
             else:
                 allowed.extend((AllowedAction.REFRESH_STATUS, AllowedAction.STOP))
-                front_tof_ready = self._front_tof_state in ("clear", "out_of_range")
+                front_tof_ready = (
+                    self._front_tof_state in ("clear", "out_of_range")
+                    and monotonic() - self._front_tof_checked_at
+                    <= self._front_tof_max_age_seconds
+                )
+                if not airborne and self._video_ready:
+                    if self._preview_detector is None:
+                        allowed.append(AllowedAction.START_PREVIEW)
+                    else:
+                        allowed.append(AllowedAction.STOP_PREVIEW)
                 if (
                     not airborne
                     and self._video_ready
                     and self._battery is not None
-                    and self._battery >= MIN_TAKEOFF_BATTERY
+                    and self._battery >= self._min_takeoff_battery
+                    and self._sample_is_fresh(self._battery_checked_at)
                     and self._height is not None
+                    and self._sample_is_fresh(self._height_checked_at)
                     and front_tof_ready
                 ):
                     allowed.append(AllowedAction.TAKEOFF)
-                    allowed.append(AllowedAction.START_MISSION)
-                if airborne:
+                    if (
+                        self._custom_mission_session_factory
+                        or self._preview_is_confirmed_locked()
+                    ):
+                        allowed.append(AllowedAction.START_MISSION)
+                if airborne and not self._safety_landing:
                     allowed.extend(
                         (
                             AllowedAction.LAND,
@@ -366,6 +512,13 @@ class DroneWebService(MissionManager):
                     "frontTofCm": self._front_tof,
                     "frontTofState": self._front_tof_state,
                     "controlHz": round(float(telemetry_control_hz), 1),
+                    "paused": bool(
+                        mission_active and getattr(mission_session, "paused", False)
+                    ),
+                    "batteryFresh": self._sample_is_fresh(self._battery_checked_at),
+                    "heightFresh": self._sample_is_fresh(self._height_checked_at),
+                    "safetyReason": self._safety_reason,
+                    "preview": self._preview_status_locked(),
                 },
                 error=error or self._mission_error,
             )
@@ -389,6 +542,7 @@ class DroneWebService(MissionManager):
                 self._battery = getattr(adapter, "last_connection_battery", None)
                 if self._battery is None:
                     self._battery = adapter.get_battery()
+                self._battery_checked_at = monotonic()
                 adapter.stream_on()
                 self._probe_video(timeout_seconds=5.0)
                 self._refresh_front_tof(force=True)
@@ -418,21 +572,32 @@ class DroneWebService(MissionManager):
 
             try:
                 self._battery = adapter.get_cached_battery()
+                self._battery_checked_at = monotonic()
+                self._battery_failures = 0
             except RuntimeError:
-                pass
+                self._battery_failures += 1
 
             try:
                 self._height = adapter.get_height()
+                self._height_checked_at = monotonic()
+                self._height_failures = 0
             except RuntimeError:
                 self._height = None
+                self._height_failures += 1
 
-            front_tof_ready = self._front_tof_state in ("clear", "out_of_range")
+            front_tof_ready = (
+                self._front_tof_state in ("clear", "out_of_range")
+                and monotonic() - self._front_tof_checked_at
+                <= self._front_tof_max_age_seconds
+            )
             can_takeoff = bool(
                 not self._airborne
                 and self._video_ready
                 and self._battery is not None
-                and self._battery >= MIN_TAKEOFF_BATTERY
+                and self._battery >= self._min_takeoff_battery
+                and self._sample_is_fresh(self._battery_checked_at)
                 and self._height is not None
+                and self._sample_is_fresh(self._height_checked_at)
                 and front_tof_ready
             )
 
@@ -443,17 +608,21 @@ class DroneWebService(MissionManager):
                 "frontTofState": self._front_tof_state,
                 "controlHz": round(self._control_hz, 1),
                 "flightState": self._flight_state,
-                "targetConfirmed": False,
+                "targetConfirmed": self._preview_is_confirmed_locked(),
                 "phase": self._phase,
                 "videoReady": self._video_ready,
                 "airborne": self._airborne,
                 "canTakeoff": can_takeoff,
                 "rcEnabled": self._airborne,
+                "batteryFresh": self._sample_is_fresh(self._battery_checked_at),
+                "heightFresh": self._sample_is_fresh(self._height_checked_at),
+                "safetyReason": self._safety_reason,
+                "preview": self._preview_status_locked(),
                 "preflight": {
                     "sdk": True,
                     "video": self._video_ready,
-                    "battery": self._battery is not None and self._battery >= MIN_TAKEOFF_BATTERY,
-                    "bottomTof": self._height is not None,
+                    "battery": self._battery is not None and self._battery >= self._min_takeoff_battery,
+                    "bottomTof": self._height is not None and self._sample_is_fresh(self._height_checked_at),
                     "frontTof": front_tof_ready,
                 },
             }
@@ -462,6 +631,8 @@ class DroneWebService(MissionManager):
         """Take off only after all locally verifiable preflight gates pass."""
         with self._lock:
             self._require_no_active_mission()
+            if self._preview_detector is not None:
+                raise RuntimeError("请先停止地面识别预览，再执行独立手动起飞。")
             self._rc_leases.revoke()
             if not self.connected or self._adapter is None:
                 raise RuntimeError("真机未连接，不能起飞。")
@@ -484,6 +655,7 @@ class DroneWebService(MissionManager):
                 self._phase = "检查"
                 raise
             self._airborne = True
+            self._safety_reason = None
             self._flight_state = "手动悬停"
             self._phase = "手动飞行"
             self._send_hover()
@@ -510,7 +682,10 @@ class DroneWebService(MissionManager):
     def hover(self) -> dict[str, Any]:
         """Immediately clear all four RC channels."""
         with self._lock:
-            self._require_no_active_mission()
+            if self._mission_session is not None:
+                self._require_mission_manual_control()
+                self._operator_commands.submit(OperatorCommand.HOVER)
+                return self._mission_status_locked()
             self._require_airborne()
             self._send_hover()
             self._flight_state = "手动悬停"
@@ -529,13 +704,20 @@ class DroneWebService(MissionManager):
             vertical = channels["upDown"]
             if forward > 0:
                 age = monotonic() - self._front_tof_checked_at
-                if age > 1.2 or self._front_tof_state == "unavailable":
+                if age > self._front_tof_max_age_seconds or self._front_tof_state == "unavailable":
                     raise RuntimeError("前向 ToF 数据无效或过期，已禁止前进。")
-                if self._front_tof is not None and self._front_tof <= FRONT_STOP_DISTANCE_CM:
-                    raise RuntimeError("前方 60 cm 内存在障碍，已禁止前进。")
-            if vertical < 0 and self._height is not None and self._height <= MIN_DESCENT_HEIGHT_CM:
+                if self._front_tof is not None and self._front_tof <= self._front_stop_distance_cm:
+                    raise RuntimeError(
+                        f"前方 {self._front_stop_distance_cm:g} cm 内存在障碍，已禁止前进。"
+                    )
+            if vertical and (
+                self._height is None
+                or not self._sample_is_fresh(self._height_checked_at)
+            ):
+                raise RuntimeError("底部 ToF 数据无效或过期，已禁止升降。")
+            if vertical < 0 and self._height is not None and self._height <= self._min_descent_height_cm:
                 raise RuntimeError("当前高度过低，已禁止继续下降。")
-            if vertical > 0 and self._height is not None and self._height >= MAX_ASCENT_HEIGHT_CM:
+            if vertical > 0 and self._height is not None and self._height >= self._max_ascent_height_cm:
                 raise RuntimeError("当前高度达到手动上升上限。")
 
             self._adapter.move_rc(
@@ -549,6 +731,81 @@ class DroneWebService(MissionManager):
             self._flight_state = "手动飞行" if self._rc_active else "手动悬停"
             return {"ok": True, "flightState": self._flight_state}
 
+    def start_preview(self, command: StartPreviewCommand) -> dict[str, Any]:
+        """Prepare profile-bound ReID and annotate the existing ground video stream."""
+
+        with self._lock:
+            if not self.connected or self._adapter is None:
+                raise RuntimeError("真机未连接，无法启动地面识别预览。")
+            self._require_no_active_mission()
+            if self._airborne:
+                raise RuntimeError("地面识别预览只能在起飞前运行。")
+            if not self._video_ready:
+                raise RuntimeError("视频尚未就绪，无法启动地面识别预览。")
+            if self._preview_state == "preparing":
+                if self._preview_profile == command.profile_name:
+                    return {"ok": True, **self._preview_status_locked()}
+                raise RuntimeError("已有其他人物档案正在准备预览，请先停止。")
+            if self._preview_detector is not None:
+                if self._preview_profile == command.profile_name:
+                    return {"ok": True, **self._preview_status_locked()}
+                raise RuntimeError("已有其他人物档案正在预览，请先停止。")
+            self._preview_generation += 1
+            preview_generation = self._preview_generation
+            self._preview_state = "preparing"
+            self._preview_profile = command.profile_name
+            self._preview_error = None
+            self._preview_result = {}
+            self._preview_found_frames = 0
+            self._preview_confirmed = False
+
+        try:
+            config = self._profile_runtime_config(command.profile_name)
+            detector = create_detector(config)
+            prepare = getattr(detector, "prepare", None)
+            if callable(prepare):
+                prepare()
+        except Exception as exc:
+            with self._lock:
+                if self._preview_generation == preview_generation:
+                    self._clear_preview_locked()
+                    self._preview_state = "error"
+                    self._preview_profile = command.profile_name
+                    self._preview_error = str(exc)
+            raise
+
+        with self._lock:
+            if (
+                self._preview_generation != preview_generation
+                or self._preview_state != "preparing"
+                or self._preview_profile != command.profile_name
+                or not self.connected
+                or self._airborne
+                or self._mission_session is not None
+            ):
+                reset = getattr(detector, "reset", None)
+                if callable(reset):
+                    reset()
+                if self._preview_generation == preview_generation:
+                    self._clear_preview_locked()
+                raise RuntimeError("预览准备期间运行状态已变化，请重新确认真机状态。")
+            self._preview_detector = detector
+            self._preview_state = "running"
+            self._preview_last_at = 0.0
+            self._preview_frame_count = 0
+            self._preview_fps = 0.0
+            return {"ok": True, **self._preview_status_locked()}
+
+    def stop_preview(self) -> dict[str, Any]:
+        """Stop annotation and release the ground-preview detector."""
+
+        with self._lock:
+            if self._preview_detector is None and self._preview_state == "idle":
+                return {"ok": True, **self._preview_status_locked()}
+            with self._preview_inference_lock:
+                self._clear_preview_locked()
+            return {"ok": True, **self._preview_status_locked()}
+
     def start_mission(self, command: StartMissionCommand) -> dict[str, Any]:
         """Start one shared FollowSession without blocking the HTTP worker."""
 
@@ -558,6 +815,14 @@ class DroneWebService(MissionManager):
             MissionKind.FIXED_DEMO,
         }:
             raise RuntimeError(f"桌面端暂不支持任务：{command.mission.value}")
+        mode_command = {
+            ControlMode.MANUAL: OperatorCommand.SELECT_MANUAL,
+            ControlMode.NORMAL: OperatorCommand.SELECT_NORMAL,
+            ControlMode.SIDE: OperatorCommand.SELECT_SIDE,
+            ControlMode.FRONT: OperatorCommand.SELECT_FRONT,
+        }.get(command.initial_control_mode)
+        if mode_command is None:
+            raise RuntimeError("自动任务初始控制模式无效。")
         with self._lock:
             if not self.connected or self._adapter is None:
                 raise RuntimeError("真机未连接，无法启动自动任务。")
@@ -567,20 +832,19 @@ class DroneWebService(MissionManager):
             current = self.status(probe_video=True)
             if not current["canTakeoff"]:
                 raise RuntimeError("任务起飞检查未通过：请确认视频、电量和 ToF 均正常。")
+            if not self._custom_mission_session_factory:
+                if self._preview_profile != command.profile_name:
+                    raise RuntimeError("请使用本次任务选择的人物档案完成地面识别预览。")
+                if not self._preview_is_confirmed_locked():
+                    raise RuntimeError("地面预览尚未稳定确认目标人物，不能启动自动任务。")
 
             self._rc_leases.revoke()
             self._operator_commands.clear()
-            session = self._mission_session_factory(
-                command, self._adapter, self._operator_commands
-            )
-            mode_command = {
-                ControlMode.MANUAL: OperatorCommand.SELECT_MANUAL,
-                ControlMode.NORMAL: OperatorCommand.SELECT_NORMAL,
-                ControlMode.SIDE: OperatorCommand.SELECT_SIDE,
-                ControlMode.FRONT: OperatorCommand.SELECT_FRONT,
-            }.get(command.initial_control_mode)
-            if mode_command is None:
-                raise RuntimeError("自动任务初始控制模式无效。")
+            with self._preview_inference_lock:
+                session = self._mission_session_factory(
+                    command, self._adapter, self._operator_commands
+                )
+                self._clear_preview_locked(reset_detector=False)
             self._operator_commands.submit(mode_command)
             authorize_takeoff = getattr(self._adapter, "authorize_next_takeoff", None)
             if callable(authorize_takeoff):
@@ -778,6 +1042,7 @@ class DroneWebService(MissionManager):
         finally:
             self._watchdog.join(timeout=1.0)
             self._tof_monitor.join(timeout=3.0)
+            self._telemetry_monitor.join(timeout=1.0)
 
     def _refresh_front_tof(self, force: bool = False) -> None:
         adapter = self._adapter
@@ -793,7 +1058,7 @@ class DroneWebService(MissionManager):
             distance = adapter.get_front_distance_cm()
             self._front_tof = distance
             self._front_tof_state = "out_of_range" if distance is None else (
-                "blocked" if distance <= FRONT_STOP_DISTANCE_CM else "clear"
+                "blocked" if distance <= self._front_stop_distance_cm else "clear"
             )
         except RuntimeError:
             self._front_tof = None
@@ -804,6 +1069,8 @@ class DroneWebService(MissionManager):
             raise RuntimeError("真机未连接。")
         if not self._airborne:
             raise RuntimeError("真机尚未起飞，手动控制不可用。")
+        if self._safety_landing:
+            raise RuntimeError("安全监视正在执行降落，手动控制已锁定。")
 
     def _require_mission_manual_control(self) -> None:
         session = self._mission_session
@@ -835,11 +1102,10 @@ class DroneWebService(MissionManager):
             ("yaw", -1): OperatorCommand.YAW_LEFT,
         }[(key, 1 if value > 0 else -1)]
 
-    @staticmethod
-    def _bounded_channel(value: Any) -> int:
+    def _bounded_channel(self, value: Any) -> int:
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise RuntimeError("手动控制量格式无效。")
-        return max(-MAX_RC_SPEED, min(MAX_RC_SPEED, int(value)))
+        return max(-self._max_rc_speed, min(self._max_rc_speed, int(value)))
 
     def _send_hover(self) -> None:
         adapter = self._adapter
@@ -864,6 +1130,109 @@ class DroneWebService(MissionManager):
                     except RuntimeError:
                         self._rc_active = False
 
+    def _sample_is_fresh(self, checked_at: float) -> bool:
+        return bool(
+            checked_at > 0
+            and monotonic() - checked_at <= self._telemetry_max_age_seconds
+        )
+
+    def _monitor_manual_telemetry(self) -> None:
+        """Continuously converge unsafe manual flights to a controlled landing."""
+
+        while not self._watchdog_stop.wait(self._telemetry_poll_seconds):
+            with self._lock:
+                adapter = (
+                    self._adapter
+                    if self.connected
+                    and self._airborne
+                    and self._mission_session is None
+                    and not self._safety_landing
+                    else None
+                )
+            if adapter is None:
+                continue
+
+            battery: Optional[int] = None
+            height: Optional[int] = None
+            battery_error = False
+            height_error = False
+            try:
+                battery = int(adapter.get_cached_battery())
+            except (RuntimeError, TypeError, ValueError):
+                battery_error = True
+            try:
+                height = int(adapter.get_height())
+            except (RuntimeError, TypeError, ValueError):
+                height_error = True
+
+            reason: Optional[str] = None
+            with self._lock:
+                if (
+                    self._adapter is not adapter
+                    or not self._airborne
+                    or self._mission_session is not None
+                    or self._safety_landing
+                ):
+                    continue
+                now = monotonic()
+                if battery_error:
+                    self._battery_failures += 1
+                else:
+                    self._battery = battery
+                    self._battery_checked_at = now
+                    self._battery_failures = 0
+                if height_error:
+                    self._height = None
+                    self._height_failures += 1
+                else:
+                    self._height = height
+                    self._height_checked_at = now
+                    self._height_failures = 0
+
+                if battery is not None and battery <= self._low_battery_land:
+                    reason = f"电量降至 {battery}%（保护阈值 {self._low_battery_land}%）"
+                elif height is not None and height > self._max_height_cm:
+                    reason = f"高度达到 {height} cm（保护上限 {self._max_height_cm} cm）"
+                elif self._battery_failures >= self._telemetry_failure_limit:
+                    reason = "电量遥测连续失效"
+                elif self._height_failures >= self._telemetry_failure_limit:
+                    reason = "底部 ToF 遥测连续失效"
+
+                if reason is None:
+                    continue
+                self._safety_landing = True
+                self._safety_reason = reason
+                self._flight_state = f"安全降落：{reason}"
+                self._phase = "降落"
+                self._rc_leases.revoke()
+
+            self.events.publish(
+                "flight.safety_landing.started",
+                {"reason": reason},
+                snapshot=self.runtime_snapshot(),
+            )
+            failure: Optional[str] = None
+            with self._lock:
+                try:
+                    if self._adapter is adapter and self._airborne:
+                        self._send_hover()
+                        adapter.land()
+                        self._airborne = False
+                        self._flight_state = f"已安全降落：{reason}"
+                        self._phase = "检查"
+                except Exception as exc:
+                    failure = str(exc)
+                    self._flight_state = f"安全降落失败：{reason}"
+                finally:
+                    self._safety_landing = False
+            self.events.publish(
+                "flight.safety_landing.failed"
+                if failure
+                else "flight.safety_landing.completed",
+                {"reason": reason, "error": failure},
+                snapshot=self.runtime_snapshot(error=failure),
+            )
+
     def _monitor_front_tof(self) -> None:
         """Poll the blocking expansion command without blocking manual RC handling."""
         while not self._watchdog_stop.wait(0.2):
@@ -878,7 +1247,7 @@ class DroneWebService(MissionManager):
             try:
                 distance = adapter.get_front_distance_cm()
                 state = "out_of_range" if distance is None else (
-                    "blocked" if distance <= FRONT_STOP_DISTANCE_CM else "clear"
+                    "blocked" if distance <= self._front_stop_distance_cm else "clear"
                 )
             except RuntimeError:
                 distance = None
@@ -927,6 +1296,79 @@ class DroneWebService(MissionManager):
             snapshot=self.runtime_snapshot(),
         )
 
+    def _profile_runtime_config(
+        self,
+        profile_name: str,
+        obstacle_enabled: Optional[bool] = None,
+    ) -> dict[str, Any]:
+        config = self._runtime_config
+        if obstacle_enabled is not None:
+            config = dict(config)
+            obstacle = config.get("obstacle", {})
+            runtime_obstacle = dict(obstacle) if isinstance(obstacle, dict) else {}
+            runtime_obstacle["enabled"] = obstacle_enabled
+            config["obstacle"] = runtime_obstacle
+        config = build_reid_runtime_config(config, profile_name=profile_name)
+        config = dict(config)
+        config["display_console_camera"] = False
+        vision = config.get("vision", {})
+        runtime_vision = dict(vision) if isinstance(vision, dict) else {}
+        runtime_vision["reid_profile_root"] = str(self.data_dir / "reid_profiles")
+        config["vision"] = runtime_vision
+        return config
+
+    def _preview_is_confirmed_locked(self) -> bool:
+        return bool(
+            self._preview_detector is not None
+            and self._preview_confirmed
+            and self._preview_last_at > 0
+            and monotonic() - self._preview_last_at <= self._preview_max_age_seconds
+        )
+
+    def _preview_status_locked(self) -> dict[str, Any]:
+        result = self._preview_result
+        age_ms = (
+            round(max(0.0, monotonic() - self._preview_last_at) * 1000)
+            if self._preview_last_at > 0
+            else None
+        )
+        return {
+            "active": self._preview_detector is not None,
+            "state": self._preview_state,
+            "profileName": self._preview_profile,
+            "confirmed": self._preview_is_confirmed_locked(),
+            "stableFrames": self._preview_found_frames,
+            "requiredStableFrames": self._preview_stable_frames,
+            "found": bool(result.get("found", False)),
+            "ambiguous": bool(result.get("ambiguous", False)),
+            "similarity": result.get("similarity"),
+            "similarityThreshold": result.get("similarity_threshold"),
+            "candidateCount": int(result.get("candidate_count") or 0),
+            "areaRatio": result.get("area_ratio"),
+            "orientationDeg": result.get("body_orientation_angle"),
+            "fps": round(self._preview_fps, 1),
+            "lastFrameAgeMs": age_ms,
+            "error": self._preview_error,
+        }
+
+    def _clear_preview_locked(self, *, reset_detector: bool = True) -> None:
+        self._preview_generation += 1
+        detector = self._preview_detector
+        if reset_detector and detector is not None:
+            reset = getattr(detector, "reset", None)
+            if callable(reset):
+                reset()
+        self._preview_detector = None
+        self._preview_profile = None
+        self._preview_state = "idle"
+        self._preview_error = None
+        self._preview_result = {}
+        self._preview_found_frames = 0
+        self._preview_confirmed = False
+        self._preview_last_at = 0.0
+        self._preview_frame_count = 0
+        self._preview_fps = 0.0
+
     def _build_mission_session(
         self,
         command: StartMissionCommand,
@@ -937,19 +1379,20 @@ class DroneWebService(MissionManager):
 
         if not command.profile_name:
             raise RuntimeError("自动任务必须选择一个本地人物档案。")
-        config = load_runtime_config(command.obstacle_enabled)
-        config = build_reid_runtime_config(
-            config,
-            profile_name=command.profile_name,
+        config = self._profile_runtime_config(
+            command.profile_name,
+            command.obstacle_enabled,
         )
-        config = dict(config)
-        config["display_console_camera"] = False
-        vision = config.get("vision", {})
-        runtime_vision = dict(vision) if isinstance(vision, dict) else {}
-        runtime_vision["reid_profile_root"] = str(self.data_dir / "reid_profiles")
-        config["vision"] = runtime_vision
         safety = SafetyManager.from_dict(config)
-        detector = create_detector(config)
+        detector = (
+            self._preview_detector
+            if self._preview_profile == command.profile_name
+            and self._preview_detector is not None
+            else create_detector(config)
+        )
+        reset_detector = getattr(detector, "reset", None)
+        if callable(reset_detector):
+            reset_detector()
         controller = FollowController.from_config(
             safety_manager=safety,
             config=config,
@@ -1032,10 +1475,11 @@ class DroneWebService(MissionManager):
             "airborne": airborne,
             "canTakeoff": False,
             "rcEnabled": bool(getattr(manual_controller, "active", False)),
+            "paused": bool(getattr(session, "paused", False)),
             "preflight": {
                 "sdk": True,
                 "video": self._video_ready,
-                "battery": battery is not None and int(battery) >= MIN_TAKEOFF_BATTERY,
+                "battery": battery is not None and int(battery) >= self._min_takeoff_battery,
                 "bottomTof": height is not None,
                 "frontTof": self._front_tof_state in ("clear", "out_of_range"),
             },
@@ -1051,7 +1495,13 @@ class DroneWebService(MissionManager):
         self._front_tof_checked_at = 0.0
         self._front_tof_state = "unavailable"
         self._height = None
+        self._battery_checked_at = 0.0
+        self._battery_failures = 0
+        self._height_checked_at = 0.0
+        self._height_failures = 0
         self._airborne = False
+        self._safety_landing = False
+        self._safety_reason = None
         self._flight_state = "未连接"
         self._phase = "连接"
         self._last_rc_at = 0.0
@@ -1060,6 +1510,8 @@ class DroneWebService(MissionManager):
         self._mission_session = None
         self._mission_thread = None
         self._mission_error = None
+        with self._preview_inference_lock:
+            self._clear_preview_locked()
         self._operator_commands.clear()
 
     def mjpeg_frames(self) -> Iterator[bytes]:
@@ -1078,6 +1530,55 @@ class DroneWebService(MissionManager):
                 if not self._is_real_frame(frame):
                     sleep(0.05)
                     continue
+                with self._lock:
+                    preview_detector = self._preview_detector
+                if preview_detector is not None:
+                    preview_result: Optional[dict[str, Any]] = None
+                    preview_error: Optional[str] = None
+                    preview_frame = frame
+                    started_at = monotonic()
+                    try:
+                        with self._preview_inference_lock:
+                            preview_result = dict(preview_detector.detect(frame))
+                            preview_frame = preview_detector.draw_debug(
+                                frame, preview_result
+                            )
+                    except Exception as exc:
+                        preview_error = str(exc)
+                    finished_at = monotonic()
+                    with self._lock:
+                        if self._preview_detector is preview_detector:
+                            if preview_error is not None:
+                                self._preview_state = "error"
+                                self._preview_error = preview_error
+                                self._preview_found_frames = 0
+                                self._preview_confirmed = False
+                            elif preview_result is not None:
+                                self._preview_state = "running"
+                                self._preview_error = None
+                                self._preview_result = preview_result
+                                self._preview_last_at = finished_at
+                                self._preview_frame_count += 1
+                                instant_fps = 1.0 / max(
+                                    0.001, finished_at - started_at
+                                )
+                                self._preview_fps = (
+                                    instant_fps
+                                    if self._preview_fps == 0
+                                    else self._preview_fps * 0.8 + instant_fps * 0.2
+                                )
+                                if preview_result.get("found") and not preview_result.get(
+                                    "is_predicted"
+                                ):
+                                    self._preview_found_frames += 1
+                                else:
+                                    self._preview_found_frames = 0
+                                self._preview_confirmed = (
+                                    self._preview_found_frames
+                                    >= self._preview_stable_frames
+                                )
+                    if preview_error is None:
+                        frame = preview_frame
                 ok, encoded = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 82])
                 if not ok:
                     sleep(0.05)

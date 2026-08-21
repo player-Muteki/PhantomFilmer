@@ -10,6 +10,7 @@ import type {
   RcCommand,
   MissionStartOptions,
   ProfileSummary,
+  GroundPreviewStatus,
   RuntimeCapabilities,
   RuntimeEventsResponse,
   RuntimeSnapshot
@@ -272,22 +273,26 @@ export class SidecarManager {
   }
 
   async stopMission(): Promise<{ ok: boolean }> {
+    await this.releaseRcLease().catch(() => undefined)
     const result = await this.commandRequest<{ ok: boolean }>('mission.stop')
     this.rememberStatus({ airborne: false })
     return result
   }
 
   async emergencyStopMission(): Promise<{ ok: boolean }> {
+    await this.releaseRcLease().catch(() => undefined)
     const result = await this.commandRequest<{ ok: boolean }>('mission.emergency_stop')
     this.rememberStatus({ airborne: false })
     return result
   }
 
   async selectControlMode(mode: MissionStartOptions['initialControlMode']): Promise<{ ok: boolean; mode: string }> {
+    await this.releaseRcLease().catch(() => undefined)
     return this.commandRequest('mission.control_mode.select', { mode })
   }
 
   async toggleMissionPause(): Promise<{ ok: boolean }> {
+    await this.releaseRcLease().catch(() => undefined)
     return this.commandRequest('mission.pause.toggle')
   }
 
@@ -303,6 +308,14 @@ export class SidecarManager {
       { name, imagePaths, overwrite }
     )
     return response.profile
+  }
+
+  async startPreview(profileName: string): Promise<GroundPreviewStatus & { ok: boolean }> {
+    return this.commandRequest('preview.start', { profileName }, 120_000)
+  }
+
+  async stopPreview(): Promise<GroundPreviewStatus & { ok: boolean }> {
+    return this.commandRequest('preview.stop')
   }
 
   async shutdown(timeoutMs = STOP_TIMEOUT_MS): Promise<void> {
@@ -354,14 +367,18 @@ export class SidecarManager {
     return status
   }
 
-  private async commandRequest<Result>(type: string, payload: Record<string, unknown> = {}): Promise<Result> {
+  private async commandRequest<Result>(
+    type: string,
+    payload: Record<string, unknown> = {},
+    timeoutMs?: number
+  ): Promise<Result> {
     const commandId = randomBytes(16).toString('hex')
     const envelope = await this.request<V1CommandEnvelope<Result>>('POST', '/api/v1/commands', {
       type,
       commandId,
       issuedAt: Date.now(),
       ...payload
-    })
+    }, timeoutMs)
     if (envelope.apiVersion !== '1' || envelope.commandId !== commandId) {
       throw new Error('本地后端返回了不兼容的命令响应。')
     }
@@ -403,7 +420,12 @@ export class SidecarManager {
     this.options.onStateChange(this.getState())
   }
 
-  private async request<Result>(method: 'GET' | 'POST', path: string, body?: unknown): Promise<Result> {
+  private async request<Result>(
+    method: 'GET' | 'POST',
+    path: string,
+    body?: unknown,
+    timeoutMs?: number
+  ): Promise<Result> {
     const token = this.sessionToken
     if (!token) throw new Error('后端会话尚未启动。')
     let response: Response
@@ -415,10 +437,10 @@ export class SidecarManager {
           ...(body === undefined ? {} : { 'Content-Type': 'application/json' })
         },
         body: body === undefined ? undefined : JSON.stringify(body),
-        signal: AbortSignal.timeout(
+        signal: AbortSignal.timeout(timeoutMs ?? (
           path === '/api/sidecar/shutdown' ? STOP_TIMEOUT_MS :
             path === '/api/v1/profiles/enroll' ? 120_000 : START_TIMEOUT_MS
-        )
+        ))
       })
     } catch (error) {
       throw new Error(`无法连接本地后端：${error instanceof Error ? error.message : '未知错误'}`)

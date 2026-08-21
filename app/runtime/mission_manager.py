@@ -17,8 +17,10 @@ from app.runtime.commands import (
     RuntimeCommand,
     SelectControlModeCommand,
     StartMissionCommand,
+    StartPreviewCommand,
     StopCommand,
     StopMissionCommand,
+    StopPreviewCommand,
     TakeoffCommand,
     ToggleMissionPauseCommand,
     command_name,
@@ -93,6 +95,10 @@ class MissionManager(ABC):
             return self.select_control_mode(command)
         if isinstance(command, ToggleMissionPauseCommand):
             return self.toggle_mission_pause()
+        if isinstance(command, StartPreviewCommand):
+            return self.start_preview(command)
+        if isinstance(command, StopPreviewCommand):
+            return self.stop_preview()
         raise TypeError(f"unsupported runtime command: {type(command).__name__}")
 
     @abstractmethod
@@ -141,3 +147,10 @@ class MissionManager(ABC):
 
     def toggle_mission_pause(self) -> Any:
         raise RuntimeError("当前运行时不支持暂停任务。")
+
+    def start_preview(self, command: StartPreviewCommand) -> Any:
+        del command
+        raise RuntimeError("当前运行时不支持地面识别预览。")
+
+    def stop_preview(self) -> Any:
+        raise RuntimeError("当前运行时没有可停止的地面识别预览。")

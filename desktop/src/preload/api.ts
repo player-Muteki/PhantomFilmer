@@ -19,6 +19,11 @@ export type DroneStatus = {
   airborne?: boolean
   canTakeoff?: boolean
   rcEnabled?: boolean
+  paused?: boolean
+  batteryFresh?: boolean
+  heightFresh?: boolean
+  safetyReason?: string | null
+  preview?: GroundPreviewStatus
   preflight?: {
     sdk?: boolean
     video?: boolean
@@ -26,6 +31,25 @@ export type DroneStatus = {
     bottomTof?: boolean
     frontTof?: boolean
   }
+}
+
+export type GroundPreviewStatus = {
+  active: boolean
+  state: 'idle' | 'preparing' | 'running' | 'error'
+  profileName?: string | null
+  confirmed: boolean
+  stableFrames: number
+  requiredStableFrames: number
+  found: boolean
+  ambiguous: boolean
+  similarity?: number | null
+  similarityThreshold?: number | null
+  candidateCount: number
+  areaRatio?: number | null
+  orientationDeg?: number | null
+  fps: number
+  lastFrameAgeMs?: number | null
+  error?: string | null
 }
 
 export type BackendState = {
@@ -65,6 +89,21 @@ export type RuntimeCapabilities = {
   missions: string[]
   eventReplay: boolean
   rcLease: { required: boolean; ttlMs: number }
+  safety?: {
+    minTakeoffBattery: number
+    lowBatteryLand: number
+    maxHeightCm: number
+    maxRcSpeed: number
+    minDescentHeightCm: number
+    maxAscentHeightCm: number
+    frontStopDistanceCm: number
+    telemetryMaxAgeMs: number
+  }
+  preview?: {
+    requiredForAutomaticMission: boolean
+    stableFrames: number
+    maxAgeMs: number
+  }
   missionReadiness?: {
     available: boolean
     missingAssets: string[]
@@ -116,5 +155,7 @@ export type PhantomFilmerApi = {
   toggleMissionPause: () => Promise<{ ok: boolean }>
   listProfiles: () => Promise<ProfileSummary[]>
   enrollProfile: (name: string, overwrite: boolean) => Promise<ProfileSummary | null>
+  startPreview: (profileName: string) => Promise<GroundPreviewStatus & { ok: boolean }>
+  stopPreview: () => Promise<GroundPreviewStatus & { ok: boolean }>
   onBackendState: (listener: (state: BackendState) => void) => () => void
 }

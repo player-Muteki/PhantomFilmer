@@ -22,6 +22,11 @@ takeoff_height_sample_interval_seconds: 0.2
 height_filter_window: 5
 height_max_valid_cm: 500
 height_failure_limit: 10
+# Electron 手动飞行独立遥测监视；自动任务仍由 FollowSession 自身监视。
+desktop_telemetry_poll_seconds: 0.5
+desktop_telemetry_max_age_seconds: 2.0
+# GUI 自动任务要求地面 ReID 连续确认，超过该时长未收到新识别帧即失效。
+desktop_preview_max_age_seconds: 2.0
 max_rc_speed: 35
 camera_width: 640
 camera_height: 480

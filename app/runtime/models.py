@@ -48,6 +48,9 @@ class AllowedAction(str, Enum):
     STOP_MISSION = "stop_mission"
     EMERGENCY_STOP_MISSION = "emergency_stop_mission"
     SELECT_CONTROL_MODE = "select_control_mode"
+    TOGGLE_MISSION_PAUSE = "toggle_mission_pause"
+    START_PREVIEW = "start_preview"
+    STOP_PREVIEW = "stop_preview"
 
 
 @dataclass(frozen=True)

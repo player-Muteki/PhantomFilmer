@@ -29,23 +29,32 @@ state = {
     "video_token": "",
     "rc_lease": "",
     "rc_sequence": 0,
+    "mission": "idle",
+    "control_mode": "none",
+    "preview_active": False,
+    "preview_confirmed": False,
+    "preview_profile": None,
+    "sequence": 0,
+    "events": [],
 }
 
 
 def status():
     airborne = state["airborne"]
+    mission_active = state["mission"] != "idle"
+    manual = not mission_active or state["control_mode"] == "manual"
     return {
         "battery": 88,
         "heightCm": 72 if airborne else 12,
         "frontTofCm": 150,
         "frontTofState": "clear",
         "controlHz": 30.0,
-        "flightState": "手动悬停" if airborne else "地面待机",
-        "phase": "手动飞行" if airborne else "检查",
+        "flightState": "FOLLOWING" if mission_active else "手动悬停" if airborne else "地面待机",
+        "phase": "自动任务" if mission_active else "手动飞行" if airborne else "检查",
         "videoReady": True,
         "airborne": airborne,
         "canTakeoff": not airborne,
-        "rcEnabled": airborne,
+        "rcEnabled": airborne and manual,
         "preflight": {
             "sdk": True,
             "video": True,
@@ -59,17 +68,43 @@ def status():
 def runtime_snapshot():
     airborne = state["airborne"]
     connected = state["connected"]
+    mission = state["mission"] if state["mission"] != "idle" else "manual" if connected else "idle"
+    allowed = ["connect"]
+    if connected:
+        if state["mission"] != "idle":
+            allowed = ["stop_mission", "emergency_stop_mission", "select_control_mode", "toggle_mission_pause"]
+        else:
+            allowed = ["refresh_status", "stop"]
+            allowed.append("stop_preview" if state["preview_active"] else "start_preview")
+            if state["preview_confirmed"]:
+                allowed.append("start_mission")
+            if not airborne:
+                allowed.append("takeoff")
+    preview = {
+        "active": state["preview_active"],
+        "state": "running" if state["preview_active"] else "idle",
+        "profileName": state["preview_profile"],
+        "confirmed": state["preview_confirmed"],
+        "stableFrames": 10 if state["preview_confirmed"] else 0,
+        "requiredStableFrames": 10,
+        "found": state["preview_confirmed"],
+        "ambiguous": False,
+        "similarity": 0.82 if state["preview_confirmed"] else None,
+        "candidateCount": 1 if state["preview_confirmed"] else 0,
+        "orientationDeg": 90.0 if state["preview_confirmed"] else None,
+        "fps": 12.0 if state["preview_active"] else 0.0,
+    }
     return {
-        "sequence": 0,
+        "sequence": state["sequence"],
         "phase": "airborne" if airborne else "preflight" if connected else "disconnected",
-        "mission": "manual" if connected else "idle",
-        "controlMode": "manual" if airborne else "none",
+        "mission": mission,
+        "controlMode": state["control_mode"] if state["mission"] != "idle" else "manual" if airborne else "none",
         "connected": connected,
         "airborne": airborne,
         "streaming": connected,
         "flightState": status()["flightState"],
-        "allowedActions": ["refresh_status", "stop"] if connected else ["connect"],
-        "telemetry": {},
+        "allowedActions": allowed,
+        "telemetry": {"preview": preview, "paused": False},
         "error": None,
     }
 
@@ -121,16 +156,59 @@ class Handler(BaseHTTPRequestHandler):
             state["rc_lease"] = ""
             result = {"ok": True}
             crash_after = False
+        elif command == "preview.start":
+            state["preview_active"] = True
+            state["preview_confirmed"] = True
+            state["preview_profile"] = payload.get("profileName")
+            result = {"ok": True, **runtime_snapshot()["telemetry"]["preview"]}
+            crash_after = False
+        elif command == "preview.stop":
+            state["preview_active"] = False
+            state["preview_confirmed"] = False
+            state["preview_profile"] = None
+            result = {"ok": True, **runtime_snapshot()["telemetry"]["preview"]}
+            crash_after = False
+        elif command == "mission.start":
+            state["mission"] = payload.get("mission", "reid_follow")
+            state["control_mode"] = payload.get("initialControlMode", "normal")
+            state["preview_active"] = False
+            state["airborne"] = True
+            result = {"ok": True, "mission": state["mission"]}
+            crash_after = False
+        elif command in ("mission.stop", "mission.emergency_stop"):
+            state["mission"] = "idle"
+            state["control_mode"] = "none"
+            state["airborne"] = False
+            result = {"ok": True}
+            crash_after = False
+        elif command == "mission.control_mode.select":
+            state["control_mode"] = payload.get("mode", "normal")
+            result = {"ok": True, "mode": state["control_mode"]}
+            crash_after = False
+        elif command == "mission.pause.toggle":
+            result = {"ok": True}
+            crash_after = False
         else:
             self._json(400, {"apiVersion": "1", "error": {"message": "bad command"}})
             return
+        state["sequence"] += 1
+        snapshot = runtime_snapshot()
+        state["events"].append(
+            {
+                "sequence": state["sequence"],
+                "occurredAt": 0,
+                "type": "command.completed",
+                "payload": {"command": command},
+                "snapshot": snapshot,
+            }
+        )
         self._json(
             200,
             {
                 "apiVersion": "1",
                 "commandId": payload.get("commandId", "fixture"),
                 "result": result,
-                "snapshot": {},
+                "snapshot": snapshot,
             },
         )
         if crash_after:
@@ -162,22 +240,28 @@ class Handler(BaseHTTPRequestHandler):
                 200,
                 {
                     "apiVersion": "1",
-                    "commands": ["device.connect", "flight.takeoff", "flight.land"],
-                    "missions": ["manual"],
+                    "commands": ["device.connect", "flight.takeoff", "flight.land", "preview.start", "preview.stop", "mission.start", "mission.stop", "mission.emergency_stop", "mission.control_mode.select", "mission.pause.toggle"],
+                    "missions": ["manual", "follow", "reid_follow", "fixed_demo"],
                     "eventReplay": True,
                     "rcLease": {"required": True, "ttlMs": 1000},
+                    "preview": {"requiredForAutomaticMission": True, "stableFrames": 10, "maxAgeMs": 2000},
+                    "missionReadiness": {"available": True, "missingAssets": [], "profileRequired": True},
                 },
             )
+        elif parts.path == "/api/v1/profiles":
+            self._json(200, {"apiVersion": "1", "profiles": [{"name": "operator-a", "photoCount": 3}]})
         elif parts.path == "/api/v1/runtime/snapshot":
             self._json(200, {"apiVersion": "1", "snapshot": runtime_snapshot()})
         elif parts.path == "/api/v1/runtime/events":
+            since = int(parse_qs(parts.query).get("since", ["0"])[0])
+            events = [event for event in state["events"] if event["sequence"] > since]
             self._json(
                 200,
                 {
                     "apiVersion": "1",
-                    "latestSequence": 0,
+                    "latestSequence": state["sequence"],
                     "resetRequired": False,
-                    "events": [],
+                    "events": events,
                 },
             )
         elif parts.path == "/api/drone/status":

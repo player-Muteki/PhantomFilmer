@@ -126,6 +126,8 @@ function registerIpc(): void {
   ipcMain.handle('mission:control-mode', (_event, mode: MissionStartOptions['initialControlMode']) => sidecar.selectControlMode(mode))
   ipcMain.handle('mission:pause-toggle', () => sidecar.toggleMissionPause())
   ipcMain.handle('profiles:list', () => sidecar.listProfiles())
+  ipcMain.handle('preview:start', (_event, profileName: string) => sidecar.startPreview(profileName))
+  ipcMain.handle('preview:stop', () => sidecar.stopPreview())
   ipcMain.handle('profiles:enroll', async (_event, payload: { name: string; overwrite: boolean }) => {
     const { name, overwrite } = payload ?? {}
     if (typeof name !== 'string' || !name.trim() || typeof overwrite !== 'boolean') {

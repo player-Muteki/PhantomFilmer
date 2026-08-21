@@ -96,6 +96,16 @@ class ToggleMissionPauseCommand(CommandMetadata):
     pass
 
 
+@dataclass(frozen=True)
+class StartPreviewCommand(CommandMetadata):
+    profile_name: str
+
+
+@dataclass(frozen=True)
+class StopPreviewCommand(CommandMetadata):
+    pass
+
+
 RuntimeCommand = Union[
     ConnectCommand,
     RefreshStatusCommand,
@@ -110,6 +120,8 @@ RuntimeCommand = Union[
     EmergencyStopCommand,
     SelectControlModeCommand,
     ToggleMissionPauseCommand,
+    StartPreviewCommand,
+    StopPreviewCommand,
 ]
 
 
@@ -130,6 +142,8 @@ def command_name(command: RuntimeCommand) -> str:
         EmergencyStopCommand: "mission.emergency_stop",
         SelectControlModeCommand: "mission.control_mode.select",
         ToggleMissionPauseCommand: "mission.pause.toggle",
+        StartPreviewCommand: "preview.start",
+        StopPreviewCommand: "preview.stop",
     }
     return names[type(command)]
 
@@ -163,6 +177,7 @@ def command_from_payload(payload: dict[str, Any]) -> RuntimeCommand:
         "mission.stop": StopMissionCommand,
         "mission.emergency_stop": EmergencyStopCommand,
         "mission.pause.toggle": ToggleMissionPauseCommand,
+        "preview.stop": StopPreviewCommand,
     }
     constructor = constructors.get(command_type)
     if constructor is not None:
@@ -195,6 +210,11 @@ def command_from_payload(payload: dict[str, Any]) -> RuntimeCommand:
             obstacle_enabled=obstacle_enabled,
             **metadata,
         )
+    if command_type == "preview.start":
+        profile_name = payload.get("profileName")
+        if not isinstance(profile_name, str) or not profile_name.strip():
+            raise ValueError("preview.start 必须提供有效的 profileName。")
+        return StartPreviewCommand(profile_name=profile_name.strip(), **metadata)
     if command_type == "mission.control_mode.select":
         try:
             mode = ControlMode(str(payload.get("mode")))

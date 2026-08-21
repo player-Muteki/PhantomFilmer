@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react'
-import type { BackendState, DroneStatus, FlightPhase, RcCommand } from '../../preload/api'
+import type { BackendState, DroneStatus, FlightPhase, GroundPreviewStatus, RcCommand } from '../../preload/api'
 import { Icon } from './Icons'
 import { useRuntimeFeed, type RuntimeFeed } from './app/useRuntimeFeed'
 
@@ -7,6 +7,7 @@ type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'error'
 type ArmedAction = 'takeoff' | 'land' | 'emergency' | null
 type PartialRcCommand = Partial<RcCommand>
 type WorkspacePage = 'flight' | 'missions' | 'diagnostics'
+type MissionMode = 'manual' | 'normal' | 'side' | 'front'
 
 const phases: FlightPhase[] = ['连接', '检查', '起飞', '手动飞行', '降落']
 const emptyCommand: RcCommand = { leftRight: 0, forwardBack: 0, upDown: 0, yaw: 0 }
@@ -20,6 +21,14 @@ const initialBackend: BackendState = {
 
 function errorMessage(error: unknown, fallback: string): string {
   return error instanceof Error ? error.message : fallback
+}
+
+function missionModeLabel(mode: string): string {
+  return ({ manual: '手动接管', normal: '普通跟随', side: '侧向跟随', front: '前向跟随', none: '等待选择' } as Record<string, string>)[mode] ?? mode
+}
+
+function missionKindLabel(mission?: string): string {
+  return ({ follow: '普通自动跟随', reid_follow: '人物跟拍任务', fixed_demo: '固定航线演示' } as Record<string, string>)[mission ?? ''] ?? mission ?? '自动任务'
 }
 
 export default function App(): ReactElement {
@@ -41,6 +50,10 @@ export default function App(): ReactElement {
   const connected = backendReady && connection === 'connected'
   const videoReady = connected && status.videoReady === true
   const airborne = connected && status.airborne === true
+  const activeMission = runtime.snapshot?.mission
+  const missionRunning = activeMission != null && !['idle', 'manual'].includes(activeMission)
+  const missionPaused = status.paused ?? runtime.snapshot?.telemetry.paused === true
+  const manualControlEnabled = airborne && (!missionRunning || status.rcEnabled === true)
   const controlsLocked = !backendReady || actionBusy != null
   const currentPhase = status.phase ?? '连接'
   const currentPhaseIndex = connected ? phases.indexOf(currentPhase) : -1
@@ -79,7 +92,10 @@ export default function App(): ReactElement {
     const refresh = async (): Promise<void> => {
       try {
         const next = await window.phantomFilmer.status()
-        if (!cancelled) setStatus(next)
+        if (!cancelled) {
+          setStatus(next)
+          if (next.safetyReason) setNotice(next.safetyReason)
+        }
       } catch (error) {
         if (!cancelled) setNotice(errorMessage(error, '真机遥测暂时不可用'))
       }
@@ -96,6 +112,7 @@ export default function App(): ReactElement {
       setVideoUrl(null)
       return
     }
+    setVideoUrl(null)
     let cancelled = false
     void window.phantomFilmer.getVideoUrl().then((url) => {
       if (!cancelled) setVideoUrl(url)
@@ -105,7 +122,7 @@ export default function App(): ReactElement {
     return () => {
       cancelled = true
     }
-  }, [videoReady])
+  }, [activePage, videoReady])
 
   const connectDrone = async (): Promise<void> => {
     if (!backendReady) return
@@ -158,6 +175,34 @@ export default function App(): ReactElement {
     }
   }
 
+  const runMissionCommand = async (
+    action: 'pause' | 'stop' | 'emergency' | MissionMode
+  ): Promise<void> => {
+    setActionBusy(`mission-${action}`)
+    setArmedAction(null)
+    try {
+      if (action === 'pause') {
+        await window.phantomFilmer.toggleMissionPause()
+        setNotice(missionPaused ? '正在恢复自动任务…' : '正在暂停并清零任务输出…')
+      } else if (action === 'stop') {
+        await window.phantomFilmer.stopMission()
+        setNotice('自动任务已停止并完成降落')
+      } else if (action === 'emergency') {
+        await window.phantomFilmer.emergencyStopMission()
+        setNotice('自动任务已急停并完成降落')
+      } else {
+        await window.phantomFilmer.selectControlMode(action)
+        setNotice(action === 'manual' ? '正在切换到手动接管…' : `正在切换到${missionModeLabel(action)}…`)
+      }
+      const next = await window.phantomFilmer.status()
+      setStatus(next)
+    } catch (error) {
+      setNotice(errorMessage(error, '任务操作失败，请检查真机状态'))
+    } finally {
+      setActionBusy(null)
+    }
+  }
+
   const confirmAction = (action: Exclude<ArmedAction, null>): void => {
     if (armedAction !== action) {
       setArmedAction(action)
@@ -166,7 +211,10 @@ export default function App(): ReactElement {
     }
     if (action === 'takeoff') void runStatusAction('takeoff')
     if (action === 'land') void runStatusAction('land')
-    if (action === 'emergency') void disconnect(true)
+    if (action === 'emergency') {
+      if (missionRunning) void runMissionCommand('emergency')
+      else void disconnect(true)
+    }
   }
 
   const sendRc = useCallback(async (partial: PartialRcCommand): Promise<void> => {
@@ -187,7 +235,7 @@ export default function App(): ReactElement {
       controlTimer.current = null
     }
     setActiveControl(null)
-    if (!airborne) return
+    if (!manualControlEnabled) return
     try {
       const next = await window.phantomFilmer.hover()
       setStatus(next)
@@ -195,15 +243,15 @@ export default function App(): ReactElement {
     } catch (error) {
       setNotice(errorMessage(error, '悬停指令失败'))
     }
-  }, [airborne])
+  }, [manualControlEnabled])
 
   const startControl = useCallback((name: string, command: PartialRcCommand): void => {
-    if (!airborne || actionBusy) return
+    if (!manualControlEnabled || actionBusy) return
     if (controlTimer.current != null) window.clearInterval(controlTimer.current)
     setActiveControl(name)
     void sendRc(command)
     controlTimer.current = window.setInterval(() => void sendRc(command), 180)
-  }, [actionBusy, airborne, sendRc])
+  }, [actionBusy, manualControlEnabled, sendRc])
 
   useEffect(() => {
     const commands: Record<string, [string, PartialRcCommand]> = {
@@ -262,7 +310,7 @@ export default function App(): ReactElement {
   const preflightItems = [
     ['SDK 连接', status.preflight?.sdk],
     ['有效视频帧', status.preflight?.video],
-    ['电量 ≥ 20%', status.preflight?.battery],
+    [`电量 ≥ ${runtime.capabilities?.safety?.minTakeoffBattery ?? 20}%`, status.preflight?.battery],
     ['底部 ToF', status.preflight?.bottomTof],
     ['前向 ToF', status.preflight?.frontTof]
   ] as const
@@ -305,6 +353,25 @@ export default function App(): ReactElement {
       </nav>
 
       {activePage === 'flight' && <>
+      {missionRunning && (
+        <section className="mission-command-bar" aria-label="自动任务空中控制">
+          <div>
+            <p className="eyebrow">ACTIVE MISSION</p>
+            <strong>{missionKindLabel(activeMission)} · {missionPaused ? '已暂停' : status.flightState ?? '运行中'}</strong>
+            <span>当前模式：{missionModeLabel(runtime.snapshot?.controlMode ?? 'none')}</span>
+          </div>
+          <div className="mission-command-modes">
+            {(['normal', 'side', 'front', 'manual'] as const).map((mode) => (
+              <button key={mode} className={runtime.snapshot?.controlMode === mode ? 'active' : ''} disabled={controlsLocked || missionPaused || runtime.snapshot?.controlMode === mode} onClick={() => void runMissionCommand(mode)}>{missionModeLabel(mode)}</button>
+            ))}
+          </div>
+          <div className="mission-command-safety">
+            <button disabled={controlsLocked} onClick={() => void runMissionCommand('pause')}>{missionPaused ? '继续任务' : '暂停悬停'}</button>
+            <button disabled={controlsLocked} onClick={() => void runMissionCommand('stop')}>停止并降落</button>
+            <button className={`danger ${armedAction === 'emergency' ? 'armed' : ''}`} disabled={controlsLocked} onClick={() => confirmAction('emergency')}>{armedAction === 'emergency' ? '再次确认急停' : '任务急停'}</button>
+          </div>
+        </section>
+      )}
       <section className="workspace" aria-label="真机控制台">
         <section className={`video-panel ${videoUrl ? 'streaming' : ''}`}>
           {videoUrl ? (
@@ -345,26 +412,26 @@ export default function App(): ReactElement {
           <p className="help">起飞、降落和紧急动作需要在 4 秒内再次确认。</p>
           <div className="action-grid">
             <ActionButton icon="takeoff" label={armedAction === 'takeoff' ? '确认起飞' : '起飞'} hint="五项检查全部通过" armed={armedAction === 'takeoff'} disabled={!status.canTakeoff || controlsLocked} onClick={() => confirmAction('takeoff')} />
-            <ActionButton icon="land" label={armedAction === 'land' ? '确认降落' : '正常降落'} hint="保留视频与连接" armed={armedAction === 'land'} disabled={!airborne || controlsLocked} onClick={() => confirmAction('land')} />
-            <ActionButton icon="hover" label="立即悬停" hint="清零四个 RC 通道" disabled={!airborne || controlsLocked} onClick={() => void runStatusAction('hover')} />
+            <ActionButton icon="land" label={armedAction === 'land' ? '确认降落' : '正常降落'} hint={missionRunning ? '请使用任务停止' : '保留视频与连接'} armed={armedAction === 'land'} disabled={!airborne || missionRunning || controlsLocked} onClick={() => confirmAction('land')} />
+            <ActionButton icon="hover" label="立即悬停" hint={missionRunning && !manualControlEnabled ? '自动模式请先暂停或接管' : '清零四个 RC 通道'} disabled={!manualControlEnabled || controlsLocked} onClick={() => void runStatusAction('hover')} />
           </div>
           <div className="disconnect-row">
-            <button className="button secondary" disabled={!connected || controlsLocked} onClick={() => void disconnect(false)}>停止并断开</button>
+            <button className="button secondary" disabled={!connected || missionRunning || controlsLocked} onClick={() => void disconnect(false)}>{missionRunning ? '请先停止任务' : '停止并断开'}</button>
             <button className={`button danger ${armedAction === 'emergency' ? 'armed' : ''}`} disabled={!airborne || controlsLocked} onClick={() => confirmAction('emergency')}><Icon name="emergency" />{armedAction === 'emergency' ? '再次确认紧急降落' : '紧急降落'}</button>
           </div>
         </section>
 
-        <section className={`manual-controls ${airborne ? '' : 'disabled-panel'}`}>
+        <section className={`manual-controls ${manualControlEnabled ? '' : 'disabled-panel'}`}>
           <div className="subheading"><div><p className="eyebrow">MANUAL RC</p><h2>手动控制</h2></div><div className="speed-select" aria-label="速度档位">{[15, 20, 30].map((value) => <button key={value} className={speed === value ? 'active' : ''} disabled={controlsLocked} onClick={() => setSpeed(value)}>{value}</button>)}</div></div>
           <div className="pads">
-            <ControlPad title="平面移动" active={activeControl} enabled={airborne && !controlsLocked} onStart={startControl} onStop={stopControl} controls={[
+            <ControlPad title="平面移动" active={activeControl} enabled={manualControlEnabled && !controlsLocked} onStart={startControl} onStop={stopControl} controls={[
               ['forward', 'W', '前进', { forwardBack: speed }, 'up'], ['left', 'A', '左移', { leftRight: -speed }, 'left'], ['hover-a', 'SPACE', '悬停', {}, 'center'], ['right', 'D', '右移', { leftRight: speed }, 'right'], ['back', 'S', '后退', { forwardBack: -speed }, 'down']
             ]} />
-            <ControlPad title="高度与偏航" active={activeControl} enabled={airborne && !controlsLocked} onStart={startControl} onStop={stopControl} controls={[
+            <ControlPad title="高度与偏航" active={activeControl} enabled={manualControlEnabled && !controlsLocked} onStart={startControl} onStop={stopControl} controls={[
               ['up', 'R', '上升', { upDown: speed }, 'up'], ['yaw-left', 'J', '左转', { yaw: -speed }, 'left'], ['hover-b', 'SPACE', '悬停', {}, 'center'], ['yaw-right', 'L', '右转', { yaw: speed }, 'right'], ['down', 'F', '下降', { upDown: -speed }, 'down']
             ]} />
           </div>
-          <p className="help centered">按住持续运动，松开立即悬停；Python 后端 0.4 秒看门狗独立兜底。</p>
+          <p className="help centered">{missionRunning && !manualControlEnabled ? '自动任务运行中；切换到手动接管后启用此控制台。' : '按住持续运动，松开立即悬停；Python 后端 0.4 秒看门狗独立兜底。'}</p>
         </section>
       </section>
 
@@ -377,13 +444,13 @@ export default function App(): ReactElement {
       </footer>
       </>}
 
-      {activePage === 'missions' && <MissionWorkspace runtime={runtime} onOpenFlight={() => setActivePage('flight')} />}
+      {activePage === 'missions' && <MissionWorkspace runtime={runtime} videoUrl={videoUrl} onOpenFlight={() => setActivePage('flight')} />}
       {activePage === 'diagnostics' && <DiagnosticsWorkspace runtime={runtime} backend={backend} />}
     </main>
   )
 }
 
-function MissionWorkspace({ runtime, onOpenFlight }: { runtime: RuntimeFeed; onOpenFlight: () => void }): ReactElement {
+function MissionWorkspace({ runtime, videoUrl, onOpenFlight }: { runtime: RuntimeFeed; videoUrl: string | null; onOpenFlight: () => void }): ReactElement {
   const available = new Set(runtime.capabilities?.missions ?? [])
   const readiness = runtime.capabilities?.missionReadiness
   const [profileName, setProfileName] = useState('')
@@ -392,9 +459,23 @@ function MissionWorkspace({ runtime, onOpenFlight }: { runtime: RuntimeFeed; onO
   const [initialMode, setInitialMode] = useState<'manual' | 'normal' | 'side' | 'front'>('normal')
   const [obstacleEnabled, setObstacleEnabled] = useState(false)
   const [armedMission, setArmedMission] = useState<string | null>(null)
+  const [armedMissionAction, setArmedMissionAction] = useState<'stop' | 'emergency' | null>(null)
+  const [missionBusy, setMissionBusy] = useState<string | null>(null)
   const [missionError, setMissionError] = useState<string | null>(null)
+  const [missionNotice, setMissionNotice] = useState<string | null>(null)
   const activeMission = runtime.snapshot?.mission
   const missionRunning = activeMission != null && !['idle', 'manual'].includes(activeMission)
+  const missionPaused = runtime.snapshot?.telemetry.paused === true
+  const preview = (runtime.snapshot?.telemetry.preview ?? null) as GroundPreviewStatus | null
+  const allowedActions = new Set(runtime.snapshot?.allowedActions ?? [])
+  useEffect(() => {
+    if (!armedMission && !armedMissionAction) return
+    const timer = window.setTimeout(() => {
+      setArmedMission(null)
+      setArmedMissionAction(null)
+    }, 4000)
+    return () => window.clearTimeout(timer)
+  }, [armedMission, armedMissionAction])
   useEffect(() => {
     void window.phantomFilmer.listProfiles().then((items) => {
       setProfiles(items)
@@ -403,28 +484,83 @@ function MissionWorkspace({ runtime, onOpenFlight }: { runtime: RuntimeFeed; onO
   }, [])
   const enrollProfile = async (): Promise<void> => {
     setMissionError(null)
+    setMissionNotice(null)
+    setMissionBusy('enroll')
     try {
       const profile = await window.phantomFilmer.enrollProfile(enrollmentName.trim(), false)
       if (!profile) return
       setProfiles((current) => [...current.filter((item) => item.name !== profile.name), profile])
       setProfileName(profile.name)
       setEnrollmentName('')
+      setMissionNotice(`人物档案“${profile.name}”已创建。`)
     } catch (error) {
       setMissionError(error instanceof Error ? error.message : '人物建档失败。')
+    } finally {
+      setMissionBusy(null)
     }
   }
   const startMission = async (mission: 'follow' | 'reid_follow' | 'fixed_demo'): Promise<void> => {
     if (armedMission !== mission) {
       setArmedMission(mission)
-      window.setTimeout(() => setArmedMission((current) => current === mission ? null : current), 4000)
+      setMissionNotice('请在 4 秒内再次点击，确认任务将从地面起飞。')
       return
     }
     setArmedMission(null)
     setMissionError(null)
+    setMissionNotice(null)
+    setMissionBusy('start')
     try {
       await window.phantomFilmer.startMission({ mission, profileName: profileName.trim(), initialControlMode: initialMode, obstacleEnabled })
+      setMissionNotice(`${missionKindLabel(mission)}已启动，请前往飞行控制查看视频与空中操作。`)
     } catch (error) {
       setMissionError(error instanceof Error ? error.message : '任务启动失败。')
+    } finally {
+      setMissionBusy(null)
+    }
+  }
+  const controlMission = async (action: 'pause' | 'stop' | 'emergency' | MissionMode): Promise<void> => {
+    if ((action === 'stop' || action === 'emergency') && armedMissionAction !== action) {
+      setArmedMissionAction(action)
+      setMissionNotice(action === 'stop' ? '再次点击确认停止任务并降落。' : '再次点击确认任务急停并降落。')
+      return
+    }
+    setArmedMissionAction(null)
+    setMissionError(null)
+    setMissionNotice(null)
+    setMissionBusy(action)
+    try {
+      if (action === 'pause') await window.phantomFilmer.toggleMissionPause()
+      else if (action === 'stop') await window.phantomFilmer.stopMission()
+      else if (action === 'emergency') await window.phantomFilmer.emergencyStopMission()
+      else await window.phantomFilmer.selectControlMode(action)
+      setMissionNotice(
+        action === 'pause' ? (missionPaused ? '任务恢复请求已发送。' : '任务暂停请求已发送。')
+          : action === 'stop' ? '任务已停止并降落。'
+            : action === 'emergency' ? '任务已急停并降落。'
+              : `正在切换到${missionModeLabel(action)}。`
+      )
+    } catch (error) {
+      setMissionError(error instanceof Error ? error.message : '任务操作失败。')
+    } finally {
+      setMissionBusy(null)
+    }
+  }
+  const controlPreview = async (): Promise<void> => {
+    setMissionError(null)
+    setMissionNotice(null)
+    setMissionBusy(preview?.active ? 'preview-stop' : 'preview-start')
+    try {
+      if (preview?.active) {
+        await window.phantomFilmer.stopPreview()
+        setMissionNotice('地面识别预览已停止。')
+      } else {
+        await window.phantomFilmer.startPreview(profileName.trim())
+        setMissionNotice('模型已就绪；请让目标人物进入画面并等待连续确认。')
+      }
+    } catch (error) {
+      setMissionError(error instanceof Error ? error.message : '地面识别预览操作失败。')
+    } finally {
+      setMissionBusy(null)
     }
   }
   const missions = [
@@ -442,14 +578,35 @@ function MissionWorkspace({ runtime, onOpenFlight }: { runtime: RuntimeFeed; onO
       <div className="mission-layout">
         <section className="mission-catalog">
           <div className="subheading"><div><p className="eyebrow">MISSION TYPES</p><h2>飞行任务</h2></div></div>
+          <section className={`ground-preview ${preview?.confirmed ? 'confirmed' : ''}`} aria-label="地面人物识别预览">
+            <div className="ground-preview-feed">
+              {videoUrl ? <img src={videoUrl} alt="地面人物识别预览画面" /> : <div><strong>等待视频连接</strong><span>先在飞行控制连接真机并确认有效视频帧。</span></div>}
+            </div>
+            <div className="ground-preview-status">
+              <p className="eyebrow">GROUND REID CHECK</p>
+              <h3>{preview?.confirmed ? '目标人物已确认' : preview?.active ? (preview.found ? '正在稳定确认目标' : '正在搜索目标人物') : '起飞前人物确认'}</h3>
+              <dl>
+                <div><dt>档案</dt><dd>{preview?.profileName ?? (profileName || '—')}</dd></div>
+                <div><dt>连续帧</dt><dd>{preview?.stableFrames ?? 0} / {preview?.requiredStableFrames ?? runtime.capabilities?.preview?.stableFrames ?? '—'}</dd></div>
+                <div><dt>相似度</dt><dd>{typeof preview?.similarity === 'number' ? preview.similarity.toFixed(3) : '—'}</dd></div>
+                <div><dt>朝向</dt><dd>{typeof preview?.orientationDeg === 'number' ? `${preview.orientationDeg.toFixed(1)}°` : '—'}</dd></div>
+                <div><dt>候选人数</dt><dd>{preview?.candidateCount ?? 0}</dd></div>
+                <div><dt>识别率</dt><dd>{preview?.fps ? `${preview.fps.toFixed(1)} Hz` : '—'}</dd></div>
+              </dl>
+              <button disabled={missionBusy != null || missionRunning || (!preview?.active && (readiness?.available !== true || !profileName.trim() || !allowedActions.has('start_preview')))} onClick={() => void controlPreview()}>{missionBusy === 'preview-start' ? '正在加载模型…' : missionBusy === 'preview-stop' ? '正在停止…' : preview?.active ? '停止识别预览' : '启动识别预览'}</button>
+              {preview?.error && <p className="runtime-error">{preview.error}</p>}
+            </div>
+          </section>
           <div className="mission-grid">
             {missions.map(([id, title, detail]) => {
               const implemented = available.has(id)
               const isManual = id === 'manual'
               const ready = isManual || readiness?.available === true
               const enabled = implemented && ready
-              const disabled = !enabled || (!isManual && (!profileName.trim() || missionRunning))
-              const label = isManual ? '前往飞行控制' : !implemented ? '等待任务接口' : !ready ? '模型资产未就绪' : armedMission === id ? '再次点击确认起飞' : '启动任务'
+              const previewRequired = runtime.capabilities?.preview?.requiredForAutomaticMission === true
+              const previewReady = !previewRequired || (preview?.confirmed === true && preview.profileName === profileName)
+              const disabled = !enabled || missionBusy != null || (!isManual && (!profileName.trim() || missionRunning || !previewReady || !allowedActions.has('start_mission')))
+              const label = isManual ? '前往飞行控制' : !implemented ? '等待任务接口' : !ready ? '模型资产未就绪' : missionRunning ? '已有任务运行中' : !previewReady ? '请先完成地面人物确认' : !allowedActions.has('start_mission') ? '请先连接并完成预检' : armedMission === id ? '再次点击确认起飞' : '启动任务'
               return <article className={enabled ? 'available' : 'unavailable'} key={id}><span>{enabled ? '已开放' : implemented ? '运行资产未就绪' : '后端尚未开放'}</span><h3>{title}</h3><p>{detail}</p><button disabled={disabled} onClick={isManual ? onOpenFlight : () => void startMission(id)}>{label}</button></article>
             })}
           </div>
@@ -457,12 +614,13 @@ function MissionWorkspace({ runtime, onOpenFlight }: { runtime: RuntimeFeed; onO
         <aside className="mission-flow">
           <p className="eyebrow">MISSION SETUP</p><h2>任务设置</h2>
           <label className="mission-field"><span>人物档案</span><select value={profileName} onChange={(event) => setProfileName(event.target.value)} disabled={missionRunning}><option value="">请选择人物档案</option>{profiles.map((profile) => <option key={profile.name} value={profile.name}>{profile.name} · {profile.photoCount ?? '?'} 张照片</option>)}</select></label>
-          <div className="profile-enroll"><input aria-label="新人物档案名" value={enrollmentName} onChange={(event) => setEnrollmentName(event.target.value)} placeholder="新档案名" disabled={runtime.snapshot?.connected === true} /><button disabled={!enrollmentName.trim() || runtime.snapshot?.connected === true} onClick={() => void enrollProfile()}>选择照片并建档</button></div>
+          <div className="profile-enroll"><input aria-label="新人物档案名" value={enrollmentName} onChange={(event) => setEnrollmentName(event.target.value)} placeholder="新档案名" disabled={runtime.snapshot?.connected === true || missionBusy != null} /><button disabled={!enrollmentName.trim() || runtime.snapshot?.connected === true || missionBusy != null} onClick={() => void enrollProfile()}>{missionBusy === 'enroll' ? '正在建档…' : '选择照片并建档'}</button></div>
           <label className="mission-field"><span>初始控制模式</span><select value={initialMode} onChange={(event) => setInitialMode(event.target.value as typeof initialMode)} disabled={missionRunning}><option value="normal">普通跟随</option><option value="side">侧向跟随</option><option value="front">前向跟随</option><option value="manual">手动接管</option></select></label>
           <label className="mission-check"><input type="checkbox" checked={obstacleEnabled} onChange={(event) => setObstacleEnabled(event.target.checked)} disabled={missionRunning} /><span>普通模式启用自动避障</span></label>
           {readiness && !readiness.available && <p className="boundary-note">缺少运行资产：{readiness.missingAssets.join('、')}。任务按钮保持禁用。</p>}
           {missionError && <p className="runtime-error">{missionError}</p>}
-          {missionRunning && <div className="mission-live"><strong>任务运行中：{activeMission}</strong><div><button onClick={() => void window.phantomFilmer.toggleMissionPause()}>暂停 / 继续</button><button onClick={() => void window.phantomFilmer.stopMission()}>停止并降落</button><button className="danger" onClick={() => void window.phantomFilmer.emergencyStopMission()}>急停并降落</button></div><div className="mode-actions">{(['normal', 'side', 'front', 'manual'] as const).map((mode) => <button key={mode} onClick={() => void window.phantomFilmer.selectControlMode(mode)}>{mode}</button>)}</div></div>}
+          {missionNotice && <p className="runtime-notice" role="status">{missionNotice}</p>}
+          {missionRunning && <div className="mission-live"><strong>{missionKindLabel(activeMission)} · {missionPaused ? '已暂停' : runtime.snapshot?.flightState}</strong><div><button disabled={missionBusy != null} onClick={() => void controlMission('pause')}>{missionPaused ? '继续任务' : '暂停悬停'}</button><button disabled={missionBusy != null} onClick={() => void controlMission('stop')}>{armedMissionAction === 'stop' ? '再次确认停止并降落' : '停止并降落'}</button><button className="danger" disabled={missionBusy != null} onClick={() => void controlMission('emergency')}>{armedMissionAction === 'emergency' ? '再次确认急停并降落' : '急停并降落'}</button></div><div className="mode-actions">{(['normal', 'side', 'front', 'manual'] as const).map((mode) => <button className={runtime.snapshot?.controlMode === mode ? 'active' : ''} disabled={missionBusy != null || missionPaused || runtime.snapshot?.controlMode === mode} key={mode} onClick={() => void controlMission(mode)}>{missionModeLabel(mode)}</button>)}</div></div>}
           <p className="eyebrow flow-label">OPERATOR FLOW</p><h2>运行前工作流</h2>
           <ol>
             <li><b>1</b><div><strong>选择或注册人物</strong><span>本地照片、特征摘要与模型兼容性</span></div></li>
@@ -470,7 +628,7 @@ function MissionWorkspace({ runtime, onOpenFlight }: { runtime: RuntimeFeed; onO
             <li><b>3</b><div><strong>选择任务和安全参数</strong><span>普通 / 侧向 / 前向、搜索与避障</span></div></li>
             <li><b>4</b><div><strong>起飞后二次选择</strong><span>基础高度悬停，操作员明确授权任务</span></div></li>
           </ol>
-          <p className="boundary-note">当前阶段只展示服务端真实能力。人物档案、预览和自动任务将在后续接口接入后启用。</p>
+          <p className="boundary-note">人物档案与自动任务已接入共享 FollowSession；地面 ReID 识别预览仍在下一阶段接入，启动前请先从飞行控制确认视频、环境和遥测。</p>
         </aside>
       </div>
     </section>
