@@ -65,6 +65,8 @@ jobs:
           cache: npm
           cache-dependency-path: desktop/package-lock.json
       - run: python -m pip install -r requirements-desktop-build.txt
+      - run: python -m pip install --no-build-isolation --no-deps -r requirements-desktop-torchreid.txt
+      - run: python scripts/prepare_desktop_model_assets.py
       - run: python scripts/build_sidecar.py
       - run: npm ci
         working-directory: desktop
@@ -101,6 +103,8 @@ jobs:
           cache: npm
           cache-dependency-path: desktop/package-lock.json
       - run: python -m pip install -r requirements-desktop-build.txt
+      - run: python -m pip install --no-build-isolation --no-deps -r requirements-desktop-torchreid.txt
+      - run: python scripts/prepare_desktop_model_assets.py
       - run: python scripts/build_sidecar.py
       - run: npm ci
         working-directory: desktop

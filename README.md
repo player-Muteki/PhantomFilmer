@@ -346,9 +346,15 @@ RC 和手动控制阈值；独立遥测线程在手动飞行中持续监视低�
 
 ```bash
 python3 -m pip install -r requirements-desktop-build.txt
+python3 -m pip install --no-build-isolation --no-deps -r requirements-desktop-torchreid.txt
+python3 scripts/prepare_desktop_model_assets.py
 python3 scripts/build_sidecar.py
 cd desktop && npm ci && npm run dist
 ```
+
+桌面安装包会嵌入配置所引用的 YOLO、OSNet、JointBDOE 权重及 JointBDOE 推理源码。
+`build_sidecar.py` 会真实加载三套模型后才允许继续生成安装包；模型缺失、校验失败或动态
+依赖未被 PyInstaller 收集时，构建会直接失败。
 
 架构、能力差异与已知安全边界见
 [`docs/07-桌面端架构与安全边界.md`](docs/07-桌面端架构与安全边界.md)；安装、权限、

@@ -1,3 +1,4 @@
 djitellopy==2.5.0
 opencv-python-headless==4.14.0.94
 numpy==2.5.2
+PyYAML==6.0.3

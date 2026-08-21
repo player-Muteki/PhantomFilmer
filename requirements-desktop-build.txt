@@ -1,2 +1,3 @@
+-r requirements-reid-bootstrap.txt
 -r requirements-sidecar.txt
 PyInstaller==6.15.0

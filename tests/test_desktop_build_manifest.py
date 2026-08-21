@@ -1,0 +1,60 @@
+"""Regression checks for the self-contained desktop sidecar bundle."""
+
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_sidecar_bundle_includes_yaml_runtime_configuration() -> None:
+    requirements = (PROJECT_ROOT / "requirements-sidecar.txt").read_text(
+        encoding="utf-8"
+    )
+    spec = (PROJECT_ROOT / "sidecar/phantomfilmer_sidecar.spec").read_text(
+        encoding="utf-8"
+    )
+
+    assert "PyYAML==6.0.3" in requirements
+    assert 'project_root / "config.yaml"' in spec
+    assert '"yaml"' in spec
+
+
+def test_sidecar_bundle_includes_vision_models_and_runtimes() -> None:
+    desktop_requirements = (PROJECT_ROOT / "requirements-desktop-build.txt").read_text(
+        encoding="utf-8"
+    )
+    torchreid_requirements = (
+        PROJECT_ROOT / "requirements-desktop-torchreid.txt"
+    ).read_text(encoding="utf-8")
+    spec = (PROJECT_ROOT / "sidecar/phantomfilmer_sidecar.spec").read_text(
+        encoding="utf-8"
+    )
+    builder = (PROJECT_ROOT / "scripts/build_sidecar.py").read_text(encoding="utf-8")
+    asset_preparer = (
+        PROJECT_ROOT / "scripts/prepare_desktop_model_assets.py"
+    ).read_text(encoding="utf-8")
+
+    assert "requirements-reid-bootstrap.txt" in desktop_requirements
+    assert "f8cd150fdf77e8d9e1ed143b7f308c2c609ded50" in torchreid_requirements
+    for config_key in (
+        "person_detector_model",
+        "reid_model_path",
+        "jointbdoe_model_path",
+        "jointbdoe_source_path",
+    ):
+        assert config_key in spec
+    assert 'for runtime_package in ("torchreid",)' in spec
+    assert 'collect_submodules("scipy._external.array_api_compat")' in spec
+    assert '"seaborn"' in spec
+    assert '"--verify-models"' in builder
+    assert (
+        "31e20dde3def09e2cf938c7be6fe23d9150bbbe503982af13345706515f2ef95"
+        in asset_preparer
+    )
+    assert (
+        "cf55163d78fc44c62c82f85ab62d39f10438679b5abe8c698ae08cfa84aa6e18"
+        in asset_preparer
+    )
+    assert (
+        "bc6d63ee0f685a888e5ff94a84d8244ce23a817223010e100459137bacae3e27"
+        in asset_preparer
+    )
