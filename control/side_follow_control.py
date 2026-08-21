@@ -28,7 +28,7 @@ class SideFollowConfig:
     lateral_kp: float = 0.22
     minimum_lateral_speed: int = 8
     maximum_lateral_speed: int = 20
-    lateral_direction_sign: int = 1
+    clockwise_lateral_sign: int = -1
     tie_break_target_angle: int = 90
     max_orbit_seconds: float = 20.0
 
@@ -50,7 +50,10 @@ class SideFollowConfig:
             except (TypeError, ValueError):
                 return default
 
-        sign = -1 if as_int("lateral_direction_sign", 1, -1) < 0 else 1
+        clockwise_direction = str(
+            section.get("clockwise_lateral_direction", "left")
+        ).strip().lower()
+        clockwise_sign = 1 if clockwise_direction == "right" else -1
         tracking_sign = (
             -1
             if as_int("tracking_lateral_direction_sign", 1, -1) < 0
@@ -94,7 +97,7 @@ class SideFollowConfig:
             lateral_kp=as_float("lateral_kp", 0.22),
             minimum_lateral_speed=minimum_speed,
             maximum_lateral_speed=maximum_speed,
-            lateral_direction_sign=sign,
+            clockwise_lateral_sign=clockwise_sign,
             tie_break_target_angle=tie_angle,
             max_orbit_seconds=as_float("max_orbit_seconds", 20.0, 1.0),
         )
@@ -108,6 +111,7 @@ class SideFollowDebugInfo:
     angle_error: Optional[float] = None
     stable_samples: int = 0
     lock_frames: int = 0
+    orbit_direction: str = ""
 
 
 class SideFollowController:
@@ -206,6 +210,9 @@ class SideFollowController:
         orbit_lateral = (
             self._orbit_lateral_command(error) if self._orbit_active else 0
         )
+        orbit_direction = ""
+        if self._orbit_active and error != 0:
+            orbit_direction = "CLOCKWISE" if error > 0 else "COUNTERCLOCKWISE"
         lateral = self._clamp(
             tracking_lateral + orbit_lateral,
             -self.config.maximum_lateral_speed,
@@ -229,6 +236,7 @@ class SideFollowController:
             angle_error=error,
             stable_samples=len(self._samples),
             lock_frames=self._lock_frames,
+            orbit_direction=orbit_direction,
         )
         return command
 
@@ -280,13 +288,19 @@ class SideFollowController:
         return 90 if distance_90 < distance_270 else 270
 
     def _orbit_lateral_command(self, error: float) -> int:
-        raw = int(round(error * self.config.lateral_kp))
-        if raw == 0:
+        raw_magnitude = int(round(abs(error) * self.config.lateral_kp))
+        if raw_magnitude == 0:
             return 0
-        magnitude = max(self.config.minimum_lateral_speed, abs(raw))
+        magnitude = max(self.config.minimum_lateral_speed, raw_magnitude)
         magnitude = min(self.config.maximum_lateral_speed, magnitude)
-        direction = 1 if raw > 0 else -1
-        return direction * magnitude * self.config.lateral_direction_sign
+        # 现场标定：绕人顺时针会增大 JointBDOE 角度，逆时针会减小。
+        # 正误差（目标角 > 当前角）必须顺时针；负误差必须逆时针。
+        direction = (
+            self.config.clockwise_lateral_sign
+            if error > 0
+            else -self.config.clockwise_lateral_sign
+        )
+        return direction * magnitude
 
     def _tracking_lateral_command(self, horizontal_error: float) -> int:
         if abs(horizontal_error) <= self.follow_controller.horizontal_dead_zone_ratio:

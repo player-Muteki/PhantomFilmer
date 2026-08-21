@@ -98,12 +98,12 @@ side_follow:
   minimum_tracking_lateral_speed: 8
   maximum_tracking_lateral_speed: 20
   tracking_lateral_direction_sign: 1
-  # 人物转身后的绕人修正：横移改变观察方位，偏航只负责保持人物居中。
+  # 人物转身后的绕人修正：实测顺时针增大角度，逆时针减小角度。
+  # 摄像头朝向人物时，顺时针绕行对应飞机向左横移。
+  clockwise_lateral_direction: left
   lateral_kp: 0.22
   minimum_lateral_speed: 8
   maximum_lateral_speed: 20
-  # 真机低速悬停标定时若角度越走越远，将 1 改为 -1。
-  lateral_direction_sign: 1
   # 正面/背面与两侧等距时固定选择 90°，避免随机切边。
   tie_break_target_angle: 90
   max_orbit_seconds: 20

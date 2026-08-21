@@ -90,8 +90,9 @@ class SideFollowControllerTestCase(unittest.TestCase):
 
         for now in range(3, 6):
             orbiting = side.compute_command(result(60), 640, 480, now)
-        self.assertGreater(orbiting.left_right, 0)
+        self.assertLess(orbiting.left_right, 0)
         self.assertEqual(side.last_debug.state, "SIDE_ORBITING")
+        self.assertEqual(side.last_debug.orbit_direction, "CLOCKWISE")
 
         side.compute_command(result(90), 640, 480, 6)
         tracking = side.compute_command(result(90), 640, 480, 7)
@@ -119,6 +120,22 @@ class SideFollowControllerTestCase(unittest.TestCase):
         self.assertEqual(command.left_right, 0)
         self.assertEqual(command.yaw, 0)
         self.assertEqual(side.last_debug.state, "SIDE_TRACKING")
+
+    def test_larger_target_angle_orbits_clockwise_to_increase_angle(self):
+        side = controller()
+        for now in range(5):
+            command = side.compute_command(result(40), 640, 480, now)
+
+        self.assertLess(command.left_right, 0)
+        self.assertEqual(side.last_debug.orbit_direction, "CLOCKWISE")
+
+    def test_smaller_target_angle_orbits_counterclockwise_to_decrease_angle(self):
+        side = controller()
+        for now in range(5):
+            command = side.compute_command(result(140), 640, 480, now)
+
+        self.assertGreater(command.left_right, 0)
+        self.assertEqual(side.last_debug.orbit_direction, "COUNTERCLOCKWISE")
 
     def test_keeps_center_distance_and_height_axes_while_orbiting(self):
         side = controller()

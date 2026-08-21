@@ -854,10 +854,11 @@ class FollowSession:
             "?" if debug.selected_angle is None else str(debug.selected_angle)
         )
         current = "?" if debug.current_angle is None else f"{debug.current_angle:.1f}"
+        direction = debug.orbit_direction or "TRACK"
         return FollowTickOutcome(
             command=command,
             state=debug.state,
-            reason=f"side target={selected} current={current}",
+            reason=f"side target={selected} current={current} direction={direction}",
         )
 
     def send_command(self, command: RCCommand) -> None:
