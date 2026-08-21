@@ -15,7 +15,7 @@ from control.follow_control import RCCommand
 
 if TYPE_CHECKING:
     from control.side_follow_control import SideFollowDebugInfo
-    from control.side_follow_recovery import SideFollowRecoveryDebug
+    from control.target_search import TargetSearchController
 
 
 @dataclass(frozen=True)
@@ -77,6 +77,7 @@ class SideFollowEventRecorder:
         self,
         *,
         mode: str,
+        follow_mode: str = "side",
         target_result: dict[str, object],
         debug: "SideFollowDebugInfo",
         command: RCCommand,
@@ -89,7 +90,7 @@ class SideFollowEventRecorder:
         aircraft_yaw_deg: int | None = None,
         control_hz: float = 0.0,
         vision_fps: float = 0.0,
-        recovery: "SideFollowRecoveryDebug | None" = None,
+        search: "TargetSearchController | None" = None,
     ) -> None:
         """Queue one structured flight decision without performing disk I/O."""
         writer = self._writer
@@ -105,6 +106,7 @@ class SideFollowEventRecorder:
             "monotonic_timestamp": round(monotonic(), 6),
             "session_id": self.session_id,
             "mode": mode,
+            "follow_mode": follow_mode,
             "frame_index": self._frame_index,
             "state": state,
             "reason": reason,
@@ -139,19 +141,22 @@ class SideFollowEventRecorder:
                 "yaw_feedforward": debug.yaw_feedforward,
                 "yaw_feedback": debug.yaw_feedback,
             },
-            "recovery": {
-                "state": recovery.state if recovery is not None else "IDLE",
-                "horizontal_direction": (
-                    recovery.horizontal_direction if recovery is not None else 0
+            "search": {
+                "state": search.state if search is not None else "IDLE",
+                "searching": search.searching if search is not None else False,
+                "last_horizontal_direction": (
+                    search.last_horizontal_direction if search is not None else 0
                 ),
-                "elapsed_seconds": self._round_or_none(
-                    recovery.elapsed_seconds if recovery is not None else 0.0
+                "layer_index": search.layer_index if search is not None else 0,
+                "search_height_cm": (
+                    search.search_height_cm if search is not None else None
                 ),
+                "close_attempts": search.close_attempts if search is not None else 0,
                 "rotation_progress_degrees": self._round_or_none(
-                    recovery.rotation_progress_degrees if recovery is not None else 0.0
+                    search.rotation_progress_degrees if search is not None else 0.0
                 ),
-                "yaw_telemetry_available": (
-                    recovery.yaw_telemetry_available if recovery is not None else False
+                "reacquire_progress": (
+                    search.reacquire_progress if search is not None else "0/0"
                 ),
             },
             "final_command": self._command_payload(command),

@@ -4,9 +4,16 @@ This is the only module that imports djitellopy directly. The rest of the
 project should use DroneAdapter so hardware details stay isolated here.
 """
 
+import json
+import os
 import re
+import traceback
+from datetime import datetime, timezone
+from pathlib import Path
 from threading import Lock, current_thread
+from time import monotonic
 from typing import Any, Optional
+from uuid import uuid4
 
 from .drone_adapter import DroneAdapter
 
@@ -19,7 +26,13 @@ class TelloDroneAdapter(DroneAdapter):
     COMMAND_TIMEOUT_SECONDS = 5
     VIDEO_READER_JOIN_TIMEOUT_SECONDS = 2.0
 
-    def __init__(self, host: str = "192.168.10.1") -> None:
+    def __init__(
+        self,
+        host: str = "192.168.10.1",
+        *,
+        flight_audit_enabled: bool = False,
+        flight_audit_log_dir: str | Path = "logs/flight_events",
+    ) -> None:
         self.host = host
         self._tello: Optional[Any] = None
         self.connected = False
@@ -27,6 +40,20 @@ class TelloDroneAdapter(DroneAdapter):
         self._takeoff_authorized = False
         self._command_lock = Lock()
         self.last_connection_battery: Optional[int] = None
+        self._flight_audit_enabled = bool(flight_audit_enabled)
+        self._flight_audit_log_dir = Path(flight_audit_log_dir)
+        self._flight_audit_session_id = uuid4().hex
+        self._flight_audit_path: Optional[Path] = None
+        self._land_context: dict[str, object] = {}
+
+    @property
+    def flight_audit_path(self) -> Optional[Path]:
+        """Return the JSONL path used to audit takeoff and landing commands."""
+        return self._flight_audit_path
+
+    def set_land_context(self, **context: object) -> None:
+        """Attach high-level session facts to the next audited landing call."""
+        self._land_context = dict(context)
 
     def authorize_next_takeoff(self) -> None:
         """Skip the adapter prompt once after an outer workflow confirms safety."""
@@ -79,21 +106,77 @@ class TelloDroneAdapter(DroneAdapter):
             if answer != "YES":
                 raise RuntimeError("已取消起飞：未收到用户确认。")
         try:
+            self._record_flight_event("takeoff_command", "requested")
             with self._command_lock:
                 self._tello.takeoff()
+            self._record_flight_event("takeoff_command", "succeeded")
         except Exception as exc:
+            self._record_flight_event("takeoff_command", "failed", error=str(exc))
             raise RuntimeError("起飞失败：请检查电量、桨叶保护罩和飞行环境。") from exc
 
     def land(self) -> None:
         """Land the aircraft if connected."""
         if not self.connected or self._tello is None:
+            self._record_flight_event(
+                "land_command", "skipped", error="aircraft_not_connected"
+            )
             print("降落命令未执行：无人机尚未连接。")
             return
         try:
+            self._record_flight_event("land_command", "requested")
             with self._command_lock:
                 self._tello.land()
+            self._record_flight_event("land_command", "succeeded")
         except Exception as exc:
+            self._record_flight_event("land_command", "failed", error=str(exc))
             raise RuntimeError("降落失败：请保持无人机 Wi-Fi 连接并手动观察飞行状态。") from exc
+        finally:
+            self._land_context = {}
+
+    def _record_flight_event(
+        self,
+        event: str,
+        outcome: str,
+        *,
+        error: Optional[str] = None,
+    ) -> None:
+        """Synchronously persist safety-critical SDK command provenance."""
+        if not self._flight_audit_enabled:
+            return
+        try:
+            if self._flight_audit_path is None:
+                stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+                self._flight_audit_path = self._flight_audit_log_dir / (
+                    f"{stamp}-{self._flight_audit_session_id}.jsonl"
+                )
+            payload: dict[str, object] = {
+                "schema_version": 1,
+                "event": event,
+                "outcome": outcome,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "monotonic_timestamp": round(monotonic(), 6),
+                "adapter_session_id": self._flight_audit_session_id,
+                "process_id": os.getpid(),
+                "thread_name": current_thread().name,
+                "host": self.host,
+                "connected": self.connected,
+                "context": dict(self._land_context) if event == "land_command" else {},
+                "call_stack": [
+                    f"{frame.filename}:{frame.lineno} in {frame.name}"
+                    for frame in traceback.extract_stack(limit=12)[:-1]
+                ],
+            }
+            if error is not None:
+                payload["error"] = error
+            self._flight_audit_path.parent.mkdir(parents=True, exist_ok=True)
+            with self._flight_audit_path.open("a", encoding="utf-8") as handle:
+                handle.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")))
+                handle.write("\n")
+                handle.flush()
+            if event == "land_command" and outcome == "requested":
+                print(f"[FlightAudit] 降落调用已记录：{self._flight_audit_path}")
+        except (OSError, TypeError, ValueError) as exc:
+            print(f"[FlightAudit] 写入失败（不阻止飞行安全命令）：{exc}")
 
     def stop(self) -> None:
         """Stop motion, disable stream, and release local state."""

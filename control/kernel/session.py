@@ -120,4 +120,7 @@ class KernelSession:
         side_follow_logger = getattr(session, "side_follow_logger", None)
         if side_follow_logger is not None:
             side_follow_logger.close()
+        front_follow_logger = getattr(session, "front_follow_logger", None)
+        if front_follow_logger is not None:
+            front_follow_logger.close()
         session._destroy_window()

@@ -59,6 +59,11 @@ reid_confirmation_timeout_seconds: 30
 display_console_camera: true
 console_window_name: "PhantomFilmer Console Follow"
 task_stop_timeout_seconds: 10
+# 记录所有真实 Tello 起飞/降落 SDK 调用的来源。若飞机落地但日志中没有
+# land_command/requested，可据此判断为飞控自身自动降落或程序外部命令。
+flight_audit:
+  enabled: true
+  log_dir: "logs/flight_events"
 fake_target_speed: 3
 fake_target_lost_interval_seconds: 12
 fake_target_lost_duration_seconds: 2
@@ -119,14 +124,10 @@ side_follow:
   maximum_orbit_yaw_speed: 30
   # 正面/背面与两侧等距时固定选择 90°，避免随机切边。
   tie_break_target_angle: 90
-  # 人物横向出画：先沿出画方向横移；超时后沿同方向旋转一整圈搜索；
-  # 仍未找到则悬停3秒并自动降落。旋转角度使用飞机yaw累计，12秒仅作无yaw兜底。
-  lost_lateral_search_seconds: 3.0
-  lost_lateral_search_speed: 20
-  lost_rotation_yaw_speed: 30
-  lost_rotation_degrees: 360
-  lost_rotation_fallback_seconds: 12.0
-  lost_final_hover_seconds: 3.0
+# 前向跟随由 f 键进入；复用侧向跟随的全部控制参数和目标丢失搜索，
+# 但人体朝向目标固定为 180°，并按圆周最短方向绕行。
+front_follow:
+  enabled: true
 control_interval: 0.05
 # 控制率低于该值（Hz）时控制台会周期性告警，提示检测或显示处理过慢。
 min_control_hz: 8

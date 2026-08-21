@@ -69,7 +69,16 @@ def create_drone_adapter(
             ),
             takeoff_height_cm=int(config.get("base_hover_height_cm", 70)),
         )
-    return TelloDroneAdapter()
+    config = config or {}
+    audit_config = config.get("flight_audit", {})
+    if not isinstance(audit_config, dict):
+        audit_config = {}
+    return TelloDroneAdapter(
+        flight_audit_enabled=bool(audit_config.get("enabled", True)),
+        flight_audit_log_dir=str(
+            audit_config.get("log_dir", "logs/flight_events")
+        ),
+    )
 
 
 def build_system(

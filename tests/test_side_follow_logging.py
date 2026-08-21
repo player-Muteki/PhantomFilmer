@@ -8,6 +8,7 @@ from pathlib import Path
 from control.follow_control import RCCommand
 from control.side_follow_control import SideFollowDebugInfo
 from control.side_follow_logging import SideFollowEventRecorder, SideFollowLogConfig
+from control.target_search import TargetSearchController
 
 
 class SideFollowEventRecorderTestCase(unittest.TestCase):
@@ -17,8 +18,12 @@ class SideFollowEventRecorderTestCase(unittest.TestCase):
                 SideFollowLogConfig(enabled=True, log_dir=Path(tmp))
             )
             recorder.reset("REID-DEMO")
+            search = TargetSearchController(
+                {"target_search": {"reacquire_frames": 5}}, 60, 220
+            )
             recorder.record(
                 mode="REID-DEMO",
+                follow_mode="front",
                 target_result={
                     "found": True,
                     "center": (500, 240),
@@ -57,6 +62,7 @@ class SideFollowEventRecorderTestCase(unittest.TestCase):
                 aircraft_yaw_deg=-32,
                 control_hz=18.4,
                 vision_fps=17.9,
+                search=search,
             )
             recorder.close()
 
@@ -64,6 +70,7 @@ class SideFollowEventRecorderTestCase(unittest.TestCase):
             self.assertEqual(len(files), 1)
             payload = json.loads(files[0].read_text(encoding="utf-8").strip())
             self.assertEqual(payload["event"], "side_follow_decision")
+            self.assertEqual(payload["follow_mode"], "front")
             self.assertTrue(payload["session_id"])
             self.assertEqual(payload["target"]["center_norm"], [0.7812, 0.5])
             self.assertEqual(payload["side_follow"]["selected_angle"], 90)
@@ -71,8 +78,9 @@ class SideFollowEventRecorderTestCase(unittest.TestCase):
             self.assertTrue(payload["side_follow"]["side_reselect_pending"])
             self.assertEqual(payload["side_follow"]["center_tolerance_ratio"], 0.056)
             self.assertEqual(payload["side_follow"]["tracking_lateral"], 20)
-            self.assertEqual(payload["recovery"]["state"], "IDLE")
-            self.assertEqual(payload["recovery"]["horizontal_direction"], 0)
+            self.assertEqual(payload["search"]["state"], "IDLE")
+            self.assertFalse(payload["search"]["searching"])
+            self.assertEqual(payload["search"]["layer_index"], 0)
             self.assertEqual(payload["flight"]["battery_percent"], 67)
             self.assertEqual(payload["flight"]["height_cm"], 149)
             self.assertEqual(payload["flight"]["aircraft_yaw_deg"], -32)

@@ -130,12 +130,22 @@ class SideFollowDebugInfo:
 
 
 class SideFollowController:
-    """Lock a side, prioritize centering, then reselect the nearest side."""
+    """Hold one configured body-view angle with side-follow motion logic."""
 
-    def __init__(self, follow_controller: FollowController, config: SideFollowConfig):
+    def __init__(
+        self,
+        follow_controller: FollowController,
+        config: SideFollowConfig,
+        *,
+        target_angles: tuple[int, ...] = (90, 270),
+    ):
         self.follow_controller = follow_controller
         self.safety_manager = follow_controller.safety_manager
         self.config = config
+        normalized_targets = tuple(dict.fromkeys(int(angle) % 360 for angle in target_angles))
+        if not normalized_targets:
+            raise ValueError("target_angles must contain at least one angle")
+        self.target_angles = normalized_targets
         self._samples: deque[float] = deque(maxlen=config.orientation_stable_frames)
         self._centered_angle_samples: deque[float] = deque(
             maxlen=config.centered_turn_stable_frames
@@ -150,9 +160,17 @@ class SideFollowController:
 
     @classmethod
     def from_config(
-        cls, follow_controller: FollowController, config: dict[str, object]
+        cls,
+        follow_controller: FollowController,
+        config: dict[str, object],
+        *,
+        target_angles: tuple[int, ...] = (90, 270),
     ) -> "SideFollowController":
-        return cls(follow_controller, SideFollowConfig.from_config(config))
+        return cls(
+            follow_controller,
+            SideFollowConfig.from_config(config),
+            target_angles=target_angles,
+        )
 
     @property
     def selected_angle(self) -> int | None:
@@ -226,7 +244,7 @@ class SideFollowController:
                     tracking_lateral=tracking_lateral,
                 )
                 return self.follow_controller.hover()
-            self._selected_angle = self._choose_nearest_side(average)
+            self._selected_angle = self._choose_nearest_target(average)
 
         # Once the first side has been locked, keeping the person centered owns
         # the lateral axis. Any active orbit is cancelled instead of being
@@ -258,7 +276,7 @@ class SideFollowController:
                     tracking_lateral=tracking_lateral,
                 )
             centered_angle_stable = True
-            self._selected_angle = self._choose_nearest_side(stable_angle)
+            self._selected_angle = self._choose_nearest_target(stable_angle)
             self._side_reselect_pending = False
 
         error = self._signed_angle_error(float(self._selected_angle), angle)
@@ -448,12 +466,21 @@ class SideFollowController:
             return None
         return angle
 
-    def _choose_nearest_side(self, angle: float) -> int:
-        distance_90 = self._circular_distance(angle, 90.0)
-        distance_270 = self._circular_distance(angle, 270.0)
-        if math.isclose(distance_90, distance_270, abs_tol=1e-6):
+    def _choose_nearest_target(self, angle: float) -> int:
+        """Choose the configured view requiring the least circular travel."""
+        distances = {
+            target: self._circular_distance(angle, float(target))
+            for target in self.target_angles
+        }
+        minimum = min(distances.values())
+        nearest = [
+            target
+            for target, distance in distances.items()
+            if math.isclose(distance, minimum, abs_tol=1e-6)
+        ]
+        if self.config.tie_break_target_angle in nearest:
             return self.config.tie_break_target_angle
-        return 90 if distance_90 < distance_270 else 270
+        return nearest[0]
 
     def _orbit_lateral_command(self, error: float) -> int:
         raw_magnitude = round(abs(error) * self.config.lateral_kp)

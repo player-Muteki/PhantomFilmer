@@ -37,6 +37,25 @@ def controller(**overrides):
     return SideFollowController(follow, config)
 
 
+def front_controller(**overrides):
+    safety = SafetyManager(SafetyConfig(20, 5, 220, 60, 35, 1, 3))
+    follow = FollowController(
+        safety,
+        target_area_ratio_min=0.22,
+        target_area_ratio_max=0.32,
+    )
+    settings = {
+        "enabled": True,
+        "orientation_stable_frames": 3,
+        "lock_stable_frames": 2,
+        "centered_turn_stable_frames": 1,
+    }
+    settings.update(overrides)
+    return SideFollowController(
+        follow, SideFollowConfig(**settings), target_angles=(180,)
+    )
+
+
 def lock_initial_side(side, *, angle=90):
     """Feed centered observations until the first side lock is confirmed."""
     for now in range(20):
@@ -47,6 +66,26 @@ def lock_initial_side(side, *, angle=90):
 
 
 class SideFollowControllerTestCase(unittest.TestCase):
+    def test_front_target_is_fixed_at_180_and_chooses_clockwise_from_40(self):
+        front = front_controller()
+        for now in range(5):
+            command = front.compute_command(result(40), 640, 480, now)
+
+        self.assertEqual(front.selected_angle, 180)
+        self.assertEqual(front.last_debug.orbit_direction, "CLOCKWISE")
+        self.assertLess(command.left_right, 0)
+        self.assertGreater(command.yaw, 0)
+
+    def test_front_target_chooses_counterclockwise_from_300(self):
+        front = front_controller()
+        for now in range(5):
+            command = front.compute_command(result(300), 640, 480, now)
+
+        self.assertEqual(front.selected_angle, 180)
+        self.assertEqual(front.last_debug.orbit_direction, "COUNTERCLOCKWISE")
+        self.assertGreater(command.left_right, 0)
+        self.assertLess(command.yaw, 0)
+
     def test_waits_for_stable_angles_then_selects_nearest_90_side(self):
         side = controller()
 

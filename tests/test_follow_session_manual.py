@@ -337,6 +337,169 @@ class FollowSessionManualIntegrationTestCase(unittest.TestCase):
         self.assertEqual(detector.detect_calls, 0)
         session.side_follow_logger.reset.assert_called_once_with(session.mode_label)
 
+    def test_control_ready_f_selects_front_without_running_reid(self) -> None:
+        session, _drone, detector = build_session(display=True)
+        session.front_follow_available = True
+        session.front_follow_logger.reset = Mock()
+        session.manual_controller.make_available()
+        session.camera = ScriptedCamera(session, [frame()])
+
+        with patch("cv2.imshow"), patch("cv2.putText"), patch(
+            "cv2.waitKey", return_value=ord("f")
+        ), patch.object(
+            session, "_draw_state_label", side_effect=lambda image, *_: image
+        ), patch(
+            "control.follow_session.sleep", return_value=None
+        ):
+            selection = session._wait_for_control_selection()
+
+        self.assertEqual(selection, "front")
+        self.assertEqual(session.follow_mode, "front")
+        self.assertEqual(session.session_state, "FRONT_SAMPLING")
+        self.assertFalse(session.manual_controller.active)
+        self.assertEqual(detector.detect_calls, 0)
+        session.front_follow_logger.reset.assert_called_once_with(
+            f"{session.mode_label} FRONT"
+        )
+
+    def test_front_outcome_targets_180_and_uses_front_state(self) -> None:
+        session, _drone, _detector = build_session()
+        visible = dict(FRESH_TARGET)
+        visible.update(
+            body_orientation_angle=40.0,
+            body_orientation_detection_confidence=0.9,
+            body_orientation_match_iou=0.8,
+        )
+
+        outcomes = [
+            session._front_follow_outcome(
+                visible, 640, 480, now=float(now), yaw_deg=0
+            )
+            for now in range(8)
+        ]
+
+        self.assertEqual(session.front_follow_controller.selected_angle, 180)
+        self.assertTrue(outcomes[-1].state.startswith("FRONT_"))
+        self.assertGreater(outcomes[-1].command.yaw, 0)
+
+    def test_front_reacquisition_resamples_180_mode_instead_of_switching_modes(self):
+        session, _drone, _detector = build_session()
+        session.follow_mode = "front"
+        visible = dict(FRESH_TARGET)
+        visible.update(
+            body_orientation_angle=180.0,
+            body_orientation_detection_confidence=0.9,
+            body_orientation_match_iou=0.8,
+        )
+        lost = {"found": False, "is_predicted": False, "ambiguous": False}
+        for now in range(12):
+            session._front_follow_outcome(
+                visible, 640, 480, now=float(now), yaw_deg=0
+            )
+        self.assertEqual(session.front_follow_controller.selected_angle, 180)
+        session._front_follow_outcome(lost, 640, 480, now=12.0, yaw_deg=0)
+
+        verifying = [
+            session._front_follow_outcome(
+                visible,
+                640,
+                480,
+                now=12.1 + index * 0.1,
+                yaw_deg=0,
+            )
+            for index in range(5)
+        ]
+
+        self.assertEqual(verifying[-1].state, "TARGET_REACQUIRED")
+        self.assertEqual(session.follow_mode, "front")
+        self.assertIsNone(session.front_follow_controller.selected_angle)
+        resumed = session._front_follow_outcome(
+            visible, 640, 480, now=12.7, yaw_deg=0
+        )
+        self.assertEqual(resumed.state, "FRONT_SAMPLING")
+        self.assertEqual(resumed.command.as_tuple(), (0, 0, 0, 0))
+
+    def test_auto_digit_switch_zeroes_then_commits_front_after_five_frames(self):
+        session, drone, _detector = build_session()
+        session.front_follow_available = True
+        session.front_follow_logger.reset = Mock()
+        session.follow_mode = "normal"
+        session._kernel._emit(RCCommand(forward_backward=20))
+
+        with patch("control.follow_session.monotonic", return_value=10.0):
+            session.handle_key(ord("3"))
+
+        self.assertEqual(drone.command_log[-1][1], (0, 0, 0, 0))
+        self.assertEqual(session.follow_mode, "normal")
+        self.assertEqual(session._pending_follow_mode, "front")
+        self.assertEqual(session.session_state, "MODE_SWITCHING")
+
+        outcomes = [
+            session._mode_switch_outcome(
+                dict(FRESH_TARGET), 640, 480, now=10.1 + index * 0.1, yaw_deg=0
+            )
+            for index in range(5)
+        ]
+
+        self.assertTrue(all(item.command.as_tuple() == (0, 0, 0, 0) for item in outcomes))
+        self.assertTrue(all(item.state == "MODE_SWITCHING" for item in outcomes[:4]))
+        self.assertEqual(outcomes[-1].state, "FRONT_SAMPLING")
+        self.assertEqual(session.follow_mode, "front")
+        self.assertIsNone(session._pending_follow_mode)
+        session.front_follow_logger.reset.assert_called_once_with(
+            f"{session.mode_label} FRONT"
+        )
+
+    def test_mode_switch_with_missing_target_enters_shared_search(self):
+        session, _drone, _detector = build_session()
+        session.side_follow_available = True
+        self.assertTrue(session._request_follow_mode_switch("side", now=10.0))
+
+        outcome = session._mode_switch_outcome(
+            {"found": False, "is_predicted": False, "ambiguous": False},
+            640,
+            480,
+            now=10.1,
+            yaw_deg=0,
+        )
+
+        self.assertEqual(outcome.state, "LOST_HOLD")
+        self.assertTrue(session.target_search.searching)
+        self.assertEqual(session._pending_follow_mode, "side")
+        self.assertEqual(session.follow_mode, "normal")
+
+    def test_manual_digit_keys_never_switch_modes_and_f_remains_descent(self):
+        session, _drone, _detector = build_session()
+        session.front_follow_available = True
+        enter_manual(session)
+
+        with patch("control.follow_session.monotonic", return_value=11.0):
+            session.handle_key(ord("3"))
+            session.handle_key(ord("f"))
+
+        self.assertIsNone(session._pending_follow_mode)
+        self.assertEqual(session.follow_mode, "normal")
+        manual_command = session.manual_controller.command_for(
+            now=11.0,
+            height_cm=150,
+            front_tof_snapshot=None,
+        )
+        self.assertLess(manual_command.up_down, 0)
+        session._cancel_manual_watchdog(force_hover=True)
+
+    def test_switching_to_current_mode_is_ignored_without_reset(self):
+        session, drone, detector = build_session()
+        session.follow_mode = "normal"
+        commands_before = len(drone.command_log)
+        resets_before = detector.reset_calls
+
+        switched = session._request_follow_mode_switch("normal", now=10.0)
+
+        self.assertFalse(switched)
+        self.assertIsNone(session._pending_follow_mode)
+        self.assertEqual(len(drone.command_log), commands_before)
+        self.assertEqual(detector.reset_calls, resets_before)
+
     def test_control_ready_sensor_failures_converge_to_landing_states(self) -> None:
         high_session, high_drone, _ = build_session(display=True)
         high_session.manual_controller.make_available()
@@ -432,23 +595,42 @@ class FollowSessionManualIntegrationTestCase(unittest.TestCase):
         self.assertEqual(logged["target_result"], target)
         self.assertEqual(logged["command"], session.last_command)
 
-    def test_side_loss_moves_toward_last_seen_side_before_rotating(self) -> None:
+    def test_side_loss_uses_normal_hold_then_last_direction_search(self) -> None:
         session, _drone, _detector = build_session()
         visible = dict(FRESH_TARGET)
         lost = {"found": False, "is_predicted": False, "ambiguous": False}
 
         session._side_follow_outcome(visible, 640, 480, now=0.0, yaw_deg=0)
-        lateral = session._side_follow_outcome(lost, 640, 480, now=1.0, yaw_deg=0)
-        rotating = session._side_follow_outcome(lost, 640, 480, now=4.0, yaw_deg=0)
+        hold = session._side_follow_outcome(lost, 640, 480, now=1.0, yaw_deg=0)
+        last_direction = session._side_follow_outcome(
+            lost, 640, 480, now=2.1, yaw_deg=0
+        )
 
-        self.assertEqual(lateral.state, "SIDE_LOST_LATERAL")
-        self.assertGreater(lateral.command.left_right, 0)
-        self.assertEqual(lateral.command.yaw, 0)
-        self.assertEqual(rotating.state, "SIDE_LOST_ROTATING")
-        self.assertGreater(rotating.command.yaw, 0)
-        self.assertEqual(rotating.command.left_right, 0)
+        self.assertEqual(hold.state, "LOST_HOLD")
+        self.assertEqual(hold.command.as_tuple(), (0, 0, 0, 0))
+        self.assertEqual(last_direction.state, "SEARCH_LAST_DIRECTION")
+        self.assertGreater(last_direction.command.yaw, 0)
+        self.assertEqual(last_direction.command.left_right, 0)
 
-    def test_side_reacquisition_immediately_returns_to_position_control(self) -> None:
+    def test_side_edge_loss_also_uses_normal_yaw_search_without_lateral(self) -> None:
+        session, _drone, _detector = build_session()
+        visible = dict(FRESH_TARGET)
+        visible["center"] = (610, 240)
+        visible["bbox"] = (570, 180, 80, 120)
+        lost = {"found": False, "is_predicted": False, "ambiguous": False}
+
+        session._side_follow_outcome(visible, 640, 480, now=0.0, yaw_deg=0)
+        hold = session._side_follow_outcome(lost, 640, 480, now=1.0, yaw_deg=0)
+        searching = session._side_follow_outcome(
+            lost, 640, 480, now=2.1, yaw_deg=0
+        )
+
+        self.assertEqual(hold.state, "LOST_HOLD")
+        self.assertEqual(searching.state, "SEARCH_LAST_DIRECTION")
+        self.assertEqual(searching.command.left_right, 0)
+        self.assertGreater(searching.command.yaw, 0)
+
+    def test_side_reacquisition_requires_five_frames_then_resamples_side(self) -> None:
         session, _drone, _detector = build_session()
         visible = dict(FRESH_TARGET)
         visible.update(
@@ -461,14 +643,30 @@ class FollowSessionManualIntegrationTestCase(unittest.TestCase):
             session._side_follow_outcome(visible, 640, 480, now=float(now), yaw_deg=0)
         session._side_follow_outcome(lost, 640, 480, now=12.0, yaw_deg=0)
 
-        reacquired = session._side_follow_outcome(
-            visible, 640, 480, now=12.1, yaw_deg=0
-        )
+        verifying = []
+        for index in range(5):
+            verifying.append(
+                session._side_follow_outcome(
+                    visible,
+                    640,
+                    480,
+                    now=12.1 + index * 0.1,
+                    yaw_deg=0,
+                )
+            )
 
-        self.assertEqual(session.side_follow_recovery.state, "IDLE")
-        self.assertEqual(reacquired.state, "SIDE_POSITION_TRACKING")
-        self.assertGreater(reacquired.command.left_right, 0)
-        self.assertEqual(reacquired.command.yaw, 0)
+        self.assertTrue(
+            all(item.state == "REACQUIRE_VERIFY" for item in verifying[:4])
+        )
+        self.assertEqual(verifying[4].state, "TARGET_REACQUIRED")
+        self.assertEqual(verifying[4].command.as_tuple(), (0, 0, 0, 0))
+        self.assertIsNone(session.side_follow_controller.selected_angle)
+
+        resumed = session._side_follow_outcome(
+            visible, 640, 480, now=12.7, yaw_deg=0
+        )
+        self.assertEqual(resumed.state, "SIDE_SAMPLING")
+        self.assertEqual(resumed.command.as_tuple(), (0, 0, 0, 0))
 
     def test_repeated_m_events_require_a_quiet_gap_before_second_toggle(self) -> None:
         session, _drone, _detector = build_session()

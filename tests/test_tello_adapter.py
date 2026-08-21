@@ -1,6 +1,9 @@
 import unittest
+import json
 from contextlib import redirect_stdout
 from io import StringIO
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 from app.modes import run_connection_test
@@ -10,6 +13,7 @@ from drone.tello_adapter import TelloDroneAdapter
 class RecordingTello:
     def __init__(self) -> None:
         self.takeoff_calls = 0
+        self.land_calls = 0
         self.read_response = "tof 600"
         self.responses = {
             "command": "ok",
@@ -27,6 +31,9 @@ class RecordingTello:
 
     def takeoff(self) -> None:
         self.takeoff_calls += 1
+
+    def land(self) -> None:
+        self.land_calls += 1
 
     def get_distance_tof(self) -> int:
         return 147
@@ -221,6 +228,48 @@ class TelloDroneAdapterTestCase(unittest.TestCase):
 
         input_mock.assert_not_called()
         self.assertEqual(tello.takeoff_calls, 1)
+
+    def test_land_audit_records_caller_process_thread_and_context(self) -> None:
+        with TemporaryDirectory() as temporary_directory:
+            adapter = TelloDroneAdapter(
+                flight_audit_enabled=True,
+                flight_audit_log_dir=temporary_directory,
+            )
+            tello = RecordingTello()
+            adapter._tello = tello
+            adapter.connected = True
+            adapter.set_land_context(
+                session_state="TARGET_LOST_LANDING",
+                follow_mode="side",
+                height_cm=121,
+            )
+
+            with redirect_stdout(StringIO()):
+                adapter.land()
+
+            self.assertEqual(tello.land_calls, 1)
+            self.assertIsNotNone(adapter.flight_audit_path)
+            records = [
+                json.loads(line)
+                for line in Path(adapter.flight_audit_path).read_text(
+                    encoding="utf-8"
+                ).splitlines()
+            ]
+            self.assertEqual(
+                [(record["event"], record["outcome"]) for record in records],
+                [
+                    ("land_command", "requested"),
+                    ("land_command", "succeeded"),
+                ],
+            )
+            requested = records[0]
+            self.assertGreater(requested["process_id"], 0)
+            self.assertEqual(requested["thread_name"], "MainThread")
+            self.assertEqual(requested["context"]["session_state"], "TARGET_LOST_LANDING")
+            self.assertEqual(requested["context"]["follow_mode"], "side")
+            self.assertTrue(
+                any("test_land_audit_records" in frame for frame in requested["call_stack"])
+            )
 
     def test_authorization_is_consumed_after_one_takeoff(self) -> None:
         adapter, tello = self.build_adapter()

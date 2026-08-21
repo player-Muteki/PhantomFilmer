@@ -96,6 +96,11 @@ class TargetSearchController:
     def searching(self) -> bool:
         return self.state != "IDLE"
 
+    @property
+    def reacquire_progress(self) -> str:
+        """Expose consecutive ReID confirmation progress for flight telemetry."""
+        return self._reacquire_tracker.progress
+
     def close_recovery_has_priority(self) -> bool:
         """Whether the narrowly scoped too-close recovery must preempt avoidance."""
         if not self.enabled or not self.close_recovery_enabled or not self.has_observed_target:
