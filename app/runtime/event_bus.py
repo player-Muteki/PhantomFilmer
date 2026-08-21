@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from threading import RLock
 from time import time
 from typing import Any, Callable, Deque, Mapping, Optional
@@ -49,6 +49,11 @@ class EventBus:
         with self._lock:
             return self._sequence
 
+    @property
+    def oldest_sequence(self) -> int:
+        with self._lock:
+            return self._history[0].sequence if self._history else self._sequence + 1
+
     def publish(
         self,
         event_type: str,
@@ -58,12 +63,17 @@ class EventBus:
     ) -> RuntimeEvent:
         with self._lock:
             self._sequence += 1
+            event_snapshot = (
+                replace(snapshot, sequence=self._sequence)
+                if snapshot is not None
+                else None
+            )
             event = RuntimeEvent(
                 sequence=self._sequence,
                 occurred_at=time(),
                 event_type=event_type,
                 payload=dict(payload or {}),
-                snapshot=snapshot,
+                snapshot=event_snapshot,
             )
             self._history.append(event)
             listeners = tuple(self._listeners.values())

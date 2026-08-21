@@ -319,8 +319,10 @@ ReID 只进行外观匹配，不识别真实姓名；俯视、遮挡、换衣、
 覆盖 CLI** 的 ReID、自动跟随、目标搜索、侧向/前向模式、自动避障、Fake 模式或完整
 `FollowSession/KernelSession` 生命周期。
 
-GUI 与 CLI 是两个独立运行时，不共享会话或控制状态，也不能同时控制同一架无人机。
-Python sidecar 只复用真机适配器及部分 ToF/飞行审计能力，安全阈值在
+GUI 与 CLI 共用 `MissionManager` 命令/事件模型和 `MissionFactory` 装配路径，但仍是两个
+独立进程，不共享正在运行的会话或控制状态，也不能同时控制同一架无人机。Electron main
+通过 `/api/v1` 强类型命令调用 sidecar；手动 RC 使用 1 秒独占租约、递增序号和时间戳，
+松键或失焦会释放租约并悬停。Python sidecar 目前只复用真机适配器及部分 ToF/飞行审计能力，安全阈值在
 `web_api/server.py` 中独立定义，不读取 `config.yaml`。端口和会话令牌由 Electron 主进程
 持有，renderer 只能调用类型化 preload 接口。
 

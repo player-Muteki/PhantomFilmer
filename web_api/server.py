@@ -30,6 +30,7 @@ from app.runtime.commands import (
     RefreshStatusCommand,
     StopCommand,
     TakeoffCommand,
+    command_from_payload,
 )
 from app.runtime.mission_manager import MissionManager
 from app.runtime.models import (
@@ -39,12 +40,14 @@ from app.runtime.models import (
     RuntimePhase,
     RuntimeSnapshot,
 )
+from app.runtime.rc_lease import RcLeaseManager
 
 from .tello_adapter import RealTelloAdapter
 
 
 HOST = "127.0.0.1"
 PORT = 0
+API_VERSION = "1"
 VIDEO_BOUNDARY = "frame"
 MIN_TAKEOFF_BATTERY = 20
 MAX_RC_SPEED = 35
@@ -82,6 +85,7 @@ class DroneWebService(MissionManager):
         self._phase = "连接"
         self._last_rc_at = 0.0
         self._rc_active = False
+        self._rc_leases = RcLeaseManager(ttl_seconds=1.0)
         self._watchdog_stop = Event()
         self._watchdog = Thread(target=self._watch_rc, daemon=True)
         self._tof_monitor = Thread(target=self._monitor_front_tof, daemon=True)
@@ -244,6 +248,7 @@ class DroneWebService(MissionManager):
     def takeoff(self) -> dict[str, Any]:
         """Take off only after all locally verifiable preflight gates pass."""
         with self._lock:
+            self._rc_leases.revoke()
             if not self.connected or self._adapter is None:
                 raise RuntimeError("真机未连接，不能起飞。")
             if self._airborne:
@@ -273,6 +278,7 @@ class DroneWebService(MissionManager):
     def land(self) -> dict[str, Any]:
         """Clear movement and land while retaining telemetry and video."""
         with self._lock:
+            self._rc_leases.revoke()
             if not self.connected or self._adapter is None:
                 raise RuntimeError("真机未连接，无法降落。")
             if not self._airborne:
@@ -329,6 +335,7 @@ class DroneWebService(MissionManager):
     def stop(self) -> None:
         """Land first when necessary, then stop the stream and connection."""
         with self._lock:
+            self._rc_leases.revoke()
             adapter = self._adapter
             if adapter is not None:
                 try:
@@ -346,6 +353,7 @@ class DroneWebService(MissionManager):
     def emergency_land(self) -> None:
         """Request landing, then close the connection regardless of outcome."""
         with self._lock:
+            self._rc_leases.revoke()
             adapter = self._adapter
             if adapter is None or not getattr(adapter, "connected", False):
                 raise RuntimeError("真机未连接，无法发送降落指令。")
@@ -356,6 +364,58 @@ class DroneWebService(MissionManager):
                 self._adapter = None
                 self._clear_session()
                 adapter.stop()
+
+    def acquire_rc_lease(self) -> dict[str, object]:
+        """Grant exclusive, short-lived manual control authority while airborne."""
+        with self._lock:
+            self._require_airborne()
+            self._send_hover()
+            lease = self._rc_leases.acquire()
+            self.events.publish(
+                "rc.lease.acquired",
+                lease.to_dict(),
+                snapshot=self.runtime_snapshot(),
+            )
+            return lease.to_dict()
+
+    def move_rc_with_lease(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Validate lease freshness before forwarding a versioned RC command."""
+        with self._lock:
+            self._require_airborne()
+            lease = self._rc_leases.validate_and_refresh(
+                lease_id=payload.get("leaseId"),
+                sequence=payload.get("sequence"),
+                issued_at_ms=payload.get("issuedAt"),
+            )
+            try:
+                result = self.execute(
+                    MoveRcCommand(
+                        left_right=payload.get("leftRight", 0),
+                        forward_back=payload.get("forwardBack", 0),
+                        up_down=payload.get("upDown", 0),
+                        yaw=payload.get("yaw", 0),
+                    )
+                )
+            except Exception:
+                # A sequence is consumed during validation. Revoke authority so
+                # the client cannot continue from a state it did not observe.
+                self._send_hover()
+                raise
+            return {**result, **lease.to_dict()}
+
+    def release_rc_lease(self, lease_id: object) -> dict[str, object]:
+        """Release manual authority and always collapse output to hover."""
+        with self._lock:
+            released = self._rc_leases.release(lease_id)
+            if self._airborne:
+                self._send_hover()
+                self._flight_state = "手动悬停"
+            self.events.publish(
+                "rc.lease.released",
+                {"leaseId": lease_id, "released": released},
+                snapshot=self.runtime_snapshot(),
+            )
+            return {"ok": True, "released": released}
 
     def shutdown(self) -> None:
         """Release the aircraft and stop the local RC watchdog."""
@@ -405,6 +465,7 @@ class DroneWebService(MissionManager):
         adapter.move_rc(0, 0, 0, 0)
         self._last_rc_at = monotonic()
         self._rc_active = False
+        self._rc_leases.revoke()
 
     def _watch_rc(self) -> None:
         while not self._watchdog_stop.wait(0.1):
@@ -442,6 +503,7 @@ class DroneWebService(MissionManager):
                     self._front_tof_checked_at = monotonic()
 
     def _clear_session(self) -> None:
+        self._rc_leases.revoke()
         self._adapter = None
         self._video_ready = False
         self._last_frame_at = None
@@ -541,7 +603,8 @@ class DroneRequestHandler(BaseHTTPRequestHandler):
         return self.application.service
 
     def do_GET(self) -> None:  # noqa: N802
-        path = urlsplit(self.path).path
+        parsed = urlsplit(self.path)
+        path = parsed.path
         if path == "/api/drone/video/stream":
             if not self._authorized_video():
                 self._json(HTTPStatus.UNAUTHORIZED, {"error": "视频会话已失效。"})
@@ -550,6 +613,59 @@ class DroneRequestHandler(BaseHTTPRequestHandler):
             return
         if not self._authorized_request():
             self._json(HTTPStatus.UNAUTHORIZED, {"error": "会话令牌无效。"})
+            return
+        if path == "/api/v1/health":
+            self._json(
+                HTTPStatus.OK,
+                {"apiVersion": API_VERSION, "ok": True, "connected": self.service.connected},
+            )
+            return
+        if path == "/api/v1/capabilities":
+            self._json(
+                HTTPStatus.OK,
+                {
+                    "apiVersion": API_VERSION,
+                    "commands": [
+                        "device.connect",
+                        "device.status.refresh",
+                        "flight.takeoff",
+                        "flight.land",
+                        "flight.hover",
+                        "device.stop",
+                        "flight.emergency_land",
+                    ],
+                    "missions": ["manual"],
+                    "eventReplay": True,
+                    "rcLease": {"required": True, "ttlMs": 1000},
+                },
+            )
+            return
+        if path == "/api/v1/runtime/snapshot":
+            self._json(
+                HTTPStatus.OK,
+                {"apiVersion": API_VERSION, "snapshot": self.service.runtime_snapshot().to_dict()},
+            )
+            return
+        if path == "/api/v1/runtime/events":
+            query = parse_qs(parsed.query)
+            try:
+                since = int(query.get("since", ["0"])[0])
+                if since < 0:
+                    raise ValueError
+            except ValueError:
+                self._v1_error(HTTPStatus.BAD_REQUEST, "INVALID_SEQUENCE", "since 必须是非负整数。")
+                return
+            events = self.service.events.events_since(since)
+            oldest = self.service.events.oldest_sequence
+            self._json(
+                HTTPStatus.OK,
+                {
+                    "apiVersion": API_VERSION,
+                    "latestSequence": self.service.events.latest_sequence,
+                    "resetRequired": since < oldest - 1,
+                    "events": [event.to_dict() for event in events],
+                },
+            )
             return
         if path == "/api/health":
             self._json(HTTPStatus.OK, {"ok": True, "connected": self.service.connected})
@@ -564,6 +680,35 @@ class DroneRequestHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.UNAUTHORIZED, {"error": "会话令牌无效。"})
             return
         path = urlsplit(self.path).path
+        if path == "/api/v1/commands":
+            try:
+                command = command_from_payload(self._read_json())
+            except (RuntimeError, ValueError) as exc:
+                self._v1_error(HTTPStatus.BAD_REQUEST, "INVALID_COMMAND", str(exc))
+                return
+            self._run_v1_command(command)
+            return
+        if path == "/api/v1/rc/lease":
+            try:
+                lease = self.service.acquire_rc_lease()
+                self._json(HTTPStatus.CREATED, {"apiVersion": API_VERSION, **lease})
+            except Exception as exc:
+                self._v1_error(HTTPStatus.CONFLICT, "RC_LEASE_REJECTED", str(exc))
+            return
+        if path == "/api/v1/rc":
+            try:
+                result = self.service.move_rc_with_lease(self._read_json())
+                self._json(HTTPStatus.OK, {"apiVersion": API_VERSION, **result})
+            except Exception as exc:
+                self._v1_error(HTTPStatus.CONFLICT, "RC_COMMAND_REJECTED", str(exc))
+            return
+        if path == "/api/v1/rc/release":
+            try:
+                result = self.service.release_rc_lease(self._read_json().get("leaseId"))
+                self._json(HTTPStatus.OK, {"apiVersion": API_VERSION, **result})
+            except Exception as exc:
+                self._v1_error(HTTPStatus.CONFLICT, "RC_RELEASE_REJECTED", str(exc))
+            return
         if path == "/api/drone/connect":
             self._run_command(ConnectCommand())
             return
@@ -620,6 +765,27 @@ class DroneRequestHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.OK, self.service.execute(command))
         except Exception as exc:
             self._json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(exc)})
+
+    def _run_v1_command(self, command: Any) -> None:
+        try:
+            result = self.service.execute(command)
+            self._json(
+                HTTPStatus.OK,
+                {
+                    "apiVersion": API_VERSION,
+                    "commandId": command.command_id,
+                    "result": result,
+                    "snapshot": self.service.runtime_snapshot().to_dict(),
+                },
+            )
+        except Exception as exc:
+            self._v1_error(HTTPStatus.CONFLICT, "COMMAND_REJECTED", str(exc))
+
+    def _v1_error(self, status: HTTPStatus, code: str, message: str) -> None:
+        self._json(
+            status,
+            {"apiVersion": API_VERSION, "error": {"code": code, "message": message}},
+        )
 
     def _video_stream(self) -> None:
         if not self.service.connected:

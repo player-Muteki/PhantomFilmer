@@ -1,9 +1,10 @@
+import json
 import unittest
 from http.client import HTTPConnection
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from threading import Thread
-from time import sleep
+from time import sleep, time
 
 from app.runtime.commands import ConnectCommand, TakeoffCommand
 from app.runtime.models import AllowedAction, RuntimePhase
@@ -240,10 +241,15 @@ class SidecarServerTests(unittest.TestCase):
         path: str,
         *,
         token: str | None = "test-session-token",
+        json_body: dict | None = None,
     ) -> tuple[int, str]:
         connection = HTTPConnection("127.0.0.1", self.server.server_address[1], timeout=2)
         headers = {"X-Phantom-Token": token} if token is not None else {}
-        connection.request(method, path, headers=headers)
+        body = None
+        if json_body is not None:
+            body = json.dumps(json_body).encode("utf-8")
+            headers["Content-Type"] = "application/json"
+        connection.request(method, path, body=body, headers=headers)
         response = connection.getresponse()
         body = response.read().decode("utf-8")
         connection.close()
@@ -274,6 +280,100 @@ class SidecarServerTests(unittest.TestCase):
             [event.payload["command"] for event in self.service.events.events_since(0)],
             ["device.connect", "device.connect"],
         )
+
+    def test_v1_command_snapshot_and_event_replay_contract(self) -> None:
+        status, body = self._request(
+            "POST",
+            "/api/v1/commands",
+            json_body={
+                "type": "device.connect",
+                "commandId": "v1-connect",
+                "issuedAt": int(time() * 1000),
+            },
+        )
+        command = json.loads(body)
+        snapshot_status, snapshot_body = self._request("GET", "/api/v1/runtime/snapshot")
+        events_status, events_body = self._request("GET", "/api/v1/runtime/events?since=0")
+        snapshot = json.loads(snapshot_body)
+        events = json.loads(events_body)
+
+        self.assertEqual(status, 200)
+        self.assertEqual(command["apiVersion"], "1")
+        self.assertEqual(command["commandId"], "v1-connect")
+        self.assertEqual(command["snapshot"]["phase"], "preflight")
+        self.assertEqual(snapshot_status, 200)
+        self.assertIn("takeoff", snapshot["snapshot"]["allowedActions"])
+        self.assertEqual(events_status, 200)
+        self.assertFalse(events["resetRequired"])
+        self.assertEqual(
+            [event["type"] for event in events["events"]],
+            ["command.accepted", "command.completed"],
+        )
+
+    def test_v1_rc_lease_rejects_replayed_sequence_and_release_hovers(self) -> None:
+        self._request("POST", "/api/drone/connect")
+        self._request("POST", "/api/drone/takeoff")
+        lease_status, lease_body = self._request("POST", "/api/v1/rc/lease")
+        lease = json.loads(lease_body)
+        payload = {
+            "leaseId": lease["leaseId"],
+            "sequence": 1,
+            "issuedAt": int(time() * 1000),
+            "leftRight": 20,
+            "forwardBack": 0,
+            "upDown": 0,
+            "yaw": 0,
+        }
+
+        move_status, _ = self._request("POST", "/api/v1/rc", json_body=payload)
+        replay_status, replay_body = self._request(
+            "POST",
+            "/api/v1/rc",
+            json_body={**payload, "issuedAt": payload["issuedAt"] + 1},
+        )
+        release_status, release_body = self._request(
+            "POST",
+            "/api/v1/rc/release",
+            json_body={"leaseId": lease["leaseId"]},
+        )
+
+        self.assertEqual(lease_status, 201)
+        self.assertEqual(move_status, 200)
+        self.assertEqual(replay_status, 409)
+        self.assertEqual(json.loads(replay_body)["error"]["code"], "RC_COMMAND_REJECTED")
+        self.assertEqual(release_status, 200)
+        self.assertTrue(json.loads(release_body)["released"])
+        adapter = self.service._adapter
+        self.assertIsNotNone(adapter)
+        self.assertEqual(adapter.rc_commands[-1], (0, 0, 0, 0))
+
+    def test_v1_rc_safety_rejection_revokes_unobserved_lease_state(self) -> None:
+        self._request("POST", "/api/drone/connect")
+        self._request("POST", "/api/drone/takeoff")
+        _, lease_body = self._request("POST", "/api/v1/rc/lease")
+        lease = json.loads(lease_body)
+        adapter = self.service._adapter
+        self.assertIsNotNone(adapter)
+        adapter.front_distance = 45
+        self.service._refresh_front_tof(force=True)
+        payload = {
+            "leaseId": lease["leaseId"],
+            "sequence": 1,
+            "issuedAt": int(time() * 1000),
+            "forwardBack": 20,
+        }
+
+        blocked_status, _ = self._request("POST", "/api/v1/rc", json_body=payload)
+        revoked_status, revoked_body = self._request(
+            "POST",
+            "/api/v1/rc",
+            json_body={**payload, "sequence": 2, "issuedAt": payload["issuedAt"] + 1},
+        )
+
+        self.assertEqual(blocked_status, 409)
+        self.assertEqual(revoked_status, 409)
+        self.assertIn("无效或已释放", json.loads(revoked_body)["error"]["message"])
+        self.assertEqual(adapter.rc_commands[-1], (0, 0, 0, 0))
 
     def test_video_token_is_short_lived_and_single_use(self) -> None:
         payload = self.server.issue_video_token(lifetime_seconds=10)

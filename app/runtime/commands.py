@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from math import isfinite
 from time import time
-from typing import Union
+from typing import Any, Union
 from uuid import uuid4
 
 from app.runtime.models import ControlMode, MissionKind
@@ -16,6 +17,12 @@ class CommandMetadata:
 
     command_id: str = field(default_factory=lambda: uuid4().hex)
     issued_at: float = field(default_factory=time)
+
+    def __post_init__(self) -> None:
+        if not self.command_id or len(self.command_id) > 128:
+            raise ValueError("commandId 必须是 1～128 个字符。")
+        if not isfinite(float(self.issued_at)):
+            raise ValueError("issuedAt 时间戳无效。")
 
 
 @dataclass(frozen=True)
@@ -115,3 +122,52 @@ def command_name(command: RuntimeCommand) -> str:
         SelectControlModeCommand: "mission.control_mode.select",
     }
     return names[type(command)]
+
+
+def command_from_payload(payload: dict[str, Any]) -> RuntimeCommand:
+    """Parse the versioned JSON command envelope into one typed command."""
+
+    command_type = payload.get("type")
+    if not isinstance(command_type, str):
+        raise ValueError("命令 type 缺失或格式无效。")
+    metadata: dict[str, Any] = {}
+    command_id = payload.get("commandId")
+    if command_id is not None:
+        if not isinstance(command_id, str):
+            raise ValueError("commandId 格式无效。")
+        metadata["command_id"] = command_id
+    issued_at = payload.get("issuedAt")
+    if issued_at is not None:
+        if isinstance(issued_at, bool) or not isinstance(issued_at, (int, float)):
+            raise ValueError("issuedAt 格式无效。")
+        metadata["issued_at"] = float(issued_at) / 1000.0
+
+    constructors = {
+        "device.connect": ConnectCommand,
+        "device.status.refresh": RefreshStatusCommand,
+        "flight.takeoff": TakeoffCommand,
+        "flight.land": LandCommand,
+        "flight.hover": HoverCommand,
+        "device.stop": StopCommand,
+        "flight.emergency_land": EmergencyLandCommand,
+        "mission.stop": StopMissionCommand,
+        "mission.emergency_stop": EmergencyStopCommand,
+    }
+    constructor = constructors.get(command_type)
+    if constructor is not None:
+        return constructor(**metadata)
+    if command_type == "mission.start":
+        try:
+            mission = MissionKind(str(payload.get("mission")))
+        except ValueError as exc:
+            raise ValueError("mission 类型无效。") from exc
+        return StartMissionCommand(mission=mission, **metadata)
+    if command_type == "mission.control_mode.select":
+        try:
+            mode = ControlMode(str(payload.get("mode")))
+        except ValueError as exc:
+            raise ValueError("控制模式无效。") from exc
+        return SelectControlModeCommand(mode=mode, **metadata)
+    if command_type == "flight.rc.move":
+        raise ValueError("flight.rc.move 必须通过带租约的 /api/v1/rc 接口发送。")
+    raise ValueError(f"未知命令类型：{command_type}")

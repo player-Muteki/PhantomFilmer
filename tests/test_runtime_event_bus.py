@@ -1,6 +1,7 @@
 import unittest
 
 from app.runtime.event_bus import EventBus
+from app.runtime.models import ControlMode, MissionKind, RuntimePhase, RuntimeSnapshot
 
 
 class EventBusTestCase(unittest.TestCase):
@@ -33,6 +34,26 @@ class EventBusTestCase(unittest.TestCase):
         bus.publish("after-unsubscribe")
 
         self.assertEqual(received, [event])
+
+    def test_event_stamps_attached_snapshot_with_the_same_sequence(self) -> None:
+        bus = EventBus()
+        snapshot = RuntimeSnapshot(
+            sequence=0,
+            phase=RuntimePhase.PREFLIGHT,
+            mission=MissionKind.IDLE,
+            control_mode=ControlMode.NONE,
+            connected=True,
+            airborne=False,
+            streaming=True,
+            flight_state="ready",
+        )
+
+        event = bus.publish("state.changed", snapshot=snapshot)
+
+        self.assertEqual(event.sequence, 1)
+        self.assertIsNotNone(event.snapshot)
+        self.assertEqual(event.snapshot.sequence, event.sequence)
+        self.assertEqual(snapshot.sequence, 0)
 
 
 if __name__ == "__main__":

@@ -18,6 +18,26 @@ type SidecarManagerOptions = {
   onStateChange: (state: BackendState) => void
 }
 
+type V1CommandEnvelope<Result> = {
+  apiVersion: '1'
+  commandId: string
+  result: Result
+  snapshot: unknown
+}
+
+type V1RcLease = {
+  apiVersion: '1'
+  leaseId: string
+  lastSequence: number
+  expiresAt: number
+}
+
+type ActiveRcLease = {
+  leaseId: string
+  sequence: number
+  expiresAt: number
+}
+
 const START_TIMEOUT_MS = 15_000
 const STOP_TIMEOUT_MS = 12_000
 
@@ -27,6 +47,7 @@ export class SidecarManager {
   private sessionToken: string | null = null
   private expectedExit = false
   private lastStatus: DroneStatus = {}
+  private rcLease: ActiveRcLease | null = null
   private state: BackendState
   private readonly logDir: string
 
@@ -54,6 +75,7 @@ export class SidecarManager {
 
     this.expectedExit = false
     this.baseUrl = null
+    this.rcLease = null
     this.sessionToken = randomBytes(32).toString('base64url')
     this.updateState({ status: 'starting', error: undefined, restartAllowed: false })
 
@@ -102,7 +124,7 @@ export class SidecarManager {
     try {
       const ready = await this.waitForReady(child, processLog)
       this.baseUrl = `http://${ready.host}:${ready.port}`
-      await this.request<{ ok: boolean }>('GET', '/api/health')
+      await this.request<{ apiVersion: '1'; ok: boolean }>('GET', '/api/v1/health')
       this.updateState({ status: 'ready', error: undefined, restartAllowed: true })
       return this.getState()
     } catch (error) {
@@ -125,11 +147,11 @@ export class SidecarManager {
   }
 
   async connect(): Promise<DroneStatus> {
-    return this.statusRequest('POST', '/api/drone/connect')
+    return this.commandStatusRequest('device.connect')
   }
 
   async status(): Promise<DroneStatus> {
-    return this.statusRequest('GET', '/api/drone/status')
+    return this.commandStatusRequest('device.status.refresh')
   }
 
   async takeoff(): Promise<DroneStatus> {
@@ -139,7 +161,7 @@ export class SidecarManager {
     this.lastStatus = { ...this.lastStatus, airborne: true }
     this.updateState({ airborne: true, restartAllowed: false, error: undefined })
     try {
-      return await this.statusRequest('POST', '/api/drone/takeoff')
+      return await this.commandStatusRequest('flight.takeoff')
     } catch (error) {
       const detail = error instanceof Error ? error.message : '未知错误'
       const message = `起飞请求结果未知，真机可能已在空中。请目视确认并优先执行降落；禁止重启后端。${detail}`
@@ -149,25 +171,55 @@ export class SidecarManager {
   }
 
   async land(): Promise<DroneStatus> {
-    return this.statusRequest('POST', '/api/drone/land')
+    await this.releaseRcLease().catch(() => undefined)
+    return this.commandStatusRequest('flight.land')
   }
 
   async hover(): Promise<DroneStatus> {
-    return this.statusRequest('POST', '/api/drone/hover')
+    await this.releaseRcLease().catch(() => undefined)
+    return this.commandStatusRequest('flight.hover')
   }
 
   async moveRc(command: RcCommand): Promise<{ ok: boolean; flightState: string }> {
-    return this.request('POST', '/api/drone/rc', command)
+    const lease = await this.ensureRcLease()
+    const sequence = lease.sequence + 1
+    let result: {
+      apiVersion: '1'
+      ok: boolean
+      flightState: string
+      leaseId: string
+      lastSequence: number
+      expiresAt: number
+    }
+    try {
+      result = await this.request('POST', '/api/v1/rc', {
+        leaseId: lease.leaseId,
+        sequence,
+        issuedAt: Date.now(),
+        ...command
+      })
+    } catch (error) {
+      this.rcLease = null
+      throw error
+    }
+    this.rcLease = {
+      leaseId: result.leaseId,
+      sequence: result.lastSequence,
+      expiresAt: result.expiresAt
+    }
+    return { ok: result.ok, flightState: result.flightState }
   }
 
   async stopDrone(): Promise<{ ok: boolean }> {
-    const result = await this.request<{ ok: boolean }>('POST', '/api/drone/stop')
+    await this.releaseRcLease().catch(() => undefined)
+    const result = await this.commandRequest<{ ok: boolean }>('device.stop')
     this.rememberStatus({})
     return result
   }
 
   async emergencyLand(): Promise<{ ok: boolean }> {
-    const result = await this.request<{ ok: boolean }>('POST', '/api/drone/emergency-land')
+    await this.releaseRcLease().catch(() => undefined)
+    const result = await this.commandRequest<{ ok: boolean }>('flight.emergency_land')
     this.rememberStatus({})
     return result
   }
@@ -195,6 +247,7 @@ export class SidecarManager {
     }
     this.process = null
     this.baseUrl = null
+    this.rcLease = null
     if (shutdownError) {
       const airborne = this.lastStatus.airborne === true
       this.updateState({
@@ -216,12 +269,50 @@ export class SidecarManager {
     this.process?.kill('SIGKILL')
     this.process = null
     this.baseUrl = null
+    this.rcLease = null
   }
 
-  private async statusRequest(method: 'GET' | 'POST', path: string): Promise<DroneStatus> {
-    const status = await this.request<DroneStatus>(method, path)
+  private async commandStatusRequest(type: string): Promise<DroneStatus> {
+    const status = await this.commandRequest<DroneStatus>(type)
     this.rememberStatus(status)
     return status
+  }
+
+  private async commandRequest<Result>(type: string): Promise<Result> {
+    const commandId = randomBytes(16).toString('hex')
+    const envelope = await this.request<V1CommandEnvelope<Result>>('POST', '/api/v1/commands', {
+      type,
+      commandId,
+      issuedAt: Date.now()
+    })
+    if (envelope.apiVersion !== '1' || envelope.commandId !== commandId) {
+      throw new Error('本地后端返回了不兼容的命令响应。')
+    }
+    return envelope.result
+  }
+
+  private async ensureRcLease(): Promise<ActiveRcLease> {
+    const current = this.rcLease
+    if (current && current.expiresAt > Date.now() + 100) return current
+    const lease = await this.request<V1RcLease>('POST', '/api/v1/rc/lease')
+    if (lease.apiVersion !== '1' || !lease.leaseId) {
+      throw new Error('本地后端未返回有效的 RC 控制租约。')
+    }
+    this.rcLease = {
+      leaseId: lease.leaseId,
+      sequence: lease.lastSequence,
+      expiresAt: lease.expiresAt
+    }
+    return this.rcLease
+  }
+
+  private async releaseRcLease(): Promise<void> {
+    const lease = this.rcLease
+    this.rcLease = null
+    if (!lease) return
+    await this.request<{ apiVersion: '1'; ok: boolean }>('POST', '/api/v1/rc/release', {
+      leaseId: lease.leaseId
+    })
   }
 
   private rememberStatus(status: DroneStatus): void {
@@ -253,8 +344,11 @@ export class SidecarManager {
       throw new Error(`无法连接本地后端：${error instanceof Error ? error.message : '未知错误'}`)
     }
     if (!response.ok) {
-      const payload = (await response.json().catch(() => ({}))) as { error?: string }
-      throw new Error(payload.error || `后端请求失败（HTTP ${response.status}）。`)
+      const payload = (await response.json().catch(() => ({}))) as {
+        error?: string | { message?: string }
+      }
+      const message = typeof payload.error === 'string' ? payload.error : payload.error?.message
+      throw new Error(message || `后端请求失败（HTTP ${response.status}）。`)
     }
     return (await response.json()) as Result
   }

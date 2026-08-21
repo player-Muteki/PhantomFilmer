@@ -23,7 +23,13 @@ def parse_args():
 
 
 args = parse_args()
-state = {"connected": False, "airborne": False, "video_token": ""}
+state = {
+    "connected": False,
+    "airborne": False,
+    "video_token": "",
+    "rc_lease": "",
+    "rc_sequence": 0,
+}
 
 
 def status():
@@ -62,6 +68,56 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
+    def _read_json(self):
+        length = int(self.headers.get("Content-Length", "0"))
+        return json.loads(self.rfile.read(length)) if length else {}
+
+    def _v1_command(self, payload):
+        command = payload.get("type")
+        if command == "device.connect":
+            state["connected"] = True
+            state["airborne"] = os.environ.get("PHANTOMFILMER_TEST_AIRBORNE") == "1"
+            result = status()
+            crash_after = os.environ.get("PHANTOMFILMER_TEST_CRASH_AFTER_CONNECT") == "1"
+        elif command == "device.status.refresh":
+            result = status()
+            crash_after = False
+        elif command == "flight.takeoff":
+            state["airborne"] = True
+            if os.environ.get("PHANTOMFILMER_TEST_CRASH_DURING_TAKEOFF") == "1":
+                os._exit(24)
+            result = status()
+            crash_after = False
+        elif command == "flight.land":
+            state["airborne"] = False
+            state["rc_lease"] = ""
+            result = status()
+            crash_after = False
+        elif command == "flight.hover":
+            state["rc_lease"] = ""
+            result = status()
+            crash_after = False
+        elif command in ("device.stop", "flight.emergency_land"):
+            state["airborne"] = False
+            state["connected"] = False
+            state["rc_lease"] = ""
+            result = {"ok": True}
+            crash_after = False
+        else:
+            self._json(400, {"apiVersion": "1", "error": {"message": "bad command"}})
+            return
+        self._json(
+            200,
+            {
+                "apiVersion": "1",
+                "commandId": payload.get("commandId", "fixture"),
+                "result": result,
+                "snapshot": {},
+            },
+        )
+        if crash_after:
+            threading.Timer(0.15, lambda: os._exit(23)).start()
+
     def do_GET(self):
         parts = urlsplit(self.path)
         if parts.path.endswith("/video/stream"):
@@ -81,6 +137,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parts.path == "/api/health":
             self._json(200, {"ok": True, "connected": state["connected"]})
+        elif parts.path == "/api/v1/health":
+            self._json(200, {"apiVersion": "1", "ok": True, "connected": state["connected"]})
         elif parts.path == "/api/drone/status":
             self._json(200, status())
         else:
@@ -91,7 +149,49 @@ class Handler(BaseHTTPRequestHandler):
             self._json(401, {"error": "unauthorized"})
             return
         path = urlsplit(self.path).path
-        if path == "/api/drone/connect":
+        if path == "/api/v1/commands":
+            self._v1_command(self._read_json())
+        elif path == "/api/v1/rc/lease":
+            if not state["airborne"]:
+                self._json(409, {"apiVersion": "1", "error": {"message": "not airborne"}})
+                return
+            state["rc_lease"] = secrets.token_urlsafe(16)
+            state["rc_sequence"] = 0
+            self._json(
+                201,
+                {
+                    "apiVersion": "1",
+                    "leaseId": state["rc_lease"],
+                    "lastSequence": 0,
+                    "expiresAt": 9999999999999,
+                },
+            )
+        elif path == "/api/v1/rc":
+            payload = self._read_json()
+            if (
+                payload.get("leaseId") != state["rc_lease"]
+                or payload.get("sequence", 0) <= state["rc_sequence"]
+            ):
+                self._json(409, {"apiVersion": "1", "error": {"message": "stale lease"}})
+                return
+            state["rc_sequence"] = payload["sequence"]
+            self._json(
+                200,
+                {
+                    "apiVersion": "1",
+                    "ok": True,
+                    "flightState": "手动飞行",
+                    "leaseId": state["rc_lease"],
+                    "lastSequence": state["rc_sequence"],
+                    "expiresAt": 9999999999999,
+                },
+            )
+        elif path == "/api/v1/rc/release":
+            payload = self._read_json()
+            released = payload.get("leaseId") == state["rc_lease"]
+            state["rc_lease"] = ""
+            self._json(200, {"apiVersion": "1", "ok": True, "released": released})
+        elif path == "/api/drone/connect":
             state["connected"] = True
             state["airborne"] = os.environ.get("PHANTOMFILMER_TEST_AIRBORNE") == "1"
             self._json(200, status())
