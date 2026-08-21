@@ -21,14 +21,16 @@ class SideFollowConfig:
     angle_exit_tolerance_deg: float = 20.0
     orbit_entry_frames: int = 2
     lock_stable_frames: int = 6
-    tracking_lateral_kp: float = 55.0
+    tracking_lateral_kp: float = 70.0
     minimum_tracking_lateral_speed: int = 8
-    maximum_tracking_lateral_speed: int = 20
+    maximum_tracking_lateral_speed: int = 25
     tracking_lateral_direction_sign: int = 1
     lateral_kp: float = 0.35
     minimum_lateral_speed: int = 10
     maximum_lateral_speed: int = 25
     clockwise_lateral_sign: int = -1
+    orbit_yaw_feedforward_gain: float = 0.80
+    maximum_orbit_yaw_speed: int = 30
     tie_break_target_angle: int = 90
 
     @classmethod
@@ -73,7 +75,7 @@ class SideFollowConfig:
         )
         maximum_tracking_speed = max(
             minimum_tracking_speed,
-            as_int("maximum_tracking_lateral_speed", 20, 1),
+            as_int("maximum_tracking_lateral_speed", 25, 1),
         )
         return cls(
             enabled=bool(section.get("enabled", False)),
@@ -89,7 +91,7 @@ class SideFollowConfig:
             angle_exit_tolerance_deg=exit_tolerance,
             orbit_entry_frames=as_int("orbit_entry_frames", 2),
             lock_stable_frames=as_int("lock_stable_frames", 6),
-            tracking_lateral_kp=as_float("tracking_lateral_kp", 55.0),
+            tracking_lateral_kp=as_float("tracking_lateral_kp", 70.0),
             minimum_tracking_lateral_speed=minimum_tracking_speed,
             maximum_tracking_lateral_speed=maximum_tracking_speed,
             tracking_lateral_direction_sign=tracking_sign,
@@ -97,6 +99,12 @@ class SideFollowConfig:
             minimum_lateral_speed=minimum_speed,
             maximum_lateral_speed=maximum_speed,
             clockwise_lateral_sign=clockwise_sign,
+            orbit_yaw_feedforward_gain=as_float(
+                "orbit_yaw_feedforward_gain", 0.80
+            ),
+            maximum_orbit_yaw_speed=as_int(
+                "maximum_orbit_yaw_speed", 30
+            ),
             tie_break_target_angle=tie_angle,
         )
 
@@ -110,6 +118,8 @@ class SideFollowDebugInfo:
     stable_samples: int = 0
     lock_frames: int = 0
     orbit_direction: str = ""
+    yaw_feedforward: int = 0
+    yaw_feedback: int = 0
 
 
 class SideFollowController:
@@ -202,12 +212,17 @@ class SideFollowController:
             -self.config.maximum_lateral_speed,
             self.config.maximum_lateral_speed,
         )
-        # 跑道平移阶段不转机头，避免侧拍逐渐变成斜拍。只有绕人时才用偏航
-        # 把人物维持在镜头中心，横移则负责恢复相对人物的侧面观察方位。
-        yaw = (
-            self.follow_controller._compute_yaw(horizontal_error)
-            if self._orbit_active
-            else 0
+        # 跑道平移阶段不转机头。绕人时根据绕行方向立即加入偏航前馈，随后
+        # 再叠加人物中心误差反馈，避免高速横移后才开始追赶画面偏移。
+        yaw_feedback = 0
+        yaw_feedforward = 0
+        if self._orbit_active:
+            yaw_feedback = self.follow_controller._compute_yaw(horizontal_error)
+            yaw_feedforward = self._orbit_yaw_feedforward(error, orbit_lateral)
+        yaw = self._clamp(
+            yaw_feedforward + yaw_feedback,
+            -self.config.maximum_orbit_yaw_speed,
+            self.config.maximum_orbit_yaw_speed,
         )
         limited = self.safety_manager.limit_rc_command(
             lateral, forward, vertical, yaw
@@ -221,6 +236,8 @@ class SideFollowController:
             stable_samples=len(self._samples),
             lock_frames=self._lock_frames,
             orbit_direction=orbit_direction,
+            yaw_feedforward=yaw_feedforward,
+            yaw_feedback=yaw_feedback,
         )
         return command
 
@@ -302,6 +319,19 @@ class SideFollowController:
             * magnitude
             * self.config.tracking_lateral_direction_sign
         )
+
+    def _orbit_yaw_feedforward(self, error: float, orbit_lateral: int) -> int:
+        if error == 0 or orbit_lateral == 0:
+            return 0
+        magnitude = int(
+            round(
+                abs(orbit_lateral)
+                * self.config.orbit_yaw_feedforward_gain
+            )
+        )
+        # Tello 正 yaw 为顺时针、负 yaw 为逆时针；该方向与需要增大或
+        # 减小人体角度的绕行方向一致，不依赖横移通道的左右标定。
+        return magnitude if error > 0 else -magnitude
 
     def _tracking_axes(
         self, result: Dict[str, object], frame_width: int, frame_height: int

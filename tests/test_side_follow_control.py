@@ -106,7 +106,7 @@ class SideFollowControllerTestCase(unittest.TestCase):
 
         command = side.compute_command(result(90, center=(500, 240)), 640, 480, 3)
 
-        self.assertGreater(command.left_right, 0)
+        self.assertEqual(command.left_right, 25)
         self.assertEqual(command.yaw, 0)
         self.assertEqual(side.last_debug.state, "SIDE_TRACKING")
 
@@ -127,6 +127,7 @@ class SideFollowControllerTestCase(unittest.TestCase):
             command = side.compute_command(result(40), 640, 480, now)
 
         self.assertLess(command.left_right, 0)
+        self.assertGreater(command.yaw, 0)
         self.assertEqual(side.last_debug.orbit_direction, "CLOCKWISE")
 
     def test_orbit_uses_faster_gain_and_speed_limit(self):
@@ -135,6 +136,9 @@ class SideFollowControllerTestCase(unittest.TestCase):
             command = side.compute_command(result(40), 640, 480, now)
 
         self.assertEqual(command.left_right, -18)
+        self.assertEqual(command.yaw, 14)
+        self.assertEqual(side.last_debug.yaw_feedforward, 14)
+        self.assertEqual(side.last_debug.yaw_feedback, 0)
 
         limited = side.compute_command(result(350), 640, 480, 4)
         self.assertEqual(limited.left_right, -25)
@@ -145,7 +149,18 @@ class SideFollowControllerTestCase(unittest.TestCase):
             command = side.compute_command(result(140), 640, 480, now)
 
         self.assertGreater(command.left_right, 0)
+        self.assertLess(command.yaw, 0)
         self.assertEqual(side.last_debug.orbit_direction, "COUNTERCLOCKWISE")
+
+    def test_orbit_yaw_combines_feedforward_and_center_feedback_with_limit(self):
+        side = controller(orbit_entry_frames=1)
+        off_center = result(40, center=(600, 240))
+        for now in range(3):
+            command = side.compute_command(off_center, 640, 480, now)
+
+        self.assertGreater(side.last_debug.yaw_feedforward, 0)
+        self.assertGreater(side.last_debug.yaw_feedback, 0)
+        self.assertEqual(command.yaw, 30)
 
     def test_keeps_center_distance_and_height_axes_while_orbiting(self):
         side = controller()

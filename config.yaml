@@ -94,9 +94,9 @@ side_follow:
   orbit_entry_frames: 2
   lock_stable_frames: 6
   # 跑道跟随：人物偏到画面左右时，飞机同方向横移，日常不偏航。
-  tracking_lateral_kp: 55
+  tracking_lateral_kp: 70
   minimum_tracking_lateral_speed: 8
-  maximum_tracking_lateral_speed: 20
+  maximum_tracking_lateral_speed: 25
   tracking_lateral_direction_sign: 1
   # 人物转身后的绕人修正：实测顺时针增大角度，逆时针减小角度。
   # 摄像头朝向人物时，顺时针绕行对应飞机向左横移。
@@ -104,6 +104,9 @@ side_follow:
   lateral_kp: 0.35
   minimum_lateral_speed: 10
   maximum_lateral_speed: 25
+  # 绕行横移开始时同步偏航，再叠加人物中心误差反馈。
+  orbit_yaw_feedforward_gain: 0.80
+  maximum_orbit_yaw_speed: 30
   # 正面/背面与两侧等距时固定选择 90°，避免随机切边。
   tie_break_target_angle: 90
 control_interval: 0.05
