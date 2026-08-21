@@ -311,26 +311,27 @@ ReID 只进行外观匹配，不识别真实姓名；俯视、遮挡、换衣、
 模拟人物轮廓不保证能被 YOLO/ReID 接受，因此 Fake 模式主要验证目标丢失保护、
 控制生命周期和模拟 RC 输出。完整识别验证仍需要真实参考图、模型权重和真实人物画面。
 
-## 真机 WebUI
+## 真机桌面端
 
-仓库包含本地真机 WebUI，提供真机连接、内嵌视频、起飞预检、二次确认起飞与降落、
-悬停、手动 RC 控制、失联看门狗和遥测监控。Web API 复用主程序的真机适配器，
-与命令行模式共享视频流重启隔离、ToF 读取和飞行审计能力。
+仓库包含 Electron 桌面飞控台，提供真机连接、内嵌视频、五项起飞预检、二次确认起降、
+悬停、手动 RC、失联看门狗、后端诊断和安全退出。Python sidecar 继续复用主程序的真机
+适配器与 ToF/飞行审计逻辑；端口和会话令牌由 Electron 主进程独占，renderer 只能调用
+类型化 preload 接口。
 
-首次使用时，在有互联网的网络中运行：
+优先交付 Linux x64 AppImage 与 macOS x64/arm64 DMG，Windows x64 NSIS 随后构建。
+首轮安装包未签名；从 CI 或 Release 下载对应产物并核对同目录 `SHA256SUMS` 后安装。
+运行前连接 `RMTT-XXXXXX` 无人机 Wi-Fi，不需要浏览器或外部网络服务。
+
+开发构建：
 
 ```bash
-bash scripts/install_webui.sh
+python3 -m pip install -r requirements-desktop-build.txt
+python3 scripts/build_sidecar.py
+cd desktop && npm ci && npm run dist
 ```
 
-安装完成后连接 `RMTT-XXXXXX` 无人机 Wi-Fi，再运行：
-
-```bash
-bash scripts/start_webui.sh
-```
-
-浏览器访问 `http://127.0.0.1:3000`。完整步骤和故障排查见
-[`docs/WebUI真机检查指导书.md`](docs/WebUI真机检查指导书.md)。
+完整安装、权限、安全退出和真机验收流程见
+[`docs/桌面端真机操作指导书.md`](docs/桌面端真机操作指导书.md)。
 
 ## 测试
 

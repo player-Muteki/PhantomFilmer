@@ -1,4 +1,4 @@
-"""Serve real-device telemetry and embedded MJPEG video to the local WebUI.
+"""Serve real-device telemetry and MJPEG video to the desktop application.
 
 The service binds to loopback only. It never creates an OpenCV window and it
 does not connect to an aircraft until the user requests POST /api/drone/connect.
@@ -6,19 +6,26 @@ does not connect to an aircraft until the user requests POST /api/drone/connect.
 
 from __future__ import annotations
 
+import argparse
+import hmac
 import json
+import logging
+import secrets
 import signal
+from functools import partial
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from threading import Event, RLock, Thread
-from time import monotonic, sleep
+from time import monotonic, sleep, time
 from typing import Any, Callable, Iterator, Optional
+from urllib.parse import parse_qs, urlsplit
 
 from .tello_adapter import RealTelloAdapter
 
 
 HOST = "127.0.0.1"
-PORT = 8765
+PORT = 0
 VIDEO_BOUNDARY = "frame"
 MIN_TAKEOFF_BATTERY = 20
 MAX_RC_SPEED = 35
@@ -31,8 +38,15 @@ MAX_ASCENT_HEIGHT_CM = 200
 class DroneWebService:
     """Own one real-aircraft session shared by all local HTTP requests."""
 
-    def __init__(self, adapter_factory: Callable[[], Any] = RealTelloAdapter) -> None:
-        self._adapter_factory = adapter_factory
+    def __init__(
+        self,
+        adapter_factory: Optional[Callable[[], Any]] = None,
+        *,
+        data_dir: str | Path = ".",
+    ) -> None:
+        self.data_dir = Path(data_dir).expanduser().resolve()
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        self._adapter_factory = adapter_factory or partial(RealTelloAdapter, self.data_dir)
         self._adapter: Optional[Any] = None
         self._lock = RLock()
         self._video_ready = False
@@ -235,11 +249,17 @@ class DroneWebService:
         with self._lock:
             adapter = self._adapter
             if adapter is not None:
-                if self._airborne:
-                    self._send_hover()
-                    adapter.land()
-                adapter.stop()
-            self._clear_session()
+                try:
+                    if self._airborne:
+                        self._send_hover()
+                        adapter.land()
+                finally:
+                    try:
+                        adapter.stop()
+                    finally:
+                        self._clear_session()
+            else:
+                self._clear_session()
 
     def emergency_land(self) -> None:
         """Request landing, then close the connection regardless of outcome."""
@@ -257,8 +277,12 @@ class DroneWebService:
 
     def shutdown(self) -> None:
         """Release the aircraft and stop the local RC watchdog."""
-        self.stop()
         self._watchdog_stop.set()
+        try:
+            self.stop()
+        finally:
+            self._watchdog.join(timeout=1.0)
+            self._tof_monitor.join(timeout=3.0)
 
     def _refresh_front_tof(self, force: bool = False) -> None:
         adapter = self._adapter
@@ -421,56 +445,87 @@ class DroneWebService:
         self._last_frame_at = now
 
 
-SERVICE = DroneWebService()
-
-
 class DroneRequestHandler(BaseHTTPRequestHandler):
-    """Minimal loopback-only API used by the Next.js reverse proxy."""
+    """Minimal authenticated loopback API used by Electron main."""
 
-    server_version = "PhantomFilmerWeb/1.0"
+    server_version = "PhantomFilmerSidecar/1.0"
+
+    @property
+    def application(self) -> "SidecarServer":
+        return self.server  # type: ignore[return-value]
+
+    @property
+    def service(self) -> DroneWebService:
+        return self.application.service
 
     def do_GET(self) -> None:  # noqa: N802
-        if self.path == "/api/health":
-            self._json(HTTPStatus.OK, {"ok": True, "connected": SERVICE.connected})
-            return
-        if self.path == "/api/drone/status":
-            self._run_json(SERVICE.status)
-            return
-        if self.path == "/api/drone/video/stream":
+        path = urlsplit(self.path).path
+        if path == "/api/drone/video/stream":
+            if not self._authorized_video():
+                self._json(HTTPStatus.UNAUTHORIZED, {"error": "视频会话已失效。"})
+                return
             self._video_stream()
+            return
+        if not self._authorized_request():
+            self._json(HTTPStatus.UNAUTHORIZED, {"error": "会话令牌无效。"})
+            return
+        if path == "/api/health":
+            self._json(HTTPStatus.OK, {"ok": True, "connected": self.service.connected})
+            return
+        if path == "/api/drone/status":
+            self._run_json(self.service.status)
             return
         self._json(HTTPStatus.NOT_FOUND, {"error": "接口不存在。"})
 
     def do_POST(self) -> None:  # noqa: N802
-        if self.path == "/api/drone/connect":
-            self._run_json(SERVICE.connect)
+        if not self._authorized_request():
+            self._json(HTTPStatus.UNAUTHORIZED, {"error": "会话令牌无效。"})
             return
-        if self.path == "/api/drone/takeoff":
-            self._run_json(SERVICE.takeoff)
+        path = urlsplit(self.path).path
+        if path == "/api/drone/connect":
+            self._run_json(self.service.connect)
             return
-        if self.path == "/api/drone/land":
-            self._run_json(SERVICE.land)
+        if path == "/api/drone/takeoff":
+            self._run_json(self.service.takeoff)
             return
-        if self.path == "/api/drone/hover":
-            self._run_json(SERVICE.hover)
+        if path == "/api/drone/land":
+            self._run_json(self.service.land)
             return
-        if self.path == "/api/drone/rc":
+        if path == "/api/drone/hover":
+            self._run_json(self.service.hover)
+            return
+        if path == "/api/drone/rc":
             try:
                 command = self._read_json()
-                self._json(HTTPStatus.OK, SERVICE.move_rc(command))
+                self._json(HTTPStatus.OK, self.service.move_rc(command))
             except Exception as exc:
                 self._json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(exc)})
             return
-        if self.path == "/api/drone/stop":
-            self._run_empty(SERVICE.stop)
+        if path == "/api/drone/stop":
+            self._run_empty(self.service.stop)
             return
-        if self.path == "/api/drone/emergency-land":
-            self._run_empty(SERVICE.emergency_land)
+        if path == "/api/drone/emergency-land":
+            self._run_empty(self.service.emergency_land)
+            return
+        if path == "/api/drone/video-token":
+            self._json(HTTPStatus.OK, self.application.issue_video_token())
+            return
+        if path == "/api/sidecar/shutdown":
+            self._safe_shutdown()
             return
         self._json(HTTPStatus.NOT_FOUND, {"error": "接口不存在。"})
 
     def log_message(self, format_string: str, *args: Any) -> None:
-        print(f"[WebAPI] {self.address_string()} - {format_string % args}")
+        logging.info("%s - %s", self.address_string(), format_string % args)
+
+    def _authorized_request(self) -> bool:
+        supplied = self.headers.get("X-Phantom-Token", "")
+        return hmac.compare_digest(supplied, self.application.session_token)
+
+    def _authorized_video(self) -> bool:
+        query = parse_qs(urlsplit(self.path).query)
+        supplied = query.get("token", [""])[0]
+        return self.application.consume_video_token(supplied)
 
     def _run_json(self, action: Callable[[], dict[str, Any]]) -> None:
         try:
@@ -486,7 +541,7 @@ class DroneRequestHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(exc)})
 
     def _video_stream(self) -> None:
-        if not SERVICE.connected:
+        if not self.service.connected:
             self._json(HTTPStatus.CONFLICT, {"error": "真机未连接，视频流未开启。"})
             return
         self.send_response(HTTPStatus.OK)
@@ -494,10 +549,19 @@ class DroneRequestHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", f"multipart/x-mixed-replace; boundary={VIDEO_BOUNDARY}")
         self.end_headers()
         try:
-            for frame in SERVICE.mjpeg_frames():
+            for frame in self.service.mjpeg_frames():
                 self.wfile.write(frame)
         except (BrokenPipeError, ConnectionResetError):
             pass
+
+    def _safe_shutdown(self) -> None:
+        try:
+            self.service.shutdown()
+            self._json(HTTPStatus.OK, {"ok": True})
+        except Exception as exc:
+            self._json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(exc)})
+        finally:
+            Thread(target=self.application.shutdown, daemon=True).start()
 
     def _read_json(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length", "0"))
@@ -521,25 +585,120 @@ class DroneRequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
 
-def main() -> int:
+class SidecarServer(ThreadingHTTPServer):
+    """HTTP server carrying all per-process state without module globals."""
+
+    daemon_threads = True
+    allow_reuse_address = False
+
+    def __init__(
+        self,
+        address: tuple[str, int],
+        *,
+        session_token: str,
+        service: DroneWebService,
+    ) -> None:
+        super().__init__(address, DroneRequestHandler)
+        self.session_token = session_token
+        self.service = service
+        self._video_tokens: dict[str, float] = {}
+        self._token_lock = RLock()
+
+    def issue_video_token(self, lifetime_seconds: float = 30.0) -> dict[str, Any]:
+        token = secrets.token_urlsafe(32)
+        expires_at = time() + lifetime_seconds
+        with self._token_lock:
+            now = time()
+            self._video_tokens = {
+                value: expiry for value, expiry in self._video_tokens.items() if expiry > now
+            }
+            self._video_tokens[token] = expires_at
+        return {"token": token, "expiresAt": int(expires_at * 1000)}
+
+    def consume_video_token(self, token: str) -> bool:
+        if not token:
+            return False
+        with self._token_lock:
+            expires_at = self._video_tokens.pop(token, 0.0)
+        return expires_at > time()
+
+
+def create_server(
+    *,
+    host: str = HOST,
+    port: int = PORT,
+    session_token: str,
+    data_dir: str | Path,
+    service: Optional[DroneWebService] = None,
+) -> SidecarServer:
+    """Create one isolated sidecar server without starting background HTTP work."""
+    if host != HOST:
+        raise ValueError("sidecar 只能监听 127.0.0.1。")
+    if not session_token:
+        raise ValueError("必须提供非空会话令牌。")
+    root = Path(data_dir).expanduser().resolve()
+    root.mkdir(parents=True, exist_ok=True)
+    return SidecarServer(
+        (host, port),
+        session_token=session_token,
+        service=service or DroneWebService(data_dir=root),
+    )
+
+
+def _configure_logging(data_dir: Path) -> Path:
+    log_dir = data_dir / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / "sidecar.log"
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+        handlers=[logging.FileHandler(log_path, encoding="utf-8")],
+        force=True,
+    )
+    return log_path
+
+
+def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="PhantomFilmer desktop sidecar")
+    parser.add_argument("--host", default=HOST, choices=[HOST])
+    parser.add_argument("--port", type=int, default=PORT)
+    parser.add_argument("--token", required=True)
+    parser.add_argument("--data-dir", required=True)
+    return parser.parse_args(argv)
+
+
+def main(argv: Optional[list[str]] = None) -> int:
     """Run the local bridge until interrupted, always releasing the aircraft."""
-    server = ThreadingHTTPServer((HOST, PORT), DroneRequestHandler)
+    args = parse_args(argv)
+    data_dir = Path(args.data_dir).expanduser().resolve()
+    log_path = _configure_logging(data_dir)
+    server = create_server(
+        host=args.host,
+        port=args.port,
+        session_token=args.token,
+        data_dir=data_dir,
+    )
 
     def shutdown(_signum: int, _frame: Any) -> None:
-        SERVICE.shutdown()
         raise KeyboardInterrupt
 
     signal.signal(signal.SIGINT, shutdown)
     signal.signal(signal.SIGTERM, shutdown)
-    print(f"PhantomFilmer 真机服务：http://{HOST}:{PORT}")
-    print("服务仅监听本机；点击 WebUI 的“连接真机”后才会连接无人机并开启视频。")
+    ready = {
+        "event": "ready",
+        "host": HOST,
+        "port": server.server_address[1],
+        "pid": __import__("os").getpid(),
+        "logPath": str(log_path),
+    }
+    print(json.dumps(ready, ensure_ascii=False), flush=True)
     try:
         server.serve_forever(poll_interval=0.2)
     except KeyboardInterrupt:
         pass
     finally:
         server.server_close()
-        SERVICE.shutdown()
+        server.service.shutdown()
     return 0
 
 

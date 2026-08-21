@@ -16,7 +16,10 @@ data/datasets/
 logs/
 third_party/JointBDOE/
 reasonix.toml
-.venv-webui/
-webui/node_modules/
-webui/.next/
-webui/out/
+desktop/node_modules/
+desktop/out/
+desktop/test-results/
+desktop/*.tsbuildinfo
+release/
+dist/sidecar/
+build/pyinstaller/

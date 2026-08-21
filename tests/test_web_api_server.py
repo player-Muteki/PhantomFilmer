@@ -1,7 +1,11 @@
 import unittest
+from http.client import HTTPConnection
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from threading import Thread
 from time import sleep
 
-from web_api.server import DroneWebService
+from web_api.server import DroneWebService, create_server
 
 
 class FrameStub:
@@ -162,6 +166,82 @@ class DroneWebServiceTests(unittest.TestCase):
         self.assertIn((35, -20, 0, 0), adapter.rc_commands)
         self.assertEqual(adapter.rc_commands[-1], (0, 0, 0, 0))
 
+
+class SidecarServerTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temporary_directory = TemporaryDirectory()
+        self.addCleanup(self.temporary_directory.cleanup)
+        self.service = DroneWebService(
+            adapter_factory=RealAdapterStub,
+            data_dir=self.temporary_directory.name,
+        )
+        self.server = create_server(
+            session_token="test-session-token",
+            data_dir=self.temporary_directory.name,
+            service=self.service,
+        )
+        self.thread = Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+        self.addCleanup(self._close_server)
+
+    def _close_server(self) -> None:
+        self.server.shutdown()
+        self.server.server_close()
+        self.service.shutdown()
+        self.thread.join(timeout=2)
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        token: str | None = "test-session-token",
+    ) -> tuple[int, str]:
+        connection = HTTPConnection("127.0.0.1", self.server.server_address[1], timeout=2)
+        headers = {"X-Phantom-Token": token} if token is not None else {}
+        connection.request(method, path, headers=headers)
+        response = connection.getresponse()
+        body = response.read().decode("utf-8")
+        connection.close()
+        return response.status, body
+
+    def test_random_port_and_data_directory(self) -> None:
+        self.assertGreater(self.server.server_address[1], 0)
+        self.assertEqual(
+            self.service.data_dir,
+            Path(self.temporary_directory.name).resolve(),
+        )
+
+    def test_all_regular_endpoints_require_session_token(self) -> None:
+        status, _ = self._request("GET", "/api/health", token=None)
+        wrong_status, _ = self._request("POST", "/api/drone/connect", token="wrong")
+
+        self.assertEqual(status, 401)
+        self.assertEqual(wrong_status, 401)
+
+    def test_valid_token_can_connect_and_query_health(self) -> None:
+        connect_status, _ = self._request("POST", "/api/drone/connect")
+        health_status, body = self._request("GET", "/api/health")
+
+        self.assertEqual(connect_status, 200)
+        self.assertEqual(health_status, 200)
+        self.assertIn('"connected": true', body)
+
+    def test_video_token_is_short_lived_and_single_use(self) -> None:
+        payload = self.server.issue_video_token(lifetime_seconds=10)
+
+        self.assertTrue(self.server.consume_video_token(payload["token"]))
+        self.assertFalse(self.server.consume_video_token(payload["token"]))
+
+    def test_shutdown_endpoint_releases_service(self) -> None:
+        self._request("POST", "/api/drone/connect")
+        status, _ = self._request("POST", "/api/sidecar/shutdown")
+        self.thread.join(timeout=2)
+
+        self.assertEqual(status, 200)
+        self.assertFalse(self.thread.is_alive())
+        self.assertFalse(self.service.connected)
+
     def test_forward_control_stops_when_front_obstacle_appears(self) -> None:
         adapter = RealAdapterStub(front_distance=100)
         service = DroneWebService(adapter_factory=lambda: adapter)
@@ -184,6 +264,22 @@ class DroneWebServiceTests(unittest.TestCase):
         service.stop()
 
         self.assertTrue(adapter.landed)
+        self.assertTrue(adapter.stopped)
+        self.assertFalse(service.connected)
+
+    def test_stop_releases_connection_even_when_landing_fails(self) -> None:
+        adapter = RealAdapterStub()
+        service = DroneWebService(adapter_factory=lambda: adapter)
+        service.connect()
+        service.takeoff()
+
+        def fail_land() -> None:
+            raise RuntimeError("land failed")
+
+        adapter.land = fail_land  # type: ignore[method-assign]
+        with self.assertRaisesRegex(RuntimeError, "land failed"):
+            service.stop()
+
         self.assertTrue(adapter.stopped)
         self.assertFalse(service.connected)
 

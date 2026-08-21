@@ -1,0 +1,119 @@
+name: Desktop builds
+
+on:
+  pull_request:
+  push:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - run: sudo apt-get update
+      - run: sudo apt-get install --no-install-recommends -y xvfb
+      - run: python -m pip install -r requirements-dev.txt
+      - run: python -m pytest -q
+      - run: npm ci
+        working-directory: desktop
+      - run: npm run typecheck
+        working-directory: desktop
+      - run: npm test
+        working-directory: desktop
+      - run: npm run build
+        working-directory: desktop
+      - run: xvfb-run -a npm run test:e2e
+        working-directory: desktop
+
+  package-linux-macos:
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            platform: linux
+            arch: x64
+            builder_args: --linux AppImage --x64
+          - runner: macos-13
+            platform: macos
+            arch: x64
+            builder_args: --mac dmg --x64
+          - runner: macos-14
+            platform: macos
+            arch: arm64
+            builder_args: --mac dmg --arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-desktop-build.txt
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - run: python -m pip install -r requirements-desktop-build.txt
+      - run: python scripts/build_sidecar.py
+      - run: npm ci
+        working-directory: desktop
+      - run: npm run build
+        working-directory: desktop
+      - run: npx electron-builder ${{ matrix.builder_args }} --publish never
+        working-directory: desktop
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - name: Generate checksums
+        run: |
+          cd release
+          find . -maxdepth 1 -type f ! -name '*.blockmap' -print0 | sort -z | xargs -0 shasum -a 256 > SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PhantomFilmer-${{ matrix.platform }}-${{ matrix.arch }}
+          path: |
+            release/*
+            !release/*.blockmap
+
+  package-windows:
+    needs: package-linux-macos
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-desktop-build.txt
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+      - run: python -m pip install -r requirements-desktop-build.txt
+      - run: python scripts/build_sidecar.py
+      - run: npm ci
+        working-directory: desktop
+      - run: npm run build
+        working-directory: desktop
+      - run: npx electron-builder --win nsis --x64 --publish never
+        working-directory: desktop
+      - name: Generate checksums
+        shell: pwsh
+        run: Get-ChildItem release -File | Where-Object { $_.Extension -ne '.blockmap' } | Get-FileHash -Algorithm SHA256 | ForEach-Object { "$($_.Hash.ToLower())  $(Split-Path $_.Path -Leaf)" } | Set-Content release/SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PhantomFilmer-windows-x64
+          path: |
+            release/*
+            !release/*.blockmap
