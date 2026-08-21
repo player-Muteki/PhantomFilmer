@@ -14,6 +14,8 @@ def test_sidecar_bundle_includes_yaml_runtime_configuration() -> None:
     )
 
     assert "PyYAML==6.0.3" in requirements
+    assert "opencv-python-headless==4.10.0.84" in requirements
+    assert "Pillow==12.3.0" in requirements
     assert 'project_root / "config.yaml"' in spec
     assert '"yaml"' in spec
 

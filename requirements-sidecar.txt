@@ -1,4 +1,5 @@
 djitellopy==2.5.0
-opencv-python-headless==4.14.0.94
+opencv-python-headless==4.10.0.84
 numpy==2.5.2
+Pillow==12.3.0
 PyYAML==6.0.3
