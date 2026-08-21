@@ -117,6 +117,19 @@ class DistanceBypassPlannerTestCase(unittest.TestCase):
         self.assertEqual(released.action, "FOLLOW")
         self.assertEqual(released.command.forward_backward, 25)
 
+    def test_reacquired_target_releases_follow_during_post_bypass_turn(self) -> None:
+        planner = self.planner(post_bypass_turn_degrees=90, post_bypass_turn_speed=12)
+        with patch("control.obstacle_avoidance.monotonic", side_effect=[0.0, 5.0, 5.1]):
+            planner.plan(RCCommand(), distance(60, blocked=True), yaw_deg=170)
+            turning = planner.plan(RCCommand(), distance(80), yaw_deg=170)
+            released = planner.cancel_post_bypass_turn_on_target_reacquired()
+            follow = planner.plan(RCCommand(0, 25, 0, 0), distance(80), yaw_deg=169)
+
+        self.assertEqual(turning.action, "POST_BYPASS_LEFT_TURN")
+        self.assertTrue(released)
+        self.assertEqual(follow.action, "FOLLOW")
+        self.assertEqual(follow.command.forward_backward, 25)
+
     def test_left_configuration_mirrors_lateral_commands(self) -> None:
         planner = self.planner(bypass_lateral_direction="left")
         with patch("control.obstacle_avoidance.monotonic", return_value=0.0):

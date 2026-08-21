@@ -139,6 +139,7 @@ class MotionArbiter:
             self._active_lost_episode_id = None
             self._center_loss_advancing = False
             self.planner.cancel_lost_target_recovery()
+            self.planner.cancel_post_bypass_turn_on_target_reacquired()
         elif self._target_was_found:
             self._target_was_found = False
             self._lost_episode_counter += 1

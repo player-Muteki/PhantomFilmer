@@ -106,6 +106,25 @@ class TargetSearchController:
             return False
         return self.close_attempts < self.close_max_attempts and self._looks_too_close()
 
+    def visible_close_recovery_has_priority(
+        self, result: Optional[Dict[str, object]] = None, frame_width: int = 0, frame_height: int = 0
+    ) -> bool:
+        """Whether a visible, oversized target must be backed away from."""
+        if not self.enabled or not self.close_recovery_enabled:
+            return False
+        if result is None:
+            return self.has_observed_target and self.last_area_ratio >= self.close_area_ratio
+        if not self._fresh_target(result):
+            return False
+        area_ratio = float(result.get("area_ratio") or 0.0)
+        if area_ratio <= 0 and frame_width > 0 and frame_height > 0:
+            area_ratio = float(result.get("area") or 0.0) / (frame_width * frame_height)
+        return area_ratio >= self.close_area_ratio
+
+    def visible_close_recovery_command(self) -> RCCommand:
+        """Return the bounded reverse command for a visible close target."""
+        return RCCommand(forward_backward=-self.close_backward_speed)
+
     def horizontal_edge_exit_has_priority(self) -> bool:
         """Keep a left/right frame exit in search, ahead of all ToF avoidance."""
         if not self.enabled or not self.has_observed_target:

@@ -7,6 +7,7 @@ complete three-layer round rather than after a wall-clock timeout.
 
 from typing import Any, Optional
 
+from control.follow_control import RCCommand
 from control.kernel.features import ArbitrationContext, FeatureProposal
 from control.target_search import TargetSearchController
 
@@ -68,6 +69,14 @@ class SearchFeature:
     def close_recovery_has_priority(self) -> bool:
         """Expose only the bounded too-close backoff as a higher-priority action."""
         return self._search.close_recovery_has_priority()
+
+    def visible_close_recovery_has_priority(self, result=None, frame_width=0, frame_height=0) -> bool:
+        """Expose visible-target close recovery above front-ToF avoidance."""
+        return self._search.visible_close_recovery_has_priority(result, frame_width, frame_height)
+
+    def visible_close_recovery_command(self) -> RCCommand:
+        """Return the bounded reverse command for a visible close target."""
+        return self._search.visible_close_recovery_command()
 
     def horizontal_edge_exit_has_priority(self) -> bool:
         """Expose the latched left/right-exit search above ToF avoidance."""

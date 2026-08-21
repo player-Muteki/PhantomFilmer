@@ -92,6 +92,31 @@ class MotionArbiterTestCase(unittest.TestCase):
         self.assertEqual(decision.state, "CLEAR")
         self.assertEqual(decision.command.forward_backward, 20)
 
+    def test_reacquired_target_cancels_active_post_bypass_turn(self) -> None:
+        safety = build_safety()
+        planner = ObstacleAvoidancePlanner(
+            safety_manager=safety,
+            avoidance_lateral_speed=20,
+            bypass_lateral_distance_cm=100,
+        )
+        arbiter = MotionArbiter(
+            detector=StubDetector(ObstacleResult(found=False, state="CLEAR")),
+            planner=planner,
+        )
+        arbiter.reset("test")
+        blocked = ObstacleResult(found=True, state="BLOCKED", consecutive_found_frames=3)
+        clear = ObstacleResult(found=False, state="CLEAR")
+        with patch("control.obstacle_avoidance.monotonic", side_effect=[0.0, 5.0]):
+            planner.plan(RCCommand(), blocked, yaw_deg=170)
+            planner.plan(RCCommand(), clear, yaw_deg=170)
+
+        decision = arbiter.decide(
+            RCCommand(0, 25, 0, 0), object(), MotionContext("test", {"found": True})
+        )
+
+        self.assertEqual(decision.action, "FOLLOW")
+        self.assertEqual(decision.command.forward_backward, 25)
+
     def test_front_tof_stale_sample_fails_safe_to_hover(self) -> None:
         safety = build_safety()
         arbiter = MotionArbiter(

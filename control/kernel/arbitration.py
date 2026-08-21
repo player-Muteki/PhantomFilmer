@@ -15,7 +15,7 @@ Recipes (see the architecture plan §3.1):
   7. target found → FollowFeature.propose → ObstacleFeature.arbitrate
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Dict, Optional
 
 from control.follow_control import FollowController, RCCommand
@@ -153,6 +153,15 @@ class ArbitrationEngine:
         # 配方 6：目标存在 → follow 期望指令 → 避障仲裁（obstacle_priority=False）。
         if self._obstacle is not None:
             follow = self._follow.propose(ctx, ctx.now)
+            # A visible target that has become too large is a close-range
+            # recovery case, not an obstacle-bypass case.  Back away first so
+            # the front ToF cannot replace the safer reverse command with a
+            # lateral sidestep.
+            visible_close_recovery = self._visible_close_recovery_has_priority(ctx)
+            if visible_close_recovery:
+                command = self._visible_close_recovery_command()
+                follow = replace(follow, command=command, reason="visible target too close; backing away")
+                return self._finish(follow)
             arbitrated = self._obstacle.arbitrate(ctx, follow.command, ctx.now)
             return self._finish(
                 arbitrated,
@@ -178,6 +187,16 @@ class ArbitrationEngine:
     def _close_recovery_has_priority(self) -> bool:
         checker = getattr(self._search, "close_recovery_has_priority", None)
         return bool(checker()) if callable(checker) else False
+
+    def _visible_close_recovery_has_priority(self, ctx: ArbitrationContext) -> bool:
+        checker = getattr(self._search, "visible_close_recovery_has_priority", None)
+        return bool(checker(ctx.target_result, ctx.frame_width, ctx.frame_height)) if callable(checker) else False
+
+    def _visible_close_recovery_command(self) -> RCCommand:
+        command_factory = getattr(self._search, "visible_close_recovery_command", None)
+        if callable(command_factory):
+            return command_factory()
+        return RCCommand()
 
     def _horizontal_edge_exit_has_priority(self) -> bool:
         checker = getattr(self._search, "horizontal_edge_exit_has_priority", None)

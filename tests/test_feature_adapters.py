@@ -484,6 +484,33 @@ class EngineRecipeIsolationTestCase(unittest.TestCase):
         self.assertEqual(emergency.state, "")
         self.assertEqual(search.calls, 0)  # 急停同样不调用 feature
 
+    def test_visible_close_target_backs_away_before_obstacle_bypass(self) -> None:
+        blocked = ObstacleResult(found=True, state="BLOCKED", side="center", consecutive_found_frames=3)
+        search_controller = build_search(
+            {"close_area_ratio": 0.32, "close_very_area_ratio": 0.37, "close_backward_speed": 35}
+        )
+        search = SearchFeature(
+            target_search=search_controller,
+            safety_manager=build_safety(),
+            follow_controller=FollowController(safety_manager=build_safety()),
+        )
+        engine = self.build_engine([blocked], search)
+        close_target = {
+            "found": True,
+            "is_predicted": False,
+            "ambiguous": False,
+            "center": (320, 240),
+            "area_ratio": 0.40,
+            "area": 0.40 * 640 * 480,
+            "bbox": (0, 0, 640, 480),
+        }
+
+        outcome = engine.arbitrate(build_ctx(target_result=close_target))
+
+        self.assertEqual(outcome.command.as_tuple(), (0, -35, 0, 0))
+        self.assertIn("visible target too close", outcome.reason)
+        self.assertEqual(engine._obstacle._arbiter.detector.reads, 0)
+
     def test_clear_restores_search_calls(self) -> None:
         clear = ObstacleResult(found=False, state="CLEAR")
         search = CountingSearch()

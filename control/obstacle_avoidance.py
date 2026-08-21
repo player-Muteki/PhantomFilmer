@@ -246,6 +246,15 @@ class ObstacleAvoidancePlanner:
             self.state = "CLEAR"
             self._clear_frames = 0
 
+    def cancel_post_bypass_turn_on_target_reacquired(self) -> bool:
+        """Release normal following when ReID finds the target during the return turn."""
+        if self._bypass_phase != "POST_BYPASS_LEFT_TURN":
+            return False
+        self._reset_bypass()
+        self.state = "CLEAR"
+        self._clear_frames = 0
+        return True
+
     def _begin_lost_probe(
         self, episode_id: int, obstacle_result: ObstacleResult
     ) -> None:
