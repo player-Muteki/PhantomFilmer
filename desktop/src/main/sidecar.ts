@@ -4,7 +4,14 @@ import { dirname, extname, join, resolve } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import type { Readable } from 'node:stream'
 import { app } from 'electron'
-import type { BackendState, DroneStatus, RcCommand } from '../preload/api'
+import type {
+  BackendState,
+  DroneStatus,
+  RcCommand,
+  RuntimeCapabilities,
+  RuntimeEventsResponse,
+  RuntimeSnapshot
+} from '../preload/api'
 
 type ReadyMessage = {
   event: 'ready'
@@ -227,6 +234,23 @@ export class SidecarManager {
   async getVideoUrl(): Promise<string> {
     const result = await this.request<{ token: string }>('POST', '/api/drone/video-token')
     return `${this.requireBaseUrl()}/api/drone/video/stream?token=${encodeURIComponent(result.token)}`
+  }
+
+  async getRuntimeCapabilities(): Promise<RuntimeCapabilities> {
+    return this.request('GET', '/api/v1/capabilities')
+  }
+
+  async getRuntimeSnapshot(): Promise<RuntimeSnapshot> {
+    const response = await this.request<{ apiVersion: '1'; snapshot: RuntimeSnapshot }>(
+      'GET',
+      '/api/v1/runtime/snapshot'
+    )
+    return response.snapshot
+  }
+
+  async getRuntimeEvents(since: number): Promise<RuntimeEventsResponse> {
+    if (!Number.isSafeInteger(since) || since < 0) throw new Error('事件序号无效。')
+    return this.request('GET', `/api/v1/runtime/events?since=${since}`)
   }
 
   async shutdown(timeoutMs = STOP_TIMEOUT_MS): Promise<void> {

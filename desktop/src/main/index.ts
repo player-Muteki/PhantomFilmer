@@ -117,6 +117,9 @@ function registerIpc(): void {
   ipcMain.handle('drone:video-url', () => sidecar.getVideoUrl())
   ipcMain.handle('backend:state', () => sidecar.getState())
   ipcMain.handle('backend:restart', () => sidecar.restart())
+  ipcMain.handle('runtime:capabilities', () => sidecar.getRuntimeCapabilities())
+  ipcMain.handle('runtime:snapshot', () => sidecar.getRuntimeSnapshot())
+  ipcMain.handle('runtime:events', (_event, since: number) => sidecar.getRuntimeEvents(since))
   ipcMain.handle('drone:move-rc', (_event, command: RcCommand) => {
     const channels = ['leftRight', 'forwardBack', 'upDown', 'yaw'] as const
     if (

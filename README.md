@@ -326,6 +326,11 @@ GUI 与 CLI 共用 `MissionManager` 命令/事件模型和 `MissionFactory` 装�
 `web_api/server.py` 中独立定义，不读取 `config.yaml`。端口和会话令牌由 Electron 主进程
 持有，renderer 只能调用类型化 preload 接口。
 
+桌面端现分为“飞行控制”“任务与人物”“运行诊断”三个工作区。任务入口严格依据
+`/api/v1/capabilities` 返回的真实能力启用，因此当前只有手动飞行可操作，尚未接入的自动
+任务保持禁用；诊断页以权威运行时快照和带序号事件为准，断线补读出现历史缺口时会重新
+获取快照，不从界面局部状态猜测任务状态。
+
 优先交付 Linux x64 AppImage 与 macOS x64/arm64 DMG，Windows x64 NSIS 随后构建。
 首轮安装包未签名；从 CI 或 Release 下载对应产物并核对同目录 `SHA256SUMS` 后安装。
 运行前连接 `RMTT-XXXXXX` 无人机 Wi-Fi，不需要浏览器或外部网络服务。

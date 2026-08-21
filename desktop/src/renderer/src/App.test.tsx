@@ -39,6 +39,31 @@ function createApi(overrides: Partial<PhantomFilmerApi> = {}): PhantomFilmerApi 
     getVideoUrl: vi.fn().mockResolvedValue('http://127.0.0.1:1234/video?token=once'),
     getBackendState: vi.fn().mockResolvedValue(readyBackend),
     restartBackend: vi.fn().mockResolvedValue(readyBackend),
+    getRuntimeCapabilities: vi.fn().mockResolvedValue({
+      apiVersion: '1',
+      commands: ['device.connect', 'flight.takeoff', 'flight.land'],
+      missions: ['manual'],
+      eventReplay: true,
+      rcLease: { required: true, ttlMs: 1000 }
+    }),
+    getRuntimeSnapshot: vi.fn().mockResolvedValue({
+      sequence: 0,
+      phase: 'disconnected',
+      mission: 'idle',
+      controlMode: 'none',
+      connected: false,
+      airborne: false,
+      streaming: false,
+      flightState: '未连接',
+      allowedActions: ['connect'],
+      telemetry: {}
+    }),
+    getRuntimeEvents: vi.fn().mockResolvedValue({
+      apiVersion: '1',
+      latestSequence: 0,
+      resetRequired: false,
+      events: []
+    }),
     onBackendState: vi.fn().mockReturnValue(() => undefined),
     ...overrides
   }
@@ -106,5 +131,38 @@ describe('desktop flight console', () => {
 
     await waitFor(() => expect(window.phantomFilmer.restartBackend).toHaveBeenCalledTimes(1))
     expect(await screen.findByText('本地后端已恢复，请重新连接真机')).toBeInTheDocument()
+  })
+
+  it('shows only mission capabilities reported by the v1 runtime', async () => {
+    render(<App />)
+    fireEvent.click(await screen.findByRole('button', { name: '任务与人物' }))
+
+    expect(await screen.findByRole('heading', { name: '任务与人物' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '前往飞行控制' })).toBeEnabled()
+    expect(screen.getAllByRole('button', { name: '等待任务接口' })).toHaveLength(3)
+    expect(screen.getAllByText('后端尚未开放')).toHaveLength(3)
+  })
+
+  it('renders the authoritative runtime snapshot in diagnostics', async () => {
+    window.phantomFilmer = createApi({
+      getRuntimeSnapshot: vi.fn().mockResolvedValue({
+        sequence: 42,
+        phase: 'preflight',
+        mission: 'manual',
+        controlMode: 'none',
+        connected: true,
+        airborne: false,
+        streaming: true,
+        flightState: '地面待机',
+        allowedActions: ['refresh_status', 'takeoff'],
+        telemetry: {}
+      })
+    })
+    render(<App />)
+    fireEvent.click(await screen.findByRole('button', { name: '运行诊断' }))
+
+    expect(await screen.findByText('42')).toBeInTheDocument()
+    expect(screen.getByText('refresh_status')).toBeInTheDocument()
+    expect(screen.getByText('takeoff')).toBeInTheDocument()
   })
 })

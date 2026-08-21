@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react'
 import type { BackendState, DroneStatus, FlightPhase, RcCommand } from '../../preload/api'
 import { Icon } from './Icons'
+import { useRuntimeFeed, type RuntimeFeed } from './app/useRuntimeFeed'
 
 type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'error'
 type ArmedAction = 'takeoff' | 'land' | 'emergency' | null
 type PartialRcCommand = Partial<RcCommand>
+type WorkspacePage = 'flight' | 'missions' | 'diagnostics'
 
 const phases: FlightPhase[] = ['连接', '检查', '起飞', '手动飞行', '降落']
 const emptyCommand: RcCommand = { leftRight: 0, forwardBack: 0, upDown: 0, yaw: 0 }
@@ -30,10 +32,12 @@ export default function App(): ReactElement {
   const [speed, setSpeed] = useState(20)
   const [activeControl, setActiveControl] = useState<string | null>(null)
   const [videoUrl, setVideoUrl] = useState<string | null>(null)
+  const [activePage, setActivePage] = useState<WorkspacePage>('flight')
   const controlTimer = useRef<number | null>(null)
   const rcInFlight = useRef(false)
 
   const backendReady = backend.status === 'ready'
+  const runtime = useRuntimeFeed(backendReady)
   const connected = backendReady && connection === 'connected'
   const videoReady = connected && status.videoReady === true
   const airborne = connected && status.airborne === true
@@ -293,6 +297,14 @@ export default function App(): ReactElement {
         </section>
       )}
 
+      <nav className="workspace-nav" aria-label="主要工作区">
+        <button className={activePage === 'flight' ? 'active' : ''} onClick={() => setActivePage('flight')}>飞行控制</button>
+        <button className={activePage === 'missions' ? 'active' : ''} onClick={() => setActivePage('missions')}>任务与人物</button>
+        <button className={activePage === 'diagnostics' ? 'active' : ''} onClick={() => setActivePage('diagnostics')}>运行诊断</button>
+        <span>API {runtime.capabilities?.apiVersion ?? '—'} · SEQ {runtime.snapshot?.sequence ?? 0}</span>
+      </nav>
+
+      {activePage === 'flight' && <>
       <section className="workspace" aria-label="真机控制台">
         <section className={`video-panel ${videoUrl ? 'streaming' : ''}`}>
           {videoUrl ? (
@@ -363,7 +375,82 @@ export default function App(): ReactElement {
           return <div className={`phase ${complete ? 'complete' : ''} ${active ? 'active' : ''}`} key={phase}><i>{complete ? '✓' : index + 1}</i><span>{phase}</span></div>
         })}
       </footer>
+      </>}
+
+      {activePage === 'missions' && <MissionWorkspace runtime={runtime} onOpenFlight={() => setActivePage('flight')} />}
+      {activePage === 'diagnostics' && <DiagnosticsWorkspace runtime={runtime} backend={backend} />}
     </main>
+  )
+}
+
+function MissionWorkspace({ runtime, onOpenFlight }: { runtime: RuntimeFeed; onOpenFlight: () => void }): ReactElement {
+  const available = new Set(runtime.capabilities?.missions ?? [])
+  const missions = [
+    ['manual', '手动飞行', '起降、悬停、四通道 RC 与独占控制租约'],
+    ['follow', '普通自动跟随', 'ReID 锁定、距离与画面中心闭环'],
+    ['reid_follow', '人物跟拍任务', '本地人物档案、丢失确认与有界搜索'],
+    ['fixed_demo', '固定航线演示', '预设航线完成后衔接自动跟随']
+  ] as const
+  return (
+    <section className="secondary-workspace" aria-label="任务与人物">
+      <header className="workspace-title">
+        <div><p className="eyebrow">MISSION WORKSPACE</p><h1>任务与人物</h1></div>
+        <p>能力由 sidecar `/api/v1/capabilities` 决定；未开放功能不会向真机发送命令。</p>
+      </header>
+      <div className="mission-layout">
+        <section className="mission-catalog">
+          <div className="subheading"><div><p className="eyebrow">MISSION TYPES</p><h2>飞行任务</h2></div></div>
+          <div className="mission-grid">
+            {missions.map(([id, title, detail]) => {
+              const enabled = available.has(id)
+              return <article className={enabled ? 'available' : 'unavailable'} key={id}><span>{enabled ? '已开放' : '后端尚未开放'}</span><h3>{title}</h3><p>{detail}</p><button disabled={!enabled || id !== 'manual'} onClick={id === 'manual' ? onOpenFlight : undefined}>{id === 'manual' ? '前往飞行控制' : '等待任务接口'}</button></article>
+            })}
+          </div>
+        </section>
+        <aside className="mission-flow">
+          <p className="eyebrow">OPERATOR FLOW</p><h2>运行前工作流</h2>
+          <ol>
+            <li><b>1</b><div><strong>选择或注册人物</strong><span>本地照片、特征摘要与模型兼容性</span></div></li>
+            <li><b>2</b><div><strong>地面预览确认</strong><span>视频、ReID 结果、朝向与性能检查</span></div></li>
+            <li><b>3</b><div><strong>选择任务和安全参数</strong><span>普通 / 侧向 / 前向、搜索与避障</span></div></li>
+            <li><b>4</b><div><strong>起飞后二次选择</strong><span>基础高度悬停，操作员明确授权任务</span></div></li>
+          </ol>
+          <p className="boundary-note">当前阶段只展示服务端真实能力。人物档案、预览和自动任务将在后续接口接入后启用。</p>
+        </aside>
+      </div>
+    </section>
+  )
+}
+
+function DiagnosticsWorkspace({ runtime, backend }: { runtime: RuntimeFeed; backend: BackendState }): ReactElement {
+  const snapshot = runtime.snapshot
+  return (
+    <section className="secondary-workspace" aria-label="运行诊断">
+      <header className="workspace-title">
+        <div><p className="eyebrow">RUNTIME DIAGNOSTICS</p><h1>运行诊断</h1></div>
+        <p>命令、快照和事件序号均来自 Python 权威运行时。</p>
+      </header>
+      <div className="diagnostics-grid">
+        <section className="runtime-summary">
+          <h2>当前快照</h2>
+          <dl>
+            <div><dt>后端</dt><dd>{backend.status}</dd></div>
+            <div><dt>阶段</dt><dd>{snapshot?.phase ?? '—'}</dd></div>
+            <div><dt>任务</dt><dd>{snapshot?.mission ?? '—'}</dd></div>
+            <div><dt>控制模式</dt><dd>{snapshot?.controlMode ?? '—'}</dd></div>
+            <div><dt>事件序号</dt><dd>{snapshot?.sequence ?? 0}</dd></div>
+            <div><dt>RC 租约</dt><dd>{runtime.capabilities?.rcLease.required ? `${runtime.capabilities.rcLease.ttlMs} ms` : '—'}</dd></div>
+          </dl>
+          <h3>允许操作</h3>
+          <div className="action-tags">{snapshot?.allowedActions.map((action) => <span key={action}>{action}</span>) ?? <span>none</span>}</div>
+          {runtime.error && <p className="runtime-error">{runtime.error}</p>}
+        </section>
+        <section className="event-log">
+          <div className="subheading"><div><p className="eyebrow">EVENT REPLAY</p><h2>最近事件</h2></div><span>{runtime.events.length} / 50</span></div>
+          {runtime.events.length === 0 ? <p className="event-empty">尚无新事件；执行连接或状态刷新后会出现在这里。</p> : <ol>{[...runtime.events].reverse().map((event) => <li key={event.sequence}><time>#{event.sequence}</time><strong>{event.type}</strong><span>{String(event.payload.command ?? event.payload.leaseId ?? '')}</span></li>)}</ol>}
+        </section>
+      </div>
+    </section>
   )
 }
 

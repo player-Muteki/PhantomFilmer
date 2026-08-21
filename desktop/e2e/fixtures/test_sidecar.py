@@ -56,6 +56,24 @@ def status():
     }
 
 
+def runtime_snapshot():
+    airborne = state["airborne"]
+    connected = state["connected"]
+    return {
+        "sequence": 0,
+        "phase": "airborne" if airborne else "preflight" if connected else "disconnected",
+        "mission": "manual" if connected else "idle",
+        "controlMode": "manual" if airborne else "none",
+        "connected": connected,
+        "airborne": airborne,
+        "streaming": connected,
+        "flightState": status()["flightState"],
+        "allowedActions": ["refresh_status", "stop"] if connected else ["connect"],
+        "telemetry": {},
+        "error": None,
+    }
+
+
 class Handler(BaseHTTPRequestHandler):
     def _authorized(self):
         return self.headers.get("X-Phantom-Token") == args.token
@@ -139,6 +157,29 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, {"ok": True, "connected": state["connected"]})
         elif parts.path == "/api/v1/health":
             self._json(200, {"apiVersion": "1", "ok": True, "connected": state["connected"]})
+        elif parts.path == "/api/v1/capabilities":
+            self._json(
+                200,
+                {
+                    "apiVersion": "1",
+                    "commands": ["device.connect", "flight.takeoff", "flight.land"],
+                    "missions": ["manual"],
+                    "eventReplay": True,
+                    "rcLease": {"required": True, "ttlMs": 1000},
+                },
+            )
+        elif parts.path == "/api/v1/runtime/snapshot":
+            self._json(200, {"apiVersion": "1", "snapshot": runtime_snapshot()})
+        elif parts.path == "/api/v1/runtime/events":
+            self._json(
+                200,
+                {
+                    "apiVersion": "1",
+                    "latestSequence": 0,
+                    "resetRequired": False,
+                    "events": [],
+                },
+            )
         elif parts.path == "/api/drone/status":
             self._json(200, status())
         else:

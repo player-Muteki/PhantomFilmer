@@ -16,6 +16,9 @@ const api: PhantomFilmerApi = {
   getVideoUrl: () => invoke('drone:video-url'),
   getBackendState: () => invoke('backend:state'),
   restartBackend: () => invoke('backend:restart'),
+  getRuntimeCapabilities: () => invoke('runtime:capabilities'),
+  getRuntimeSnapshot: () => invoke('runtime:snapshot'),
+  getRuntimeEvents: (since: number) => invoke('runtime:events', since),
   onBackendState: (listener) => {
     const handler = (_event: Electron.IpcRendererEvent, state: BackendState): void => listener(state)
     ipcRenderer.on('backend:state-changed', handler)
