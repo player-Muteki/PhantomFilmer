@@ -176,6 +176,7 @@ class FollowSession:
         self.paused = False
         self.emergency_stop = False
         self.last_command = RCCommand()
+        self.last_target_result: Dict[str, object] = {}
         self.last_battery: Optional[int] = None
         self.last_height: Optional[int] = None
         self.last_raw_height: Optional[int] = None
@@ -215,7 +216,9 @@ class FollowSession:
             and vision_config.get("jointbdoe_enabled", False)
             and getattr(self.detector, "_orientation_estimator", None) is not None
         )
-        front_config = config.get("front_follow", {}) if isinstance(config, dict) else {}
+        front_config = (
+            config.get("front_follow", {}) if isinstance(config, dict) else {}
+        )
         if not isinstance(front_config, dict):
             front_config = {}
         self.side_follow_available = bool(
@@ -1009,11 +1012,7 @@ class FollowSession:
             limited = self.safety_manager.limit_rc_command(*decision.command.as_tuple())
             return FollowTickOutcome(
                 command=RCCommand(*limited),
-                state=(
-                    "TARGET_LOST_LANDING"
-                    if landing
-                    else decision.state
-                ),
+                state=("TARGET_LOST_LANDING" if landing else decision.state),
                 reason=decision.reason,
                 requires_landing=landing,
                 landing_state="TARGET_LOST_LANDING" if landing else None,
@@ -1361,11 +1360,6 @@ class FollowSession:
         if envelope is None:
             return None
         if not control_ready:
-            if (
-                envelope.command is OperatorCommand.SELECT_MANUAL
-                and self.manual_controller.active
-            ):
-                return None
             selected_modes = {
                 OperatorCommand.SELECT_NORMAL: "normal",
                 OperatorCommand.SELECT_SIDE: "side",
@@ -1684,11 +1678,15 @@ class FollowSession:
                     (
                         "M MANUAL | A AUTO | S SIDE | F FRONT | Q LAND | E STOP"
                         if self.side_follow_available and self.front_follow_available
-                        else "M MANUAL | A AUTO | S SIDE | Q LAND | E STOP"
-                        if self.side_follow_available
-                        else "M MANUAL | A AUTO | F FRONT | Q LAND | E STOP"
-                        if self.front_follow_available
-                        else "M: MANUAL   A: AUTO   Q: LAND   E: EMERGENCY"
+                        else (
+                            "M MANUAL | A AUTO | S SIDE | Q LAND | E STOP"
+                            if self.side_follow_available
+                            else (
+                                "M MANUAL | A AUTO | F FRONT | Q LAND | E STOP"
+                                if self.front_follow_available
+                                else "M: MANUAL   A: AUTO   Q: LAND   E: EMERGENCY"
+                            )
+                        )
                     ),
                     (20, max(36, preview.shape[0] - 48)),
                     cv2.FONT_HERSHEY_SIMPLEX,
@@ -2033,6 +2031,7 @@ class FollowSession:
                     sleep(0.05)
                     continue
                 detect_failures = 0
+            self.last_target_result = dict(target_result)
             yaw = self._read_yaw()
             tracker = self._manual_reacquire_tracker
             if self._pending_follow_mode is not None:
@@ -2062,7 +2061,10 @@ class FollowSession:
                         state="REACQUIRE_VERIFY",
                         reason=f"manual release ReID {tracker.progress}",
                     )
-            elif self.follow_mode in {"side", "front"} and not self.manual_controller.active:
+            elif (
+                self.follow_mode in {"side", "front"}
+                and not self.manual_controller.active
+            ):
                 # 侧向/前向模式按设计绕过 ArbitrationEngine 和顶部 ToF 避障；
                 # 目标丢失时直接复用普通三层搜索控制器。
                 orientation_outcome = (
@@ -2131,10 +2133,10 @@ class FollowSession:
             if not self.manual_controller.active:
                 battery = self._read_battery()
                 height = self._read_height()
-                if (
-                    self._pending_follow_mode is None
-                    and self.follow_mode in {"side", "front"}
-                ):
+                if self._pending_follow_mode is None and self.follow_mode in {
+                    "side",
+                    "front",
+                }:
                     self._record_orientation_follow_tick(
                         target_result, outcome, frame_width, frame_height
                     )

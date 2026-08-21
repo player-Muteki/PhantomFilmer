@@ -92,7 +92,7 @@ python3 -m venv .venv
 
 ## 识别链路
 
-系统只保留人物 ReID：YOLO11n 检测画面中的行人，Torchreid/OSNet 提取外观特征，
+系统只保留人物 ReID：YOLOv8n 检测画面中的行人，Torchreid/OSNet 提取外观特征，
 再与本地参考照片或具名档案进行余弦相似度匹配。`create_detector()` 始终创建
 `PersonReIDDetector`，不存在运行时识别策略开关。
 
@@ -112,24 +112,23 @@ bash scripts/setup_reid_env.sh python3
 模型权重、人物照片和数据集不会提交到 Git。所需材料和校验方式见 [docs/06-配置测试与源码索引.md 第 4 节](docs/06-配置测试与源码索引.md#4-依赖与本地数据)，ReID 模型加载与档案校验见 [docs/03-视觉感知与目标跟随.md](docs/03-视觉感知与目标跟随.md)。配置示例见 `config.reid.offline-snippet.yaml`。典型本地文件包括：
 
 ```text
-weights/yolo11n.pt
+weights/yolov8n.pt
 weights/osnet_x0_25_msmt17.pth
 data/reid_target/front.jpg
 data/reid_target/side.jpg
 ```
 
-项目已迁移到 COCO 预训练 YOLO11n。程序在飞行现场设置 `YOLO_OFFLINE=1`，
+项目当前使用 COCO 预训练 YOLOv8n。程序在飞行现场设置 `YOLO_OFFLINE=1`，
 因此首次运行前需在可联网环境下载官方权重：
 
 ```bash
 mkdir -p weights
-curl -L https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo11n.pt \
-  -o weights/yolo11n.pt
+curl -L https://github.com/ultralytics/assets/releases/download/v8.1.0/yolov8n.pt \
+  -o weights/yolov8n.pt
 ```
 
-注意：后续 JointBDOE 提交误把 `config.yaml` 的 `vision.person_detector_model` 带回了
-`weights/yolov8n.pt`；运行前应改回 `weights/yolo11n.pt`。从 YOLOv8n 切换后，已有
-ReID 档案会因权重哈希变化而被拒绝加载，这是预期行为；请重新执行 `reid-enroll`。
+桌面构建脚本会自动下载并校验该权重。更换检测模型后，已有 ReID 档案会因权重哈希
+变化而被拒绝加载，这是预期行为；请重新执行 `reid-enroll`。
 
 人物框默认显示目标角色标签。若要在 ReID 画面中额外显示车辆、椅子、背包等视觉障碍候选，先完成 CPU 性能测试，再将 `config.yaml` 中的 `vision.visual_object_detection_enabled` 改为 `true`；这些框只用于屏幕提示，不参与飞控避障。
 
@@ -315,10 +314,9 @@ ReID 只进行外观匹配，不识别真实姓名；俯视、遮挡、换衣、
 
 ## 真机桌面端
 
-仓库包含 Electron 桌面飞控台。除真机连接、内嵌视频、五项预检、二次确认起降、悬停、
-租约 RC、后端诊断和安全退出外，GUI 还支持本地人物建档、地面 ReID 叠加预览、连续帧
-身份确认、普通/ReID/固定航线任务、普通/侧向/前向切换、暂停、停止、急停和任务内手动
-接管。自动任务直接运行 `FollowSession/KernelSession`、目标搜索与可选自动避障。
+仓库包含 Electron 桌面飞控台。单屏界面提供人物档案选择/建档、真机连接、内嵌视频、
+五项预检、二次确认起飞、普通/侧向/前向跟随、手动接管、停止和急停。自动任务直接运行
+`FollowSession/KernelSession`、目标搜索与可选自动避障；视频流显示人物框和 `STATE` 状态。
 
 GUI 与 CLI 共用 `MissionManager` 命令/事件模型和 `MissionFactory` 装配路径，但仍是两个
 独立进程，不共享正在运行的会话或控制状态，也不能同时控制同一架无人机。Electron main
@@ -327,34 +325,24 @@ GUI 与 CLI 共用 `MissionManager` 命令/事件模型和 `MissionFactory` 装�
 RC 和手动控制阈值；独立遥测线程在手动飞行中持续监视低电、超高和读取失效。端口和会话令牌由 Electron 主进程
 持有，renderer 只能调用类型化 preload 接口。
 
-桌面端现分为“飞行控制”“任务与人物”“运行诊断”三个工作区。任务入口严格依据
-`/api/v1/capabilities` 返回的真实能力和本机模型资产启用；诊断页以权威运行时快照和带序号事件为准，断线补读出现历史缺口时会重新
-获取快照，不从界面局部状态猜测任务状态。
-
-共享 `FollowSession` 已具备无 OpenCV 窗口的语义化操作员命令通道，并能附着于 sidecar
-已持有的视频流。sidecar 已实现普通跟随、ReID 跟拍和固定航线任务命令，GUI 提供本地
-人物建档、任务参数、地面身份稳定确认、二次起飞授权、模式切换、暂停、停止、急停和自动任务中的 RC 租约
-手动接管。地面预览确认超过 2 秒无新识别帧即失效；启动任务时把已加载检测器安全移交给
-任务，避免起飞阶段重复加载。capability 会分别报告“接口已实现”和“本机模型资产是否就绪”；模型权重缺失
-时任务保持禁用，不能仅因按钮存在就认为当前安装包可执行自动任务。
+任务入口严格依据 `/api/v1/capabilities` 返回的真实能力和本机模型资产启用。选择档案、
+连接真机并通过预检后，点击“起飞”并再次确认；无人机上升至 150 cm 后，再选择普通、
+侧向、前向或手动接管。前端按钮和键盘通过相同的语义命令通道控制任务。地面预览接口保留
+给诊断用途，但不是自动任务的起飞前置条件。
 
 优先交付 Linux x64 AppImage 与 macOS x64/arm64 DMG，Windows x64 NSIS 随后构建。
 首轮安装包未签名；从 CI 或 Release 下载对应产物并核对同目录 `SHA256SUMS` 后安装。
 运行前连接 `RMTT-XXXXXX` 无人机 Wi-Fi，不需要浏览器或外部网络服务。
 
-开发构建：
+从源码构建完整桌面包：
 
 ```bash
-python3 -m pip install -r requirements-desktop-build.txt
-python3 -m pip install --no-build-isolation --no-deps -r requirements-desktop-torchreid.txt
-python3 scripts/prepare_desktop_model_assets.py
-python3 scripts/build_sidecar.py
-cd desktop && npm ci && npm run dist
+bash scripts/build_desktop_app.sh
 ```
 
-桌面安装包会嵌入配置所引用的 YOLO、OSNet、JointBDOE 权重及 JointBDOE 推理源码。
-`build_sidecar.py` 会真实加载三套模型后才允许继续生成安装包；模型缺失、校验失败或动态
-依赖未被 PyInstaller 收集时，构建会直接失败。
+脚本会创建隔离 Python 环境、固定安装 Node 依赖、下载并校验模型、构建 sidecar、生成
+原生安装包和 `SHA256SUMS`。完整的前置工具、平台边界、模型规则与故障排查见
+[`docs/桌面端开发构建指南.md`](docs/桌面端开发构建指南.md)。
 
 架构、能力差异与已知安全边界见
 [`docs/07-桌面端架构与安全边界.md`](docs/07-桌面端架构与安全边界.md)；安装、权限、

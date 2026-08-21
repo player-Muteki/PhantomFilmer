@@ -220,6 +220,10 @@ export class SidecarManager {
     return { ok: result.ok, flightState: result.flightState }
   }
 
+  async inputKey(key: string): Promise<{ ok: boolean; operatorSequence: number; key: string }> {
+    return this.request('POST', '/api/drone/input', { key })
+  }
+
   async stopDrone(): Promise<{ ok: boolean }> {
     await this.releaseRcLease().catch(() => undefined)
     const result = await this.commandRequest<{ ok: boolean }>('device.stop')

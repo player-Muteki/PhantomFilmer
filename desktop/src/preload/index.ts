@@ -11,6 +11,7 @@ const api: PhantomFilmerApi = {
   land: () => invoke('drone:land'),
   hover: () => invoke('drone:hover'),
   moveRc: (command: RcCommand) => invoke('drone:move-rc', command),
+  inputKey: (key: string) => invoke('drone:input-key', key),
   stop: () => invoke('drone:stop'),
   emergencyLand: () => invoke('drone:emergency-land'),
   getVideoUrl: () => invoke('drone:video-url'),

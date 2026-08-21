@@ -140,6 +140,7 @@ export type PhantomFilmerApi = {
   land: () => Promise<DroneStatus>
   hover: () => Promise<DroneStatus>
   moveRc: (command: RcCommand) => Promise<{ ok: boolean; flightState: string }>
+  inputKey: (key: string) => Promise<{ ok: boolean; operatorSequence: number; key: string }>
   stop: () => Promise<{ ok: boolean }>
   emergencyLand: () => Promise<{ ok: boolean }>
   getVideoUrl: () => Promise<string>

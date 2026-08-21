@@ -291,7 +291,7 @@ class DroneWebService(MissionManager):
                 "telemetryMaxAgeMs": round(self._telemetry_max_age_seconds * 1000),
             },
             "preview": {
-                "requiredForAutomaticMission": not self._custom_mission_session_factory,
+                "requiredForAutomaticMission": False,
                 "stableFrames": self._preview_stable_frames,
                 "maxAgeMs": round(self._preview_max_age_seconds * 1000),
             },
@@ -446,11 +446,7 @@ class DroneWebService(MissionManager):
                     and front_tof_ready
                 ):
                     allowed.append(AllowedAction.TAKEOFF)
-                    if (
-                        self._custom_mission_session_factory
-                        or self._preview_is_confirmed_locked()
-                    ):
-                        allowed.append(AllowedAction.START_MISSION)
+                    allowed.append(AllowedAction.START_MISSION)
                 if airborne and not self._safety_landing:
                     allowed.extend(
                         (
@@ -834,14 +830,6 @@ class DroneWebService(MissionManager):
             MissionKind.FIXED_DEMO,
         }:
             raise RuntimeError(f"桌面端暂不支持任务：{command.mission.value}")
-        mode_command = {
-            ControlMode.MANUAL: OperatorCommand.SELECT_MANUAL,
-            ControlMode.NORMAL: OperatorCommand.SELECT_NORMAL,
-            ControlMode.SIDE: OperatorCommand.SELECT_SIDE,
-            ControlMode.FRONT: OperatorCommand.SELECT_FRONT,
-        }.get(command.initial_control_mode)
-        if mode_command is None:
-            raise RuntimeError("自动任务初始控制模式无效。")
         with self._lock:
             if not self.connected or self._adapter is None:
                 raise RuntimeError("真机未连接，无法启动自动任务。")
@@ -853,14 +841,6 @@ class DroneWebService(MissionManager):
                 raise RuntimeError(
                     "任务起飞检查未通过：请确认视频、电量和 ToF 均正常。"
                 )
-            if not self._custom_mission_session_factory:
-                if self._preview_profile != command.profile_name:
-                    raise RuntimeError("请使用本次任务选择的人物档案完成地面识别预览。")
-                if not self._preview_is_confirmed_locked():
-                    raise RuntimeError(
-                        "地面预览尚未稳定确认目标人物，不能启动自动任务。"
-                    )
-
             self._rc_leases.revoke()
             self._operator_commands.clear()
             with self._preview_inference_lock:
@@ -868,7 +848,6 @@ class DroneWebService(MissionManager):
                     command, self._adapter, self._operator_commands
                 )
                 self._clear_preview_locked(reset_detector=False)
-            self._operator_commands.submit(mode_command)
             authorize_takeoff = getattr(self._adapter, "authorize_next_takeoff", None)
             if callable(authorize_takeoff):
                 authorize_takeoff()
@@ -888,7 +867,7 @@ class DroneWebService(MissionManager):
             return {
                 "ok": True,
                 "mission": command.mission.value,
-                "initialControlMode": command.initial_control_mode.value,
+                "initialControlMode": "none",
             }
 
     def stop_mission(self) -> None:
@@ -929,11 +908,69 @@ class DroneWebService(MissionManager):
                 "mode": command.mode.value,
             }
 
+    def input_key(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Translate a legacy desktop key into the shared operator command channel.
+
+        The Electron buttons use this same entry point as physical keyboard
+        input, so a mode can never have different semantics by input device.
+        """
+
+        value = payload.get("key")
+        if not isinstance(value, str) or len(value) != 1:
+            raise RuntimeError("飞行键必须是单个字符。")
+        key = value.lower()
+        with self._lock:
+            self._require_active_mission()
+            session = self._mission_session
+            manual_controller = getattr(session, "manual_controller", None)
+            manual_active = bool(getattr(manual_controller, "active", False))
+            command = self._operator_command_for_key(key, manual_active=manual_active)
+            if command is None:
+                raise RuntimeError("该按键不适用于当前飞行状态。")
+            envelope = self._operator_commands.submit(command)
+            return {"ok": True, "operatorSequence": envelope.sequence, "key": key}
+
     def toggle_mission_pause(self) -> dict[str, Any]:
         with self._lock:
             self._require_active_mission()
             envelope = self._operator_commands.submit(OperatorCommand.TOGGLE_PAUSE)
             return {"ok": True, "operatorSequence": envelope.sequence}
+
+    @staticmethod
+    def _operator_command_for_key(
+        key: str, *, manual_active: bool
+    ) -> OperatorCommand | None:
+        """Keep legacy keyboard mappings aligned with FollowSession behavior."""
+
+        safety_commands = {
+            "q": OperatorCommand.STOP,
+            "e": OperatorCommand.EMERGENCY_STOP,
+        }
+        if key in safety_commands:
+            return safety_commands[key]
+        if manual_active:
+            return {
+                "w": OperatorCommand.MOVE_FORWARD,
+                "s": OperatorCommand.MOVE_BACKWARD,
+                "a": OperatorCommand.MOVE_LEFT,
+                "d": OperatorCommand.MOVE_RIGHT,
+                "r": OperatorCommand.MOVE_UP,
+                "f": OperatorCommand.MOVE_DOWN,
+                "j": OperatorCommand.YAW_LEFT,
+                "l": OperatorCommand.YAW_RIGHT,
+                " ": OperatorCommand.HOVER,
+                "m": OperatorCommand.SELECT_MANUAL,
+            }.get(key)
+        return {
+            "m": OperatorCommand.SELECT_MANUAL,
+            "a": OperatorCommand.SELECT_NORMAL,
+            "1": OperatorCommand.SELECT_NORMAL,
+            "s": OperatorCommand.SELECT_SIDE,
+            "2": OperatorCommand.SELECT_SIDE,
+            "f": OperatorCommand.SELECT_FRONT,
+            "3": OperatorCommand.SELECT_FRONT,
+            "p": OperatorCommand.TOGGLE_PAUSE,
+        }.get(key)
 
     def stop(self) -> None:
         """Land first when necessary, then stop the stream and connection."""
@@ -1503,6 +1540,10 @@ class DroneWebService(MissionManager):
             height = self._height
         airborne = bool(getattr(session, "airborne", False))
         manual_controller = getattr(session, "manual_controller", None)
+        target_result = getattr(session, "last_target_result", {})
+        target_found = bool(
+            isinstance(target_result, dict) and target_result.get("found", False)
+        )
         return {
             "battery": battery,
             "heightCm": height,
@@ -1510,7 +1551,7 @@ class DroneWebService(MissionManager):
             "frontTofState": self._front_tof_state,
             "controlHz": round(float(getattr(session, "control_hz", 0.0)), 1),
             "flightState": str(getattr(session, "session_state", "任务准备")),
-            "targetConfirmed": False,
+            "targetConfirmed": target_found,
             "phase": "自动任务",
             "videoReady": self._video_ready,
             "airborne": airborne,
@@ -1574,6 +1615,7 @@ class DroneWebService(MissionManager):
                     continue
                 with self._lock:
                     preview_detector = self._preview_detector
+                    mission_session = self._mission_session
                 if preview_detector is not None:
                     preview_result: Optional[dict[str, Any]] = None
                     preview_error: Optional[str] = None
@@ -1619,6 +1661,24 @@ class DroneWebService(MissionManager):
                                 )
                     if preview_error is None:
                         frame = preview_frame
+                elif mission_session is not None:
+                    draw_debug_frame = getattr(
+                        mission_session, "draw_debug_frame", None
+                    )
+                    target_result = getattr(mission_session, "last_target_result", {})
+                    if callable(draw_debug_frame) and isinstance(target_result, dict):
+                        try:
+                            frame = draw_debug_frame(
+                                frame,
+                                dict(target_result),
+                                getattr(mission_session, "last_command", None),
+                                getattr(mission_session, "last_battery", None),
+                                getattr(mission_session, "last_height", None),
+                            )
+                        except Exception as exc:
+                            logging.warning(
+                                "任务视频叠加失败，继续输出原始视频：%s", exc
+                            )
                 ok, encoded = cv2.imencode(
                     ".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 82]
                 )
@@ -1833,6 +1893,12 @@ class DroneRequestHandler(BaseHTTPRequestHandler):
                     yaw=payload.get("yaw", 0),
                 )
                 self._json(HTTPStatus.OK, self.service.execute(command))
+            except Exception as exc:
+                self._json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(exc)})
+            return
+        if path == "/api/drone/input":
+            try:
+                self._json(HTTPStatus.OK, self.service.input_key(self._read_json()))
             except Exception as exc:
                 self._json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(exc)})
             return

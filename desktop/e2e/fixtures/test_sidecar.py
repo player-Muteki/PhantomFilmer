@@ -76,8 +76,7 @@ def runtime_snapshot():
         else:
             allowed = ["refresh_status", "stop"]
             allowed.append("stop_preview" if state["preview_active"] else "start_preview")
-            if state["preview_confirmed"]:
-                allowed.append("start_mission")
+            allowed.append("start_mission")
             if not airborne:
                 allowed.append("takeoff")
     preview = {
@@ -173,6 +172,8 @@ class Handler(BaseHTTPRequestHandler):
             state["control_mode"] = payload.get("initialControlMode", "normal")
             state["preview_active"] = False
             state["airborne"] = True
+            if os.environ.get("PHANTOMFILMER_TEST_CRASH_DURING_TAKEOFF") == "1":
+                os._exit(24)
             result = {"ok": True, "mission": state["mission"]}
             crash_after = False
         elif command in ("mission.stop", "mission.emergency_stop"):
@@ -244,7 +245,7 @@ class Handler(BaseHTTPRequestHandler):
                     "missions": ["manual", "follow", "reid_follow", "fixed_demo"],
                     "eventReplay": True,
                     "rcLease": {"required": True, "ttlMs": 1000},
-                    "preview": {"requiredForAutomaticMission": True, "stableFrames": 10, "maxAgeMs": 2000},
+                    "preview": {"requiredForAutomaticMission": False, "stableFrames": 0, "maxAgeMs": 0},
                     "missionReadiness": {"available": True, "missingAssets": [], "profileRequired": True},
                 },
             )
@@ -334,6 +335,12 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, status())
         elif path == "/api/drone/rc":
             self._json(200, {"ok": True, "flightState": "手动飞行"})
+        elif path == "/api/drone/input":
+            key = str(self._read_json().get("key", "")).lower()
+            mode_for_key = {"1": "normal", "2": "side", "3": "front", "m": "manual"}
+            if key in mode_for_key and state["mission"] != "idle":
+                state["control_mode"] = mode_for_key[key]
+            self._json(200, {"ok": True, "operatorSequence": state["sequence"], "key": key})
         elif path in ("/api/drone/stop", "/api/drone/emergency-land"):
             state["airborne"] = False
             state["connected"] = False

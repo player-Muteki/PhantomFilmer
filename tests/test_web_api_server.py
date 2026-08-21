@@ -20,6 +20,7 @@ from app.runtime.commands import (
     command_from_payload,
 )
 from app.runtime.models import AllowedAction, ControlMode, MissionKind, RuntimePhase
+from control.operator_commands import OperatorCommand
 from web_api.server import DroneWebService, create_server
 
 
@@ -208,7 +209,7 @@ class DroneWebServiceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "profileName"):
             command_from_payload({"type": "preview.start", "profileName": ""})
 
-    def test_ground_preview_gates_automatic_mission_until_target_is_fresh(self) -> None:
+    def test_ground_preview_is_optional_before_automatic_mission(self) -> None:
         adapter = RealAdapterStub()
         detector = PreviewDetectorStub()
         service = DroneWebService(adapter_factory=lambda: adapter)
@@ -222,29 +223,22 @@ class DroneWebServiceTests(unittest.TestCase):
         self.assertTrue(detector.prepared)
         snapshot = service.runtime_snapshot()
         self.assertIn(AllowedAction.STOP_PREVIEW, snapshot.allowed_actions)
-        self.assertNotIn(AllowedAction.START_MISSION, snapshot.allowed_actions)
-        with self.assertRaisesRegex(RuntimeError, "地面预览尚未稳定确认"):
-            service.start_mission(
-                StartMissionCommand(
-                    mission=MissionKind.REID_FOLLOW,
-                    profile_name="operator-a",
-                )
-            )
+        self.assertIn(AllowedAction.START_MISSION, snapshot.allowed_actions)
+        self.assertFalse(
+            service.capabilities()["preview"]["requiredForAutomaticMission"]
+        )
 
         with service._lock:
             service._preview_confirmed = True
             service._preview_found_frames = service._preview_stable_frames
             service._preview_last_at = monotonic()
-        self.assertIn(
-            AllowedAction.START_MISSION,
-            service.runtime_snapshot().allowed_actions,
-        )
-
         stopped = service.execute(StopPreviewCommand())
         self.assertFalse(stopped["active"])
         self.assertEqual(detector.reset_count, 1)
 
-    def test_ground_preview_annotates_stream_and_reaches_stable_confirmation(self) -> None:
+    def test_ground_preview_annotates_stream_and_reaches_stable_confirmation(
+        self,
+    ) -> None:
         adapter = RealAdapterStub()
         detector = PreviewDetectorStub()
         config = self._fast_runtime_config()
@@ -299,7 +293,9 @@ class DroneWebServiceTests(unittest.TestCase):
 
         self.assertFalse(worker.is_alive())
         self.assertFalse(stopped["active"])
-        self.assertEqual(service.runtime_snapshot().telemetry["preview"]["state"], "idle")
+        self.assertEqual(
+            service.runtime_snapshot().telemetry["preview"]["state"], "idle"
+        )
         self.assertEqual(detector.reset_count, 1)
         self.assertTrue(any("状态已变化" in error for error in errors))
 
@@ -322,9 +318,7 @@ class DroneWebServiceTests(unittest.TestCase):
         )
         self.assertTrue(session.started.wait(timeout=1))
         snapshot = service.runtime_snapshot()
-        mode_result = service.execute(
-            SelectControlModeCommand(mode=ControlMode.FRONT)
-        )
+        mode_result = service.execute(SelectControlModeCommand(mode=ControlMode.FRONT))
         service.execute(StopMissionCommand())
 
         self.assertTrue(result["ok"])
@@ -358,7 +352,46 @@ class DroneWebServiceTests(unittest.TestCase):
         service.emergency_stop_mission()
         self.assertTrue(session.emergency)
 
-    def test_mission_manual_takeover_routes_leased_rc_through_operator_channel(self) -> None:
+    def test_legacy_input_key_uses_the_same_operator_channel_as_mode_buttons(
+        self,
+    ) -> None:
+        session = MissionSessionStub()
+        service = DroneWebService(
+            adapter_factory=RealAdapterStub,
+            mission_session_factory=lambda _command, _adapter, _channel: session,
+        )
+        self.addCleanup(service.shutdown)
+        service.connect()
+        service.start_mission(
+            StartMissionCommand(
+                mission=MissionKind.FOLLOW,
+                profile_name="operator-a",
+                initial_control_mode=ControlMode.MANUAL,
+            )
+        )
+        self.assertTrue(session.started.wait(timeout=1))
+        service._operator_commands.clear()
+
+        result = service.input_key({"key": "2"})
+        queued = service._operator_commands.receive()
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["key"], "2")
+        self.assertIsNotNone(queued)
+        self.assertEqual(queued.command, OperatorCommand.SELECT_SIDE)
+
+        session.manual_controller.active = True
+        service._operator_commands.clear()
+        service.input_key({"key": "w"})
+        manual_queued = service._operator_commands.receive()
+        self.assertIsNotNone(manual_queued)
+        self.assertEqual(manual_queued.command, OperatorCommand.MOVE_FORWARD)
+
+        service.stop_mission()
+
+    def test_mission_manual_takeover_routes_leased_rc_through_operator_channel(
+        self,
+    ) -> None:
         session = MissionSessionStub()
         service = DroneWebService(
             adapter_factory=RealAdapterStub,
@@ -622,7 +655,9 @@ class SidecarServerTests(unittest.TestCase):
         token: str | None = "test-session-token",
         json_body: dict | None = None,
     ) -> tuple[int, str]:
-        connection = HTTPConnection("127.0.0.1", self.server.server_address[1], timeout=2)
+        connection = HTTPConnection(
+            "127.0.0.1", self.server.server_address[1], timeout=2
+        )
         headers = {"X-Phantom-Token": token} if token is not None else {}
         body = None
         if json_body is not None:
@@ -671,8 +706,12 @@ class SidecarServerTests(unittest.TestCase):
             },
         )
         command = json.loads(body)
-        snapshot_status, snapshot_body = self._request("GET", "/api/v1/runtime/snapshot")
-        events_status, events_body = self._request("GET", "/api/v1/runtime/events?since=0")
+        snapshot_status, snapshot_body = self._request(
+            "GET", "/api/v1/runtime/snapshot"
+        )
+        events_status, events_body = self._request(
+            "GET", "/api/v1/runtime/events?since=0"
+        )
         snapshot = json.loads(snapshot_body)
         events = json.loads(events_body)
 
@@ -719,7 +758,9 @@ class SidecarServerTests(unittest.TestCase):
         self.assertEqual(lease_status, 201)
         self.assertEqual(move_status, 200)
         self.assertEqual(replay_status, 409)
-        self.assertEqual(json.loads(replay_body)["error"]["code"], "RC_COMMAND_REJECTED")
+        self.assertEqual(
+            json.loads(replay_body)["error"]["code"], "RC_COMMAND_REJECTED"
+        )
         self.assertEqual(release_status, 200)
         self.assertTrue(json.loads(release_body)["released"])
         adapter = self.service._adapter

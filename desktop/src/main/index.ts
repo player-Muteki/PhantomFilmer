@@ -153,6 +153,7 @@ function registerIpc(): void {
     }
     return sidecar.moveRc(command)
   })
+  ipcMain.handle('drone:input-key', (_event, key: string) => sidecar.inputKey(key))
 }
 
 if (!hasSingleInstanceLock) {

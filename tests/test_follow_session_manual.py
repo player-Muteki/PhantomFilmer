@@ -755,6 +755,18 @@ class FollowSessionManualIntegrationTestCase(unittest.TestCase):
             session.handle_key(ord("m"))
         self.assertFalse(session.manual_controller.active)
 
+    def test_runtime_operator_m_exits_manual_after_the_quiet_gap(self) -> None:
+        commands = OperatorCommandChannel()
+        session, _drone, _detector = build_session(operator_commands=commands)
+        enter_manual(session, now=10.0)
+        commands.submit(OperatorCommand.SELECT_MANUAL)
+
+        with patch("control.follow_session.monotonic", return_value=12.0):
+            session._handle_pending_operator_command()
+
+        self.assertFalse(session.manual_controller.active)
+        self.assertEqual(session.session_state, "REACQUIRE_VERIFY")
+
     def test_refreshed_direction_cancels_old_watchdog_generation(self) -> None:
         session, drone, _detector = build_session()
         enter_manual(session)

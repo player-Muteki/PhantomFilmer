@@ -65,7 +65,14 @@ class UltralyticsPersonDetector:
             raise RuntimeError(
                 "缺少 ReID 行人检测依赖：请安装 requirements-reid.txt。"
             ) from exc
-        self.model = YOLO(model_path)
+        configured_path = Path(model_path).expanduser()
+        packaged_path = _resolve_project_path(model_path)
+        # Source runs and PyInstaller runs both keep configured assets below
+        # their respective project roots. Resolve an existing relative asset
+        # before handing it to Ultralytics so a packaged sidecar never falls
+        # back to an online model download.
+        resolved_path = packaged_path if packaged_path.is_file() else configured_path
+        self.model = YOLO(str(resolved_path))
         self.confidence = confidence
         self.device = device
         self.visual_object_detection_enabled = bool(visual_object_detection_enabled)

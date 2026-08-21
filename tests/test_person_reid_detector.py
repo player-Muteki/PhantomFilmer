@@ -130,6 +130,19 @@ class PersonReIDDetectorTestCase(unittest.TestCase):
                 UltralyticsPersonDetector("local.pt", 0.5, "cpu")
             self.assertEqual(os.environ["YOLO_OFFLINE"], "0")
 
+    def test_yolo_resolves_an_existing_project_relative_model(self):
+        fake_ultralytics = SimpleNamespace(YOLO=FakeYOLO)
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            model = root / "weights" / "yolov8n.pt"
+            model.parent.mkdir()
+            model.touch()
+            with patch("vision.person_reid_detect.PROJECT_ROOT", root), patch.dict(
+                sys.modules, {"ultralytics": fake_ultralytics}
+            ):
+                detector = UltralyticsPersonDetector("weights/yolov8n.pt", 0.5, "cpu")
+            self.assertEqual(detector.model.model_path, str(model))
+
     def test_yolo_scene_detection_separates_people_and_visual_objects(self):
         fake_ultralytics = SimpleNamespace(YOLO=FakeSceneYOLO)
         with patch.dict(sys.modules, {"ultralytics": fake_ultralytics}):
