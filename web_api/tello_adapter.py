@@ -112,6 +112,14 @@ class RealTelloAdapter:
         except Exception as exc:
             raise RuntimeError("清零真机控制量失败。") from exc
 
+    def takeoff(self) -> None:
+        self._require_connection()
+        try:
+            with self._command_lock:
+                self._tello.takeoff()
+        except Exception as exc:
+            raise RuntimeError("真机起飞失败，请检查电量、桨叶保护罩和周围环境。") from exc
+
     def land(self) -> None:
         self._require_connection()
         try:
