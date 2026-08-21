@@ -8,10 +8,9 @@ from threading import Event, Lock, Timer
 from time import monotonic, sleep
 from typing import Any, Callable, Dict, Optional, Tuple
 
+from control.features import build_features
 from control.fixed_demo import FixedDemoManeuver, FixedDemoProgress
 from control.follow_control import FollowController, RCCommand
-from control.side_follow_control import SideFollowController
-from control.features import build_features
 from control.kernel.arbitration import ArbitrationEngine, FollowTickOutcome
 from control.kernel.features import ArbitrationContext
 from control.kernel.phases import KernelPhase
@@ -19,6 +18,9 @@ from control.kernel.session import KernelSession
 from control.manual_control import ManualControlController
 from control.motion_arbiter import MotionArbiter, MotionContext
 from control.obstacle_avoidance import AvoidanceDecision, ObstacleAvoidancePlanner
+from control.side_follow_control import SideFollowController
+from control.side_follow_logging import SideFollowEventRecorder, SideFollowLogConfig
+from control.side_follow_recovery import SideFollowRecoveryController
 from control.target_search import TargetSearchController
 from drone.drone_adapter import DroneAdapter
 from drone.front_tof import FrontToFMonitor
@@ -79,15 +81,12 @@ class FollowSession:
         )
         obstacle_config = config.get("obstacle", {}) if isinstance(config, dict) else {}
         front_tof_enabled = (
-            (
-                self.motion_arbiter is not None
-                and isinstance(obstacle_config, dict)
-                and bool(obstacle_config.get("front_tof_enabled", False))
-            )
-            or (
-                self.manual_controller.config.enabled
-                and self.manual_controller.config.front_tof_guard_enabled
-            )
+            self.motion_arbiter is not None
+            and isinstance(obstacle_config, dict)
+            and bool(obstacle_config.get("front_tof_enabled", False))
+        ) or (
+            self.manual_controller.config.enabled
+            and self.manual_controller.config.front_tof_guard_enabled
         )
         self.front_tof_monitor = (
             FrontToFMonitor.from_config(drone, config) if front_tof_enabled else None
@@ -111,12 +110,8 @@ class FollowSession:
         self._lifecycle_lock = Lock()
         self.display_enabled = bool(config.get("display_console_camera", True))
         self.frame_failure_limit = int(config.get("frame_failure_limit", 30))
-        self.height_failure_limit = max(
-            1, int(config.get("height_failure_limit", 10))
-        )
-        self.height_filter_window = max(
-            1, int(config.get("height_filter_window", 5))
-        )
+        self.height_failure_limit = max(1, int(config.get("height_failure_limit", 10)))
+        self.height_filter_window = max(1, int(config.get("height_filter_window", 5)))
         self.height_max_valid_cm = max(
             self.safety_manager.config.max_height_cm,
             int(config.get("height_max_valid_cm", 500)),
@@ -135,9 +130,7 @@ class FollowSession:
             if enable_target_search is None
             else bool(enable_target_search)
         )
-        self.target_search_enabled = (
-            search_requested and self.target_search.enabled
-        )
+        self.target_search_enabled = search_requested and self.target_search.enabled
         self.search_reason = ""
 
         self.camera: Optional[CameraStream] = None
@@ -166,6 +159,10 @@ class FollowSession:
         self.follow_mode = "normal"
         self.side_follow_controller = SideFollowController.from_config(
             self.follow_controller, config
+        )
+        self.side_follow_recovery = SideFollowRecoveryController.from_config(config)
+        self.side_follow_logger = SideFollowEventRecorder(
+            SideFollowLogConfig.from_config(config)
         )
         vision_config = config.get("vision", {}) if isinstance(config, dict) else {}
         self.side_follow_available = bool(
@@ -222,10 +219,7 @@ class FollowSession:
         )
         while not self.stop_event.is_set():
             if monotonic() - started_at >= self.initial_target_lock_timeout_seconds:
-                print(
-                    "地面识别超时，未起飞。"
-                    "请调整人物位置、光线或参考照片。"
-                )
+                print("地面识别超时，未起飞。" "请调整人物位置、光线或参考照片。")
                 return {}
 
             frame = self._read_frame()
@@ -587,7 +581,9 @@ class FollowSession:
         detect_failures = 0
         next_battery_check = monotonic()
         self.session_state = "REACHING_BASE_HEIGHT"
-        print(f"正在到达基础悬停高度：{target_height} cm（不受 ReID 结果和总时限影响）。")
+        print(
+            f"正在到达基础悬停高度：{target_height} cm（不受 ReID 结果和总时限影响）。"
+        )
 
         while not self.stop_event.is_set():
             now = monotonic()
@@ -806,7 +802,9 @@ class FollowSession:
             )
             return command, "keep"
 
-        lost_action = self.safety_manager.update_target_lost(bool(target_result.get("found")))
+        lost_action = self.safety_manager.update_target_lost(
+            bool(target_result.get("found"))
+        )
         if lost_action == "land":
             self.session_state = "TARGET_LOST_LANDING"
             return self.follow_controller.hover(), lost_action
@@ -815,7 +813,12 @@ class FollowSession:
             return self.follow_controller.hover(), lost_action
 
         self.session_state = "FOLLOWING"
-        return self.follow_controller.compute_command(target_result, frame_width, frame_height), lost_action
+        return (
+            self.follow_controller.compute_command(
+                target_result, frame_width, frame_height
+            ),
+            lost_action,
+        )
 
     def _side_follow_outcome(
         self,
@@ -823,24 +826,32 @@ class FollowSession:
         frame_width: int,
         frame_height: int,
         now: float,
+        yaw_deg: Optional[int] = None,
     ) -> FollowTickOutcome:
-        """Run side following without invoking search or obstacle features."""
+        """Run side following and its dedicated target-loss recovery."""
         if self.paused or self.emergency_stop:
             return FollowTickOutcome(
                 command=self.follow_controller.hover(),
                 state="PAUSED" if self.paused else "",
             )
 
-        found = bool(target_result.get("found")) and not bool(
-            target_result.get("is_predicted", False)
+        # This recovery owns the entire loss timeline, so continuously clear the
+        # generic hover/land timer rather than letting its 8-second deadline
+        # interrupt the lateral-search -> full-turn -> final-hover sequence.
+        self.safety_manager.update_target_lost(True)
+        recovery = self.side_follow_recovery.update(
+            target_result,
+            frame_width,
+            now,
+            yaw_deg,
         )
-        lost_action = self.safety_manager.update_target_lost(found)
-        if not found:
-            landing = lost_action == "land"
+        if recovery is not None:
+            landing = recovery.requires_landing
+            limited = self.safety_manager.limit_rc_command(*recovery.command.as_tuple())
             return FollowTickOutcome(
-                command=self.follow_controller.hover(),
-                state="TARGET_LOST_LANDING" if landing else "SIDE_TARGET_LOST",
-                reason="side-follow target lost",
+                command=RCCommand(*limited),
+                state=recovery.state,
+                reason=recovery.reason,
                 requires_landing=landing,
                 landing_state="TARGET_LOST_LANDING" if landing else None,
                 lost_land=landing,
@@ -850,15 +861,38 @@ class FollowSession:
             target_result, frame_width, frame_height, now
         )
         debug = self.side_follow_controller.last_debug
-        selected = (
-            "?" if debug.selected_angle is None else str(debug.selected_angle)
-        )
+        selected = "?" if debug.selected_angle is None else str(debug.selected_angle)
         current = "?" if debug.current_angle is None else f"{debug.current_angle:.1f}"
         direction = debug.orbit_direction or "TRACK"
         return FollowTickOutcome(
             command=command,
             state=debug.state,
             reason=f"side target={selected} current={current} direction={direction}",
+        )
+
+    def _record_side_follow_tick(
+        self,
+        target_result: Dict[str, object],
+        outcome: FollowTickOutcome,
+        frame_width: int,
+        frame_height: int,
+    ) -> None:
+        """Queue one side-follow decision without touching flight output."""
+        self.side_follow_logger.record(
+            mode=self.mode_label,
+            target_result=target_result,
+            debug=self.side_follow_controller.last_debug,
+            command=outcome.command,
+            state=outcome.state or self.session_state,
+            reason=outcome.reason,
+            frame_width=frame_width,
+            frame_height=frame_height,
+            battery_percent=self.last_battery,
+            height_cm=self.last_height,
+            aircraft_yaw_deg=self.last_yaw,
+            control_hz=self.control_hz,
+            vision_fps=self.fps,
+            recovery=self.side_follow_recovery.last_debug,
         )
 
     def send_command(self, command: RCCommand) -> None:
@@ -952,8 +986,7 @@ class FollowSession:
                 # therefore cannot toggle again as soon as the first fixed
                 # cooldown expires; the operator must release, wait, and press.
                 self._manual_mode_switch_suppressed_until = (
-                    now
-                    + self.manual_controller.config.mode_switch_debounce_seconds
+                    now + self.manual_controller.config.mode_switch_debounce_seconds
                 )
                 return None
             if self.manual_controller.active:
@@ -1009,15 +1042,23 @@ class FollowSession:
         if obstacle_detector is None and self.motion_arbiter is not None:
             obstacle_detector = self.motion_arbiter.detector
         if obstacle_detector is not None and self.follow_mode != "side":
-            debug_frame = obstacle_detector.draw_debug(debug_frame, self.last_obstacle_result)
+            debug_frame = obstacle_detector.draw_debug(
+                debug_frame, self.last_obstacle_result
+            )
         frame_height, frame_width = debug_frame.shape[:2]
         frame_center = (frame_width // 2, frame_height // 2)
-        vertical_dead_zone_px = int(frame_height * self.follow_controller.vertical_dead_zone_ratio / 2)
+        vertical_dead_zone_px = int(
+            frame_height * self.follow_controller.vertical_dead_zone_ratio / 2
+        )
         if vertical_dead_zone_px > 0:
             upper_y = max(0, frame_center[1] - vertical_dead_zone_px)
             lower_y = min(frame_height - 1, frame_center[1] + vertical_dead_zone_px)
-            cv2.line(debug_frame, (0, upper_y), (frame_width, upper_y), (80, 80, 255), 1)
-            cv2.line(debug_frame, (0, lower_y), (frame_width, lower_y), (80, 80, 255), 1)
+            cv2.line(
+                debug_frame, (0, upper_y), (frame_width, upper_y), (80, 80, 255), 1
+            )
+            cv2.line(
+                debug_frame, (0, lower_y), (frame_width, lower_y), (80, 80, 255), 1
+            )
 
         if target_result.get("found") and target_result.get("center") is not None:
             target_center = target_result["center"]
@@ -1084,7 +1125,9 @@ class FollowSession:
                 "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
                 "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
             )
-            font_path = next((path for path in candidates if Path(path).is_file()), None)
+            font_path = next(
+                (path for path in candidates if Path(path).is_file()), None
+            )
             if font_path is not None:
                 self._state_label_font = ImageFont.truetype(font_path, 30)
             else:
@@ -1161,7 +1204,9 @@ class FollowSession:
         self.session_state = "CONTROL_READY"
         self._safe_zero_output()
         side_hint = "，按 s 进入侧向跟随" if self.side_follow_available else ""
-        print(f"已到达基础悬停高度。按 m 进入手动，按 a 进入自动{side_hint}；将持续悬停等待。")
+        print(
+            f"已到达基础悬停高度。按 m 进入手动，按 a 进入自动{side_hint}；将持续悬停等待。"
+        )
         frame_failures = 0
         height_failures = 0
         next_battery_check = monotonic()
@@ -1234,9 +1279,7 @@ class FollowSession:
                 (0, 255, 255),
                 2,
             )
-            preview = self._draw_state_label(
-                preview, "STATE: 等待选择", (255, 160, 0)
-            )
+            preview = self._draw_state_label(preview, "STATE: 等待选择", (255, 160, 0))
             cv2.imshow(self.window_name, preview)
             key = cv2.waitKey(1) & 0xFF
             if key in (ord("m"), ord("M")):
@@ -1257,10 +1300,14 @@ class FollowSession:
                 self.follow_mode = "side"
                 self.manual_controller.disable()
                 self.side_follow_controller.reset()
+                self.side_follow_recovery.reset()
+                self.side_follow_logger.reset(self.mode_label)
                 self.last_obstacle_result = None
                 self.last_avoidance_decision = None
                 self._safe_zero_output()
                 self.session_state = "SIDE_SAMPLING"
+                if self.side_follow_logger.log_path is not None:
+                    print(f"侧向飞行日志：{self.side_follow_logger.log_path}")
                 print("已选择侧向跟随：正在稳定测量朝向并自动选择 90° 或 270°。")
                 return "side"
             elif key in (ord("q"), ord("Q"), ord("e"), ord("E")):
@@ -1298,9 +1345,8 @@ class FollowSession:
         if callable(reset_detector):
             reset_detector()
         self.follow_controller.reset()
-        self.side_follow_controller.reset(
-            preserve_selection=self.follow_mode == "side"
-        )
+        self.side_follow_controller.reset(preserve_selection=self.follow_mode == "side")
+        self.side_follow_recovery.reset(preserve_direction=self.follow_mode == "side")
         self.target_search.reset()
         if self.motion_arbiter is not None:
             self.motion_arbiter.reset(self.mode_label)
@@ -1319,8 +1365,7 @@ class FollowSession:
     def _leave_manual_mode(self) -> None:
         """Hover, discard stale autonomy state, and restart fresh acquisition."""
         self._manual_mode_switch_suppressed_until = (
-            monotonic()
-            + self.manual_controller.config.mode_switch_debounce_seconds
+            monotonic() + self.manual_controller.config.mode_switch_debounce_seconds
         )
         self._cancel_manual_watchdog(force_hover=True)
         self._safe_zero_output()
@@ -1329,9 +1374,8 @@ class FollowSession:
         if callable(reset_detector):
             reset_detector()
         self.follow_controller.reset()
-        self.side_follow_controller.reset(
-            preserve_selection=self.follow_mode == "side"
-        )
+        self.side_follow_controller.reset(preserve_selection=self.follow_mode == "side")
+        self.side_follow_recovery.reset(preserve_direction=self.follow_mode == "side")
         self.target_search.reset()
         if self.motion_arbiter is not None:
             self.motion_arbiter.reset(self.mode_label)
@@ -1484,7 +1528,9 @@ class FollowSession:
                     self._manual_reacquire_tracker.reset()
                 frame_failures += 1
                 self._safe_zero_output()
-                print(f"未读取到视频帧，正在重试（{frame_failures}/{self.frame_failure_limit}）。")
+                print(
+                    f"未读取到视频帧，正在重试（{frame_failures}/{self.frame_failure_limit}）。"
+                )
                 if frame_failures >= self.frame_failure_limit:
                     print("连续无法获取无人机视频流，准备安全降落。")
                     self.session_state = "FRAME_LOST_LANDING"
@@ -1546,12 +1592,13 @@ class FollowSession:
                     )
             elif self.follow_mode == "side" and not self.manual_controller.active:
                 # 侧向模式按设计绕过 ArbitrationEngine，因此不会运行物体检测、
-                # 顶部 ToF 避障或目标搜索；会话层的电量、高度、视频与丢失保护保留。
+                # 顶部 ToF 避障或普通三层搜索；只运行侧向专用的丢失恢复状态机。
                 outcome = self._side_follow_outcome(
                     target_result,
                     frame_width,
                     frame_height,
                     monotonic(),
+                    yaw_deg=yaw,
                 )
             else:
                 # 每 tick 的仲裁由 ArbitrationEngine 唯一决定：暂停/急停、手动、
@@ -1596,6 +1643,10 @@ class FollowSession:
                 self.last_obstacle_result = outcome.obstacle_observation
                 self.last_avoidance_decision = outcome.avoidance_decision
             if outcome.requires_landing:
+                if self.follow_mode == "side" and not self.manual_controller.active:
+                    self._record_side_follow_tick(
+                        target_result, outcome, frame_width, frame_height
+                    )
                 self.session_state = outcome.landing_state
                 self._safe_zero_output()
                 break
@@ -1603,6 +1654,10 @@ class FollowSession:
             if not self.manual_controller.active:
                 battery = self._read_battery()
                 height = self._read_height()
+                if self.follow_mode == "side":
+                    self._record_side_follow_tick(
+                        target_result, outcome, frame_width, frame_height
+                    )
                 if height is None:
                     height_failures += 1
                     self._safe_zero_output()
@@ -1672,7 +1727,9 @@ class FollowSession:
                     self._control_rate_warning_shown = False
 
             if self.display_enabled:
-                debug_frame = self.draw_debug_frame(frame, target_result, self.last_command, battery, height)
+                debug_frame = self.draw_debug_frame(
+                    frame, target_result, self.last_command, battery, height
+                )
                 cv2.imshow(self.window_name, debug_frame)
                 key = cv2.waitKey(1) & 0xFF
                 action = self.handle_key(key)
@@ -1726,6 +1783,7 @@ class FollowSession:
             reset_method()
         self.follow_controller.reset()
         self.side_follow_controller.reset()
+        self.side_follow_recovery.reset()
         if self.motion_arbiter is not None:
             self.motion_arbiter.reset(self.mode_label)
         else:
@@ -1758,7 +1816,9 @@ class FollowSession:
         """Read non-blocking runtime battery telemetry when the adapter supports it."""
         try:
             cached_reader = getattr(self.drone, "get_cached_battery", None)
-            reader = cached_reader if callable(cached_reader) else self.drone.get_battery
+            reader = (
+                cached_reader if callable(cached_reader) else self.drone.get_battery
+            )
             self.last_battery = int(reader())
         except RuntimeError as exc:
             print(f"读取电量失败：{exc}")

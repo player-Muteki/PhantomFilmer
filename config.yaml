@@ -83,7 +83,12 @@ target_lock_exit_vertical_dead_zone_ratio: 0.15
 # 侧向跟随由 s 键进入；只使用 ReID + JointBDOE，不进入自动避障仲裁。
 side_follow:
   enabled: true
-  # 连续角度足够稳定后，只选择一次离当前角度更近的 90° 或 270°。
+  # 每次选择侧向模式后，逐控制帧异步记录JSONL；写盘失败不会阻塞飞控。
+  log_enabled: true
+  log_dir: logs/side_follow
+  log_every_n_frames: 1
+  log_queue_size: 256
+  # 首次选择最近侧面；首次锁定后，人物偏离时先横移居中，再重新选择最近侧面。
   orientation_stable_frames: 5
   orientation_max_deviation_deg: 18
   minimum_detection_confidence: 0.30
@@ -93,6 +98,11 @@ side_follow:
   # 连续多帧朝向偏离才判断为人物转身，避免角度抖动触发绕行。
   orbit_entry_frames: 2
   lock_stable_frames: 6
+  # 首次侧面锁定后，人物居中时必须连续5帧朝向稳定，才重新选择最近侧面。
+  centered_turn_stable_frames: 5
+  centered_turn_max_deviation_deg: 8
+  # 侧向中心容差为普通跟随的70%，即从0.08降至0.056（降低30%）。
+  center_tolerance_scale: 0.70
   # 跑道跟随：人物偏到画面左右时，飞机同方向横移，日常不偏航。
   tracking_lateral_kp: 70
   minimum_tracking_lateral_speed: 8
@@ -109,6 +119,14 @@ side_follow:
   maximum_orbit_yaw_speed: 30
   # 正面/背面与两侧等距时固定选择 90°，避免随机切边。
   tie_break_target_angle: 90
+  # 人物横向出画：先沿出画方向横移；超时后沿同方向旋转一整圈搜索；
+  # 仍未找到则悬停3秒并自动降落。旋转角度使用飞机yaw累计，12秒仅作无yaw兜底。
+  lost_lateral_search_seconds: 3.0
+  lost_lateral_search_speed: 20
+  lost_rotation_yaw_speed: 30
+  lost_rotation_degrees: 360
+  lost_rotation_fallback_seconds: 12.0
+  lost_final_hover_seconds: 3.0
 control_interval: 0.05
 # 控制率低于该值（Hz）时控制台会周期性告警，提示检测或显示处理过慢。
 min_control_hz: 8

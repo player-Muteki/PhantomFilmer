@@ -18,7 +18,6 @@ from drone.fake_adapter import FakeDroneAdapter
 from drone.front_tof import FrontToFSnapshot
 from drone.safety import SafetyConfig, SafetyManager
 
-
 FRESH_TARGET = {
     "found": True,
     "is_predicted": False,
@@ -283,7 +282,9 @@ class FollowSessionManualIntegrationTestCase(unittest.TestCase):
         self.assertEqual(detector.detect_calls, 0)
         self.assertEqual(session.camera.reads, 3)
         self.assertTrue(drone.command_log)
-        self.assertTrue(all(command == (0, 0, 0, 0) for _, command in drone.command_log))
+        self.assertTrue(
+            all(command == (0, 0, 0, 0) for _, command in drone.command_log)
+        )
         session._cancel_manual_watchdog(force_hover=True)
 
     def test_control_ready_low_battery_lands_before_accepting_a_mode(self) -> None:
@@ -316,6 +317,7 @@ class FollowSessionManualIntegrationTestCase(unittest.TestCase):
     def test_control_ready_s_selects_side_without_running_reid(self) -> None:
         session, _drone, detector = build_session(display=True)
         session.side_follow_available = True
+        session.side_follow_logger.reset = Mock()
         session.manual_controller.make_available()
         session.camera = ScriptedCamera(session, [frame()])
 
@@ -333,6 +335,7 @@ class FollowSessionManualIntegrationTestCase(unittest.TestCase):
         self.assertEqual(session.session_state, "SIDE_SAMPLING")
         self.assertFalse(session.manual_controller.active)
         self.assertEqual(detector.detect_calls, 0)
+        session.side_follow_logger.reset.assert_called_once_with(session.mode_label)
 
     def test_control_ready_sensor_failures_converge_to_landing_states(self) -> None:
         high_session, high_drone, _ = build_session(display=True)
@@ -386,7 +389,9 @@ class FollowSessionManualIntegrationTestCase(unittest.TestCase):
                 self.assertEqual(session.session_state, expected)
                 self.assertEqual(drone.command_log[-1][1], (0, 0, 0, 0))
 
-    def test_manual_loop_skips_reid_and_emits_only_operator_lateral_motion(self) -> None:
+    def test_manual_loop_skips_reid_and_emits_only_operator_lateral_motion(
+        self,
+    ) -> None:
         session, _drone, detector = build_session()
         session.camera = ScriptedCamera(session, [frame(), frame()])
         emitted = []
@@ -398,7 +403,9 @@ class FollowSessionManualIntegrationTestCase(unittest.TestCase):
                 session._loop()
 
         self.assertEqual(detector.detect_calls, 0)
-        self.assertEqual([command.as_tuple() for command in emitted], [(20, 0, 0, 0)] * 2)
+        self.assertEqual(
+            [command.as_tuple() for command in emitted], [(20, 0, 0, 0)] * 2
+        )
         session._cancel_manual_watchdog(force_hover=True)
 
     def test_side_loop_bypasses_motion_arbiter(self) -> None:
@@ -413,12 +420,55 @@ class FollowSessionManualIntegrationTestCase(unittest.TestCase):
             detector=CountingDetector([target]), motion_arbiter=arbiter
         )
         session.follow_mode = "side"
+        session.side_follow_logger.record = Mock()
         session.camera = ScriptedCamera(session, [frame()])
 
         with patch("control.follow_session.sleep", return_value=None):
             session._loop()
 
         self.assertEqual(arbiter.decide_calls, 0)
+        session.side_follow_logger.record.assert_called_once()
+        logged = session.side_follow_logger.record.call_args.kwargs
+        self.assertEqual(logged["target_result"], target)
+        self.assertEqual(logged["command"], session.last_command)
+
+    def test_side_loss_moves_toward_last_seen_side_before_rotating(self) -> None:
+        session, _drone, _detector = build_session()
+        visible = dict(FRESH_TARGET)
+        lost = {"found": False, "is_predicted": False, "ambiguous": False}
+
+        session._side_follow_outcome(visible, 640, 480, now=0.0, yaw_deg=0)
+        lateral = session._side_follow_outcome(lost, 640, 480, now=1.0, yaw_deg=0)
+        rotating = session._side_follow_outcome(lost, 640, 480, now=4.0, yaw_deg=0)
+
+        self.assertEqual(lateral.state, "SIDE_LOST_LATERAL")
+        self.assertGreater(lateral.command.left_right, 0)
+        self.assertEqual(lateral.command.yaw, 0)
+        self.assertEqual(rotating.state, "SIDE_LOST_ROTATING")
+        self.assertGreater(rotating.command.yaw, 0)
+        self.assertEqual(rotating.command.left_right, 0)
+
+    def test_side_reacquisition_immediately_returns_to_position_control(self) -> None:
+        session, _drone, _detector = build_session()
+        visible = dict(FRESH_TARGET)
+        visible.update(
+            body_orientation_angle=90.0,
+            body_orientation_detection_confidence=0.9,
+            body_orientation_match_iou=0.8,
+        )
+        lost = {"found": False, "is_predicted": False, "ambiguous": False}
+        for now in range(12):
+            session._side_follow_outcome(visible, 640, 480, now=float(now), yaw_deg=0)
+        session._side_follow_outcome(lost, 640, 480, now=12.0, yaw_deg=0)
+
+        reacquired = session._side_follow_outcome(
+            visible, 640, 480, now=12.1, yaw_deg=0
+        )
+
+        self.assertEqual(session.side_follow_recovery.state, "IDLE")
+        self.assertEqual(reacquired.state, "SIDE_POSITION_TRACKING")
+        self.assertGreater(reacquired.command.left_right, 0)
+        self.assertEqual(reacquired.command.yaw, 0)
 
     def test_repeated_m_events_require_a_quiet_gap_before_second_toggle(self) -> None:
         session, _drone, _detector = build_session()
@@ -482,7 +532,9 @@ class FollowSessionManualIntegrationTestCase(unittest.TestCase):
             session._loop()
 
         nonzero_index = next(
-            index for index, (_, command) in enumerate(drone.command_log) if command != (0, 0, 0, 0)
+            index
+            for index, (_, command) in enumerate(drone.command_log)
+            if command != (0, 0, 0, 0)
         )
         zero_index = next(
             index
@@ -494,8 +546,7 @@ class FollowSessionManualIntegrationTestCase(unittest.TestCase):
         self.assertLess(zero_time - nonzero_time, 0.15)
         self.assertTrue(
             all(
-                command == (0, 0, 0, 0)
-                for _, command in drone.command_log[zero_index:]
+                command == (0, 0, 0, 0) for _, command in drone.command_log[zero_index:]
             )
         )
         session._cancel_manual_watchdog(force_hover=True)
@@ -539,6 +590,7 @@ class FollowSessionManualIntegrationTestCase(unittest.TestCase):
 
     def test_cleanup_zeroes_before_waiting_for_front_tof_stop(self) -> None:
         session, drone, _detector = build_session()
+        session.side_follow_logger.close = Mock()
 
         class CheckingMonitor(SnapshotMonitor):
             command_seen_at_stop = None
@@ -554,6 +606,7 @@ class FollowSessionManualIntegrationTestCase(unittest.TestCase):
         session._kernel._land_and_cleanup()
 
         self.assertEqual(monitor.command_seen_at_stop, (0, 0, 0, 0))
+        session.side_follow_logger.close.assert_called_once_with()
 
     def test_manual_release_hovers_for_five_fresh_frames_then_allows_auto(self) -> None:
         session, _drone, detector = build_session()
@@ -573,7 +626,9 @@ class FollowSessionManualIntegrationTestCase(unittest.TestCase):
 
         self.assertEqual(detector.detect_calls, 6)
         self.assertEqual(session._arbitration.arbitrate.call_count, 1)
-        self.assertEqual([command.as_tuple() for command in emitted[:5]], [(0, 0, 0, 0)] * 5)
+        self.assertEqual(
+            [command.as_tuple() for command in emitted[:5]], [(0, 0, 0, 0)] * 5
+        )
         self.assertEqual(emitted[5].as_tuple(), (17, 0, 0, 0))
 
     def test_reacquire_count_resets_across_inference_failure(self) -> None:
@@ -591,16 +646,16 @@ class FollowSessionManualIntegrationTestCase(unittest.TestCase):
         emitted = []
         session.send_command = emitted.append
         session._arbitration.arbitrate = Mock(
-            return_value=FollowTickOutcome(
-                command=RCCommand(yaw=13), state="FOLLOWING"
-            )
+            return_value=FollowTickOutcome(command=RCCommand(yaw=13), state="FOLLOWING")
         )
 
         with patch("control.follow_session.sleep", return_value=None):
             session._loop()
 
         self.assertEqual(session._arbitration.arbitrate.call_count, 1)
-        self.assertEqual([command.as_tuple() for command in emitted[:-1]], [(0, 0, 0, 0)] * 7)
+        self.assertEqual(
+            [command.as_tuple() for command in emitted[:-1]], [(0, 0, 0, 0)] * 7
+        )
         self.assertEqual(emitted[-1].as_tuple(), (0, 0, 0, 13))
 
     def test_reacquire_count_resets_across_missing_video_frame(self) -> None:
@@ -624,7 +679,9 @@ class FollowSessionManualIntegrationTestCase(unittest.TestCase):
 
         self.assertEqual(detector.detect_calls, 8)
         self.assertEqual(session._arbitration.arbitrate.call_count, 1)
-        self.assertEqual([command.as_tuple() for command in emitted[:-1]], [(0, 0, 0, 0)] * 7)
+        self.assertEqual(
+            [command.as_tuple() for command in emitted[:-1]], [(0, 0, 0, 0)] * 7
+        )
         self.assertEqual(emitted[-1].as_tuple(), (0, 0, 11, 0))
 
     def test_manual_front_guard_creates_and_reuses_one_monitor(self) -> None:
@@ -649,11 +706,7 @@ class FollowSessionManualIntegrationTestCase(unittest.TestCase):
         session, drone, _detector = build_session()
         clock = FakeClock()
         session.pre_follow_maneuver = FixedDemoManeuver(
-            steps=(
-                FixedDemoStep(
-                    "forward", RCCommand(forward_backward=20), 1.0, 0.0
-                ),
-            ),
+            steps=(FixedDemoStep("forward", RCCommand(forward_backward=20), 1.0, 0.0),),
             control_interval=0.05,
             clock=clock,
             sleep_fn=clock.sleep,
@@ -677,10 +730,15 @@ class FollowSessionManualIntegrationTestCase(unittest.TestCase):
         self.assertTrue(session.airborne)
         self.assertEqual(session.session_state, "MANUAL")
         first_motion = next(
-            index for index, (_, command) in enumerate(drone.command_log) if command != (0, 0, 0, 0)
+            index
+            for index, (_, command) in enumerate(drone.command_log)
+            if command != (0, 0, 0, 0)
         )
         self.assertTrue(
-            all(command == (0, 0, 0, 0) for _, command in drone.command_log[first_motion + 1 :])
+            all(
+                command == (0, 0, 0, 0)
+                for _, command in drone.command_log[first_motion + 1 :]
+            )
         )
 
 

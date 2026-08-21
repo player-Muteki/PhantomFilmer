@@ -117,4 +117,7 @@ class KernelSession:
         session._stop_camera()
         if session.motion_arbiter is not None:
             session.motion_arbiter.close()
+        side_follow_logger = getattr(session, "side_follow_logger", None)
+        if side_follow_logger is not None:
+            side_follow_logger.close()
         session._destroy_window()

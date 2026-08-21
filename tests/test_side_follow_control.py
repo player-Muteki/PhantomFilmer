@@ -26,13 +26,24 @@ def controller(**overrides):
         target_area_ratio_min=0.22,
         target_area_ratio_max=0.32,
     )
-    config = SideFollowConfig(
-        enabled=True,
-        orientation_stable_frames=3,
-        lock_stable_frames=2,
-        **overrides,
-    )
+    settings = {
+        "enabled": True,
+        "orientation_stable_frames": 3,
+        "lock_stable_frames": 2,
+        "centered_turn_stable_frames": 1,
+    }
+    settings.update(overrides)
+    config = SideFollowConfig(**settings)
     return SideFollowController(follow, config)
+
+
+def lock_initial_side(side, *, angle=90):
+    """Feed centered observations until the first side lock is confirmed."""
+    for now in range(20):
+        side.compute_command(result(angle), 640, 480, now)
+        if side.last_debug.side_locked:
+            return now + 1
+    raise AssertionError("initial side did not lock")
 
 
 class SideFollowControllerTestCase(unittest.TestCase):
@@ -72,9 +83,7 @@ class SideFollowControllerTestCase(unittest.TestCase):
     def test_low_quality_or_predicted_angle_keeps_hovering(self):
         side = controller()
 
-        low_confidence = side.compute_command(
-            result(90, confidence=0.1), 640, 480, 0
-        )
+        low_confidence = side.compute_command(result(90, confidence=0.1), 640, 480, 0)
         predicted = result(90)
         predicted["is_predicted"] = True
         predicted_command = side.compute_command(predicted, 640, 480, 1)
@@ -110,6 +119,46 @@ class SideFollowControllerTestCase(unittest.TestCase):
         self.assertEqual(command.yaw, 0)
         self.assertEqual(side.last_debug.state, "SIDE_TRACKING")
 
+    def test_center_tolerance_is_reduced_by_thirty_percent_after_side_lock(self):
+        side = controller()
+        now = lock_initial_side(side)
+
+        inside = side.compute_command(result(90, center=(337, 240)), 640, 480, now)
+        outside = side.compute_command(result(90, center=(338, 240)), 640, 480, now + 1)
+
+        self.assertEqual(inside.left_right, 0)
+        self.assertGreater(outside.left_right, 0)
+        self.assertAlmostEqual(side.last_debug.center_tolerance_ratio, 0.056)
+        self.assertTrue(side.last_debug.position_priority)
+
+    def test_position_priority_then_reselects_nearest_side_after_centering(self):
+        side = controller()
+        now = lock_initial_side(side)
+
+        position_command = side.compute_command(
+            result(220, center=(500, 240)), 640, 480, now
+        )
+
+        self.assertEqual(side.selected_angle, 90)
+        self.assertEqual(side.last_debug.state, "SIDE_POSITION_TRACKING")
+        self.assertTrue(side.last_debug.position_priority)
+        self.assertTrue(side.last_debug.side_reselect_pending)
+        self.assertGreater(position_command.left_right, 0)
+        self.assertEqual(position_command.yaw, 0)
+
+        centered = side.compute_command(result(220), 640, 480, now + 1)
+
+        self.assertEqual(side.selected_angle, 270)
+        self.assertEqual(side.last_debug.state, "SIDE_TRACKING")
+        self.assertEqual(centered.left_right, 0)
+        self.assertEqual(centered.yaw, 0)
+
+        orbiting = side.compute_command(result(220), 640, 480, now + 2)
+
+        self.assertEqual(side.last_debug.state, "SIDE_ORBITING")
+        self.assertLess(orbiting.left_right, 0)
+        self.assertGreater(orbiting.yaw, 0)
+
     def test_single_noisy_turn_frame_does_not_start_orbit(self):
         side = controller()
         for now in range(3):
@@ -120,6 +169,29 @@ class SideFollowControllerTestCase(unittest.TestCase):
         self.assertEqual(command.left_right, 0)
         self.assertEqual(command.yaw, 0)
         self.assertEqual(side.last_debug.state, "SIDE_TRACKING")
+
+    def test_centered_turn_must_stabilize_before_reselecting_and_orbiting(self):
+        side = controller(
+            centered_turn_stable_frames=3,
+            centered_turn_max_deviation_deg=2.0,
+        )
+        now = lock_initial_side(side)
+
+        for offset, angle in enumerate((130, 150, 170, 220, 220), start=0):
+            command = side.compute_command(result(angle), 640, 480, now + offset)
+            self.assertEqual(command.left_right, 0)
+            self.assertEqual(command.yaw, 0)
+            self.assertEqual(side.last_debug.state, "SIDE_TURN_STABILIZING")
+            self.assertEqual(side.selected_angle, 90)
+
+        stable = side.compute_command(result(221), 640, 480, now + 5)
+        self.assertEqual(side.selected_angle, 270)
+        self.assertTrue(side.last_debug.centered_angle_stable)
+        self.assertEqual(stable.left_right, 0)
+
+        orbiting = side.compute_command(result(220), 640, 480, now + 6)
+        self.assertEqual(side.last_debug.state, "SIDE_ORBITING")
+        self.assertNotEqual(orbiting.left_right, 0)
 
     def test_larger_target_angle_orbits_clockwise_to_increase_angle(self):
         side = controller()
