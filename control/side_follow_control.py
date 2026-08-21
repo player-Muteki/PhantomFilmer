@@ -16,6 +16,7 @@ class SideFollowConfig:
     orientation_max_deviation_deg: float = 18.0
     minimum_detection_confidence: float = 0.30
     minimum_match_iou: float = 0.20
+    lost_confirm_seconds: float = 0.50
     angle_tolerance_deg: float = 12.0
     angle_exit_tolerance_deg: float = 20.0
     orbit_entry_frames: int = 2
@@ -83,6 +84,7 @@ class SideFollowConfig:
                 1.0, as_float("minimum_detection_confidence", 0.30)
             ),
             minimum_match_iou=min(1.0, as_float("minimum_match_iou", 0.20)),
+            lost_confirm_seconds=as_float("lost_confirm_seconds", 0.50),
             angle_tolerance_deg=tolerance,
             angle_exit_tolerance_deg=exit_tolerance,
             orbit_entry_frames=as_int("orbit_entry_frames", 2),

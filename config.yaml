@@ -98,6 +98,9 @@ side_follow:
   orientation_max_deviation_deg: 18
   minimum_detection_confidence: 0.30
   minimum_match_iou: 0.20
+  # 单帧或短暂漏检只悬停；连续丢失达到该时间后才进入搜索，避免状态反复跳变。
+  # 前向跟随复用同一参数。
+  lost_confirm_seconds: 0.50
   angle_tolerance_deg: 12
   angle_exit_tolerance_deg: 20
   # 连续多帧朝向偏离才判断为人物转身，避免角度抖动触发绕行。

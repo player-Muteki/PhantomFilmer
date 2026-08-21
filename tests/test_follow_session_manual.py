@@ -397,14 +397,18 @@ class FollowSessionManualIntegrationTestCase(unittest.TestCase):
                 visible, 640, 480, now=float(now), yaw_deg=0
             )
         self.assertEqual(session.front_follow_controller.selected_angle, 180)
-        session._front_follow_outcome(lost, 640, 480, now=12.0, yaw_deg=0)
+        confirming = session._front_follow_outcome(
+            lost, 640, 480, now=12.0, yaw_deg=0
+        )
+        session._front_follow_outcome(lost, 640, 480, now=12.5, yaw_deg=0)
+        self.assertEqual(confirming.state, "FRONT_LOST_CONFIRMING")
 
         verifying = [
             session._front_follow_outcome(
                 visible,
                 640,
                 480,
-                now=12.1 + index * 0.1,
+                now=12.6 + index * 0.1,
                 yaw_deg=0,
             )
             for index in range(5)
@@ -414,7 +418,7 @@ class FollowSessionManualIntegrationTestCase(unittest.TestCase):
         self.assertEqual(session.follow_mode, "front")
         self.assertIsNone(session.front_follow_controller.selected_angle)
         resumed = session._front_follow_outcome(
-            visible, 640, 480, now=12.7, yaw_deg=0
+            visible, 640, 480, now=13.2, yaw_deg=0
         )
         self.assertEqual(resumed.state, "FRONT_SAMPLING")
         self.assertEqual(resumed.command.as_tuple(), (0, 0, 0, 0))
@@ -601,11 +605,15 @@ class FollowSessionManualIntegrationTestCase(unittest.TestCase):
         lost = {"found": False, "is_predicted": False, "ambiguous": False}
 
         session._side_follow_outcome(visible, 640, 480, now=0.0, yaw_deg=0)
-        hold = session._side_follow_outcome(lost, 640, 480, now=1.0, yaw_deg=0)
+        confirming = session._side_follow_outcome(
+            lost, 640, 480, now=1.0, yaw_deg=0
+        )
+        hold = session._side_follow_outcome(lost, 640, 480, now=1.5, yaw_deg=0)
         last_direction = session._side_follow_outcome(
-            lost, 640, 480, now=2.1, yaw_deg=0
+            lost, 640, 480, now=2.6, yaw_deg=0
         )
 
+        self.assertEqual(confirming.state, "SIDE_LOST_CONFIRMING")
         self.assertEqual(hold.state, "LOST_HOLD")
         self.assertEqual(hold.command.as_tuple(), (0, 0, 0, 0))
         self.assertEqual(last_direction.state, "SEARCH_LAST_DIRECTION")
@@ -620,11 +628,15 @@ class FollowSessionManualIntegrationTestCase(unittest.TestCase):
         lost = {"found": False, "is_predicted": False, "ambiguous": False}
 
         session._side_follow_outcome(visible, 640, 480, now=0.0, yaw_deg=0)
-        hold = session._side_follow_outcome(lost, 640, 480, now=1.0, yaw_deg=0)
+        confirming = session._side_follow_outcome(
+            lost, 640, 480, now=1.0, yaw_deg=0
+        )
+        hold = session._side_follow_outcome(lost, 640, 480, now=1.5, yaw_deg=0)
         searching = session._side_follow_outcome(
-            lost, 640, 480, now=2.1, yaw_deg=0
+            lost, 640, 480, now=2.6, yaw_deg=0
         )
 
+        self.assertEqual(confirming.state, "SIDE_LOST_CONFIRMING")
         self.assertEqual(hold.state, "LOST_HOLD")
         self.assertEqual(searching.state, "SEARCH_LAST_DIRECTION")
         self.assertEqual(searching.command.left_right, 0)
@@ -641,7 +653,11 @@ class FollowSessionManualIntegrationTestCase(unittest.TestCase):
         lost = {"found": False, "is_predicted": False, "ambiguous": False}
         for now in range(12):
             session._side_follow_outcome(visible, 640, 480, now=float(now), yaw_deg=0)
-        session._side_follow_outcome(lost, 640, 480, now=12.0, yaw_deg=0)
+        confirming = session._side_follow_outcome(
+            lost, 640, 480, now=12.0, yaw_deg=0
+        )
+        session._side_follow_outcome(lost, 640, 480, now=12.5, yaw_deg=0)
+        self.assertEqual(confirming.state, "SIDE_LOST_CONFIRMING")
 
         verifying = []
         for index in range(5):
@@ -650,7 +666,7 @@ class FollowSessionManualIntegrationTestCase(unittest.TestCase):
                     visible,
                     640,
                     480,
-                    now=12.1 + index * 0.1,
+                    now=12.6 + index * 0.1,
                     yaw_deg=0,
                 )
             )
@@ -663,10 +679,33 @@ class FollowSessionManualIntegrationTestCase(unittest.TestCase):
         self.assertIsNone(session.side_follow_controller.selected_angle)
 
         resumed = session._side_follow_outcome(
-            visible, 640, 480, now=12.7, yaw_deg=0
+            visible, 640, 480, now=13.2, yaw_deg=0
         )
         self.assertEqual(resumed.state, "SIDE_SAMPLING")
         self.assertEqual(resumed.command.as_tuple(), (0, 0, 0, 0))
+
+    def test_short_side_dropout_recovers_without_entering_search(self) -> None:
+        session, _drone, _detector = build_session()
+        visible = dict(FRESH_TARGET)
+        visible.update(
+            body_orientation_angle=90.0,
+            body_orientation_detection_confidence=0.9,
+            body_orientation_match_iou=0.8,
+        )
+        lost = {"found": False, "is_predicted": False, "ambiguous": False}
+        session._side_follow_outcome(visible, 640, 480, now=0.0, yaw_deg=0)
+
+        confirming = session._side_follow_outcome(
+            lost, 640, 480, now=1.0, yaw_deg=0
+        )
+        recovered = session._side_follow_outcome(
+            visible, 640, 480, now=1.3, yaw_deg=0
+        )
+
+        self.assertEqual(confirming.state, "SIDE_LOST_CONFIRMING")
+        self.assertFalse(session.target_search.searching)
+        self.assertNotEqual(recovered.state, "LOST_HOLD")
+        self.assertIsNone(session._orientation_lost_started_at)
 
     def test_repeated_m_events_require_a_quiet_gap_before_second_toggle(self) -> None:
         session, _drone, _detector = build_session()

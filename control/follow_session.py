@@ -158,6 +158,7 @@ class FollowSession:
         self._pending_follow_mode: Optional[str] = None
         self._mode_switch_tracker: Optional[TargetLockTracker] = None
         self._mode_switch_suppressed_until = 0.0
+        self._orientation_lost_started_at: Optional[float] = None
         self.follow_mode = "normal"
         self.side_follow_controller = SideFollowController.from_config(
             self.follow_controller, config
@@ -891,6 +892,31 @@ class FollowSession:
                 state="PAUSED" if self.paused else "",
             )
 
+        trustworthy_target = (
+            bool(target_result.get("found"))
+            and not bool(target_result.get("is_predicted"))
+            and not bool(target_result.get("ambiguous"))
+        )
+        if not self.target_search.searching:
+            if trustworthy_target:
+                self._orientation_lost_started_at = None
+            else:
+                if self._orientation_lost_started_at is None:
+                    self._orientation_lost_started_at = now
+                lost_seconds = max(0.0, now - self._orientation_lost_started_at)
+                confirm_seconds = controller.config.lost_confirm_seconds
+                if lost_seconds < confirm_seconds:
+                    self.safety_manager.update_target_lost(True)
+                    prefix = "FRONT" if follow_mode == "front" else "SIDE"
+                    return FollowTickOutcome(
+                        command=self.follow_controller.hover(),
+                        state=f"{prefix}_LOST_CONFIRMING",
+                        reason=(
+                            f"{follow_mode} loss confirming "
+                            f"{lost_seconds:.2f}/{confirm_seconds:.2f}s"
+                        ),
+                    )
+
         # The shared TargetSearchController owns the complete loss timeline.
         # Calling it directly deliberately bypasses MotionArbiter, preserving the
         # orientation modes' no-obstacle behavior while keeping search identical.
@@ -908,6 +934,7 @@ class FollowSession:
                 # The person may have turned while absent. Hover for this proof
                 # frame, then reacquire the active mode's body-view angle.
                 controller.reset()
+                self._orientation_lost_started_at = None
             landing = decision.action == "land"
             limited = self.safety_manager.limit_rc_command(*decision.command.as_tuple())
             return FollowTickOutcome(
@@ -1007,6 +1034,7 @@ class FollowSession:
         self.follow_mode = mode
         self._pending_follow_mode = None
         self._mode_switch_tracker = None
+        self._orientation_lost_started_at = None
         self.target_search.reset()
         if mode == "side":
             self.side_follow_controller.reset()
@@ -1126,6 +1154,7 @@ class FollowSession:
 
         self._safe_zero_output()
         self._cancel_manual_watchdog(force_hover=False)
+        self._orientation_lost_started_at = None
         self.side_follow_logger.close()
         self.front_follow_logger.close()
         reset_detector = getattr(self.detector, "reset", None)
@@ -1572,6 +1601,7 @@ class FollowSession:
                 self.follow_mode = "side"
                 self.manual_controller.disable()
                 self.side_follow_controller.reset()
+                self._orientation_lost_started_at = None
                 self.target_search.reset()
                 self.side_follow_logger.reset(self.mode_label)
                 self.last_obstacle_result = None
@@ -1587,6 +1617,7 @@ class FollowSession:
                 self.follow_mode = "front"
                 self.manual_controller.disable()
                 self.front_follow_controller.reset()
+                self._orientation_lost_started_at = None
                 self.target_search.reset()
                 self.front_follow_logger.reset(f"{self.mode_label} FRONT")
                 self.last_obstacle_result = None
@@ -1623,6 +1654,7 @@ class FollowSession:
         self._manual_reacquire_tracker = None
         self._pending_follow_mode = None
         self._mode_switch_tracker = None
+        self._orientation_lost_started_at = None
         # Stop the previous owner before any detector/search/arbiter reset can
         # block on model or log cleanup.  This is the actual ownership handoff.
         self.session_state = "MANUAL"
@@ -2094,6 +2126,7 @@ class FollowSession:
         self._pending_follow_mode = None
         self._mode_switch_tracker = None
         self._mode_switch_suppressed_until = 0.0
+        self._orientation_lost_started_at = None
         reset_method = getattr(self.detector, "reset", None)
         if callable(reset_method):
             reset_method()
