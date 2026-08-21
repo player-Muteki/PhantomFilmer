@@ -12,12 +12,16 @@ class ControlReadyHandler:
 
     def run(self, session: Any, ctx: Any) -> Optional[KernelPhase]:
         controller = session.manual_controller
-        if not controller.config.enabled:
+        if not controller.config.enabled and not getattr(
+            session, "side_follow_available", False
+        ):
             return KernelPhase.PRE_FOLLOW
 
         controller.make_available()
         selection = session._wait_for_control_selection()
         if selection == "manual":
+            return KernelPhase.FOLLOW
+        if selection == "side":
             return KernelPhase.FOLLOW
         if selection == "auto":
             return KernelPhase.PRE_FOLLOW

@@ -1,0 +1,156 @@
+"""Unit tests for JointBDOE-driven 90/270-degree side following."""
+
+import unittest
+
+from control.follow_control import FollowController
+from control.side_follow_control import SideFollowConfig, SideFollowController
+from drone.safety import SafetyConfig, SafetyManager
+
+
+def result(angle, *, confidence=0.9, iou=0.8, center=(320, 240), area=80_000):
+    return {
+        "found": True,
+        "is_predicted": False,
+        "center": center,
+        "area": area,
+        "body_orientation_angle": angle,
+        "body_orientation_detection_confidence": confidence,
+        "body_orientation_match_iou": iou,
+    }
+
+
+def controller(**overrides):
+    safety = SafetyManager(SafetyConfig(20, 5, 220, 60, 35, 1, 3))
+    follow = FollowController(
+        safety,
+        target_area_ratio_min=0.22,
+        target_area_ratio_max=0.32,
+    )
+    config = SideFollowConfig(
+        enabled=True,
+        orientation_stable_frames=3,
+        lock_stable_frames=2,
+        **overrides,
+    )
+    return SideFollowController(follow, config)
+
+
+class SideFollowControllerTestCase(unittest.TestCase):
+    def test_waits_for_stable_angles_then_selects_nearest_90_side(self):
+        side = controller()
+
+        self.assertEqual(
+            side.compute_command(result(78), 640, 480, 0).as_tuple(),
+            (0, 0, 0, 0),
+        )
+        self.assertEqual(
+            side.compute_command(result(82), 640, 480, 1).as_tuple(),
+            (0, 0, 0, 0),
+        )
+        command = side.compute_command(result(80), 640, 480, 2)
+
+        self.assertEqual(side.selected_angle, 90)
+        self.assertEqual(command.left_right, 0)
+        self.assertEqual(side.last_debug.state, "SIDE_TRACKING")
+
+    def test_selects_nearest_270_side_and_never_switches_it(self):
+        side = controller()
+        for now, angle in enumerate((250, 252, 251)):
+            side.compute_command(result(angle), 640, 480, now)
+
+        self.assertEqual(side.selected_angle, 270)
+        side.compute_command(result(100), 640, 480, 4)
+        self.assertEqual(side.selected_angle, 270)
+
+    def test_circular_samples_across_zero_are_stable_and_use_tie_break(self):
+        side = controller(tie_break_target_angle=270)
+        for now, angle in enumerate((359, 1, 0)):
+            side.compute_command(result(angle), 640, 480, now)
+
+        self.assertEqual(side.selected_angle, 270)
+
+    def test_low_quality_or_predicted_angle_keeps_hovering(self):
+        side = controller()
+
+        low_confidence = side.compute_command(
+            result(90, confidence=0.1), 640, 480, 0
+        )
+        predicted = result(90)
+        predicted["is_predicted"] = True
+        predicted_command = side.compute_command(predicted, 640, 480, 1)
+
+        self.assertEqual(low_confidence.as_tuple(), (0, 0, 0, 0))
+        self.assertEqual(predicted_command.as_tuple(), (0, 0, 0, 0))
+        self.assertIsNone(side.selected_angle)
+
+    def test_enters_orbit_after_persistent_error_and_exits_when_side_recovers(self):
+        side = controller()
+        for now in range(3):
+            side.compute_command(result(91), 640, 480, now)
+
+        for now in range(3, 6):
+            orbiting = side.compute_command(result(60), 640, 480, now)
+        self.assertGreater(orbiting.left_right, 0)
+        self.assertEqual(side.last_debug.state, "SIDE_ORBITING")
+
+        side.compute_command(result(90), 640, 480, 6)
+        tracking = side.compute_command(result(90), 640, 480, 7)
+        self.assertEqual(tracking.left_right, 0)
+        self.assertEqual(side.last_debug.state, "SIDE_TRACKING")
+
+    def test_runner_moving_right_causes_lateral_tracking_without_yaw(self):
+        side = controller()
+        for now in range(3):
+            side.compute_command(result(90), 640, 480, now)
+
+        command = side.compute_command(result(90, center=(500, 240)), 640, 480, 3)
+
+        self.assertGreater(command.left_right, 0)
+        self.assertEqual(command.yaw, 0)
+        self.assertEqual(side.last_debug.state, "SIDE_TRACKING")
+
+    def test_single_noisy_turn_frame_does_not_start_orbit(self):
+        side = controller()
+        for now in range(3):
+            side.compute_command(result(90), 640, 480, now)
+
+        command = side.compute_command(result(50), 640, 480, 3)
+
+        self.assertEqual(command.left_right, 0)
+        self.assertEqual(command.yaw, 0)
+        self.assertEqual(side.last_debug.state, "SIDE_TRACKING")
+
+    def test_keeps_center_distance_and_height_axes_while_orbiting(self):
+        side = controller()
+        off_center = result(60, center=(500, 100), area=20_000)
+        for now in range(5):
+            command = side.compute_command(off_center, 640, 480, now)
+
+        self.assertGreater(command.left_right, 0)
+        self.assertGreater(command.yaw, 0)
+        self.assertGreater(command.forward_backward, 0)
+        self.assertGreater(command.up_down, 0)
+
+    def test_unfinished_orbit_times_out_to_hover(self):
+        side = controller(max_orbit_seconds=2.0)
+        for now in range(5):
+            side.compute_command(result(10), 640, 480, now)
+
+        timed_out = side.compute_command(result(10), 640, 480, 6.1)
+
+        self.assertEqual(timed_out.as_tuple(), (0, 0, 0, 0))
+        self.assertEqual(side.last_debug.state, "SIDE_TIMEOUT")
+
+    def test_manual_suspend_can_preserve_selected_side(self):
+        side = controller()
+        for now in range(3):
+            side.compute_command(result(250), 640, 480, now)
+        side.reset(preserve_selection=True)
+
+        self.assertEqual(side.selected_angle, 270)
+        side.compute_command(result(100), 640, 480, 10)
+        self.assertEqual(side.selected_angle, 270)
+
+
+if __name__ == "__main__":
+    unittest.main()

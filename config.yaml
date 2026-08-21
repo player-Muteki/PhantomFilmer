@@ -37,8 +37,8 @@ vision:
   reid_ambiguity_margin: 0.05
   # 真机初测保持为 0：未确认身份时立即视为丢失并悬停。
   reid_temporary_lost_frames: 0
-  # JointBDOE 仅输出人体相对摄像机的朝向角，当前不参与飞控。
-  # 先用 tools/jointbdoe_angle_eval.py 验证现场角度和 CPU 帧率后再开启。
+  # JointBDOE 输出人体相对摄像机的朝向角；普通自动模式仅显示，s 侧向模式用于飞控。
+  # 先用 tools/jointbdoe_angle_eval.py 验证现场角度和 CPU 帧率后再进行真机侧向测试。
   jointbdoe_enabled: true
   jointbdoe_source_path: "third_party/JointBDOE"
   jointbdoe_model_path: "weights/jointbdoe_s.pt"
@@ -80,6 +80,33 @@ target_lock_exit_area_ratio_min: 0.20
 target_lock_exit_area_ratio_max: 0.34
 target_lock_exit_horizontal_dead_zone_ratio: 0.12
 target_lock_exit_vertical_dead_zone_ratio: 0.15
+# 侧向跟随由 s 键进入；只使用 ReID + JointBDOE，不进入自动避障仲裁。
+side_follow:
+  enabled: true
+  # 连续角度足够稳定后，只选择一次离当前角度更近的 90° 或 270°。
+  orientation_stable_frames: 5
+  orientation_max_deviation_deg: 18
+  minimum_detection_confidence: 0.30
+  minimum_match_iou: 0.20
+  angle_tolerance_deg: 12
+  angle_exit_tolerance_deg: 20
+  # 连续多帧朝向偏离才判断为人物转身，避免角度抖动触发绕行。
+  orbit_entry_frames: 3
+  lock_stable_frames: 6
+  # 跑道跟随：人物偏到画面左右时，飞机同方向横移，日常不偏航。
+  tracking_lateral_kp: 55
+  minimum_tracking_lateral_speed: 8
+  maximum_tracking_lateral_speed: 20
+  tracking_lateral_direction_sign: 1
+  # 人物转身后的绕人修正：横移改变观察方位，偏航只负责保持人物居中。
+  lateral_kp: 0.22
+  minimum_lateral_speed: 8
+  maximum_lateral_speed: 20
+  # 真机低速悬停标定时若角度越走越远，将 1 改为 -1。
+  lateral_direction_sign: 1
+  # 正面/背面与两侧等距时固定选择 90°，避免随机切边。
+  tie_break_target_angle: 90
+  max_orbit_seconds: 20
 control_interval: 0.05
 # 控制率低于该值（Hz）时控制台会周期性告警，提示检测或显示处理过慢。
 min_control_hz: 8

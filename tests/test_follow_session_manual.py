@@ -313,6 +313,27 @@ class FollowSessionManualIntegrationTestCase(unittest.TestCase):
         self.assertFalse(session.manual_controller.active)
         self.assertEqual(detector.detect_calls, 0)
 
+    def test_control_ready_s_selects_side_without_running_reid(self) -> None:
+        session, _drone, detector = build_session(display=True)
+        session.side_follow_available = True
+        session.manual_controller.make_available()
+        session.camera = ScriptedCamera(session, [frame()])
+
+        with patch("cv2.imshow"), patch("cv2.putText"), patch(
+            "cv2.waitKey", return_value=ord("s")
+        ), patch.object(
+            session, "_draw_state_label", side_effect=lambda image, *_: image
+        ), patch(
+            "control.follow_session.sleep", return_value=None
+        ):
+            selection = session._wait_for_control_selection()
+
+        self.assertEqual(selection, "side")
+        self.assertEqual(session.follow_mode, "side")
+        self.assertEqual(session.session_state, "SIDE_SAMPLING")
+        self.assertFalse(session.manual_controller.active)
+        self.assertEqual(detector.detect_calls, 0)
+
     def test_control_ready_sensor_failures_converge_to_landing_states(self) -> None:
         high_session, high_drone, _ = build_session(display=True)
         high_session.manual_controller.make_available()
@@ -379,6 +400,25 @@ class FollowSessionManualIntegrationTestCase(unittest.TestCase):
         self.assertEqual(detector.detect_calls, 0)
         self.assertEqual([command.as_tuple() for command in emitted], [(20, 0, 0, 0)] * 2)
         session._cancel_manual_watchdog(force_hover=True)
+
+    def test_side_loop_bypasses_motion_arbiter(self) -> None:
+        arbiter = CountingMotionArbiter()
+        target = dict(FRESH_TARGET)
+        target.update(
+            body_orientation_angle=80.0,
+            body_orientation_detection_confidence=0.9,
+            body_orientation_match_iou=0.8,
+        )
+        session, _drone, _detector = build_session(
+            detector=CountingDetector([target]), motion_arbiter=arbiter
+        )
+        session.follow_mode = "side"
+        session.camera = ScriptedCamera(session, [frame()])
+
+        with patch("control.follow_session.sleep", return_value=None):
+            session._loop()
+
+        self.assertEqual(arbiter.decide_calls, 0)
 
     def test_repeated_m_events_require_a_quiet_gap_before_second_toggle(self) -> None:
         session, _drone, _detector = build_session()
