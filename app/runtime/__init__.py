@@ -14,6 +14,7 @@ from app.runtime.commands import (
     StopCommand,
     StopMissionCommand,
     TakeoffCommand,
+    ToggleMissionPauseCommand,
     command_from_payload,
 )
 from app.runtime.event_bus import EventBus, RuntimeEvent
@@ -53,5 +54,6 @@ __all__ = [
     "StopCommand",
     "StopMissionCommand",
     "TakeoffCommand",
+    "ToggleMissionPauseCommand",
     "command_from_payload",
 ]

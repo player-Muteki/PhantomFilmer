@@ -19,6 +19,13 @@ const api: PhantomFilmerApi = {
   getRuntimeCapabilities: () => invoke('runtime:capabilities'),
   getRuntimeSnapshot: () => invoke('runtime:snapshot'),
   getRuntimeEvents: (since: number) => invoke('runtime:events', since),
+  startMission: (options) => invoke('mission:start', options),
+  stopMission: () => invoke('mission:stop'),
+  emergencyStopMission: () => invoke('mission:emergency-stop'),
+  selectControlMode: (mode) => invoke('mission:control-mode', mode),
+  toggleMissionPause: () => invoke('mission:pause-toggle'),
+  listProfiles: () => invoke('profiles:list'),
+  enrollProfile: (name, overwrite) => invoke('profiles:enroll', { name, overwrite }),
   onBackendState: (listener) => {
     const handler = (_event: Electron.IpcRendererEvent, state: BackendState): void => listener(state)
     ipcRenderer.on('backend:state-changed', handler)

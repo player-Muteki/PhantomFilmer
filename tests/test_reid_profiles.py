@@ -8,6 +8,7 @@ import pytest
 
 from vision.reid_enrollment import build_reid_runtime_config
 from vision.reid_profiles import (
+    list_reid_profiles,
     load_reid_profile,
     save_reid_profile,
     validate_profile_name,
@@ -131,3 +132,19 @@ def test_manifest_is_plain_json_without_source_paths_or_filenames(tmp_path: Path
     assert str(photo.parent) not in manifest_text
     assert "front.jpg" not in manifest_text
     assert manifest["photos"][0]["index"] == 1
+
+
+def test_profile_listing_returns_safe_summary_and_skips_corrupt_entries(tmp_path: Path) -> None:
+    config = build_config(tmp_path)
+    photo = tmp_path / "front.jpg"
+    photo.write_bytes(b"photo")
+    profile_root = tmp_path / "profiles"
+    save_reid_profile("person-a", [1.0, 0.0], config, [photo], profile_root=profile_root)
+    corrupt = profile_root / "corrupt"
+    corrupt.mkdir()
+    (corrupt / "manifest.json").write_text("not-json", encoding="utf-8")
+
+    profiles = list_reid_profiles(profile_root)
+
+    assert [profile["name"] for profile in profiles] == ["person-a"]
+    assert profiles[0]["photoCount"] == 1

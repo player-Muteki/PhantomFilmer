@@ -71,6 +71,9 @@ class EmergencyLandCommand(CommandMetadata):
 @dataclass(frozen=True)
 class StartMissionCommand(CommandMetadata):
     mission: MissionKind
+    profile_name: str | None = None
+    initial_control_mode: ControlMode = ControlMode.NORMAL
+    obstacle_enabled: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -88,6 +91,11 @@ class SelectControlModeCommand(CommandMetadata):
     mode: ControlMode
 
 
+@dataclass(frozen=True)
+class ToggleMissionPauseCommand(CommandMetadata):
+    pass
+
+
 RuntimeCommand = Union[
     ConnectCommand,
     RefreshStatusCommand,
@@ -101,6 +109,7 @@ RuntimeCommand = Union[
     StopMissionCommand,
     EmergencyStopCommand,
     SelectControlModeCommand,
+    ToggleMissionPauseCommand,
 ]
 
 
@@ -120,6 +129,7 @@ def command_name(command: RuntimeCommand) -> str:
         StopMissionCommand: "mission.stop",
         EmergencyStopCommand: "mission.emergency_stop",
         SelectControlModeCommand: "mission.control_mode.select",
+        ToggleMissionPauseCommand: "mission.pause.toggle",
     }
     return names[type(command)]
 
@@ -152,6 +162,7 @@ def command_from_payload(payload: dict[str, Any]) -> RuntimeCommand:
         "flight.emergency_land": EmergencyLandCommand,
         "mission.stop": StopMissionCommand,
         "mission.emergency_stop": EmergencyStopCommand,
+        "mission.pause.toggle": ToggleMissionPauseCommand,
     }
     constructor = constructors.get(command_type)
     if constructor is not None:
@@ -161,7 +172,29 @@ def command_from_payload(payload: dict[str, Any]) -> RuntimeCommand:
             mission = MissionKind(str(payload.get("mission")))
         except ValueError as exc:
             raise ValueError("mission 类型无效。") from exc
-        return StartMissionCommand(mission=mission, **metadata)
+        profile_name = payload.get("profileName")
+        if profile_name is not None:
+            if not isinstance(profile_name, str) or not profile_name.strip():
+                raise ValueError("profileName 格式无效。")
+            profile_name = profile_name.strip()
+        try:
+            initial_control_mode = ControlMode(
+                str(payload.get("initialControlMode", ControlMode.NORMAL.value))
+            )
+        except ValueError as exc:
+            raise ValueError("initialControlMode 格式无效。") from exc
+        if initial_control_mode is ControlMode.NONE:
+            raise ValueError("自动任务的 initialControlMode 不能为 none。")
+        obstacle_enabled = payload.get("obstacleEnabled")
+        if obstacle_enabled is not None and not isinstance(obstacle_enabled, bool):
+            raise ValueError("obstacleEnabled 格式无效。")
+        return StartMissionCommand(
+            mission=mission,
+            profile_name=profile_name,
+            initial_control_mode=initial_control_mode,
+            obstacle_enabled=obstacle_enabled,
+            **metadata,
+        )
     if command_type == "mission.control_mode.select":
         try:
             mode = ControlMode(str(payload.get("mode")))

@@ -65,6 +65,26 @@ export type RuntimeCapabilities = {
   missions: string[]
   eventReplay: boolean
   rcLease: { required: boolean; ttlMs: number }
+  missionReadiness?: {
+    available: boolean
+    missingAssets: string[]
+    profileRequired: boolean
+  }
+}
+
+export type MissionStartOptions = {
+  mission: 'follow' | 'reid_follow' | 'fixed_demo'
+  profileName: string
+  initialControlMode: 'manual' | 'normal' | 'side' | 'front'
+  obstacleEnabled: boolean
+}
+
+export type ProfileSummary = {
+  name: string
+  createdAt?: string | null
+  photoCount?: number | null
+  embeddingDimension?: number | null
+  modelName?: string | null
 }
 
 export type RuntimeEventsResponse = {
@@ -89,5 +109,12 @@ export type PhantomFilmerApi = {
   getRuntimeCapabilities: () => Promise<RuntimeCapabilities>
   getRuntimeSnapshot: () => Promise<RuntimeSnapshot>
   getRuntimeEvents: (since: number) => Promise<RuntimeEventsResponse>
+  startMission: (options: MissionStartOptions) => Promise<{ ok: boolean; mission: string }>
+  stopMission: () => Promise<{ ok: boolean }>
+  emergencyStopMission: () => Promise<{ ok: boolean }>
+  selectControlMode: (mode: MissionStartOptions['initialControlMode']) => Promise<{ ok: boolean; mode: string }>
+  toggleMissionPause: () => Promise<{ ok: boolean }>
+  listProfiles: () => Promise<ProfileSummary[]>
+  enrollProfile: (name: string, overwrite: boolean) => Promise<ProfileSummary | null>
   onBackendState: (listener: (state: BackendState) => void) => () => void
 }

@@ -35,6 +35,17 @@ class OperatorCommandChannelTestCase(unittest.TestCase):
 
         self.assertGreater(second.sequence, first.sequence)
 
+    def test_filtered_receive_preserves_a_mode_choice_until_control_ready(self) -> None:
+        channel = OperatorCommandChannel()
+        mode = channel.submit(OperatorCommand.SELECT_SIDE)
+        hover = channel.submit(OperatorCommand.HOVER)
+
+        self.assertEqual(
+            channel.receive({OperatorCommand.HOVER}),
+            hover,
+        )
+        self.assertEqual(channel.receive(), mode)
+
     def test_attached_camera_does_not_restart_or_stop_an_owned_stream(self) -> None:
         drone = Mock()
         camera = CameraStream(drone, manage_stream=False)

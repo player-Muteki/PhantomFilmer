@@ -20,6 +20,7 @@ from app.runtime.commands import (
     StopCommand,
     StopMissionCommand,
     TakeoffCommand,
+    ToggleMissionPauseCommand,
     command_name,
 )
 from app.runtime.event_bus import EventBus
@@ -90,6 +91,8 @@ class MissionManager(ABC):
             return {"ok": True}
         if isinstance(command, SelectControlModeCommand):
             return self.select_control_mode(command)
+        if isinstance(command, ToggleMissionPauseCommand):
+            return self.toggle_mission_pause()
         raise TypeError(f"unsupported runtime command: {type(command).__name__}")
 
     @abstractmethod
@@ -135,3 +138,6 @@ class MissionManager(ABC):
     def select_control_mode(self, command: SelectControlModeCommand) -> Any:
         del command
         raise RuntimeError("当前运行时不支持切换控制模式。")
+
+    def toggle_mission_pause(self) -> Any:
+        raise RuntimeError("当前运行时不支持暂停任务。")

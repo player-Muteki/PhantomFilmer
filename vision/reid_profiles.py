@@ -43,6 +43,43 @@ def profile_directory(
     return Path(profile_root).resolve() / validate_profile_name(profile_name)
 
 
+def list_reid_profiles(
+    profile_root: Path = DEFAULT_PROFILE_ROOT,
+) -> list[dict[str, object]]:
+    """List readable local manifests without loading model weights or embeddings."""
+
+    root = Path(profile_root).resolve()
+    if not root.is_dir():
+        return []
+    profiles: list[dict[str, object]] = []
+    for directory in sorted(root.iterdir(), key=lambda path: path.name.casefold()):
+        manifest_path = directory / MANIFEST_FILENAME
+        if not directory.is_dir() or not manifest_path.is_file():
+            continue
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(manifest, dict) or manifest.get("schema_version") != PROFILE_SCHEMA_VERSION:
+            continue
+        try:
+            name = validate_profile_name(str(manifest.get("profile_name", "")))
+        except RuntimeError:
+            continue
+        if name != directory.name:
+            continue
+        profiles.append(
+            {
+                "name": name,
+                "createdAt": manifest.get("created_at"),
+                "photoCount": manifest.get("photo_count"),
+                "embeddingDimension": manifest.get("embedding_dimension"),
+                "modelName": manifest.get("reid_model_name"),
+            }
+        )
+    return profiles
+
+
 def save_reid_profile(
     profile_name: str,
     embedding: Any,

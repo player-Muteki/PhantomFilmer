@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from enum import Enum
 from threading import Lock
 from time import monotonic
-from typing import Deque, Optional
+from typing import AbstractSet, Deque, Optional
 
 
 class OperatorCommand(str, Enum):
@@ -72,11 +72,22 @@ class OperatorCommandChannel:
             self._pending.append(envelope)
             return envelope
 
-    def receive(self) -> Optional[OperatorCommandEnvelope]:
-        """Return the oldest pending command without blocking the flight loop."""
+    def receive(
+        self,
+        allowed_commands: Optional[AbstractSet[OperatorCommand]] = None,
+    ) -> Optional[OperatorCommandEnvelope]:
+        """Return the oldest allowed command without disturbing deferred input."""
 
         with self._lock:
-            return self._pending.popleft() if self._pending else None
+            if not self._pending:
+                return None
+            if allowed_commands is None:
+                return self._pending.popleft()
+            for index, envelope in enumerate(self._pending):
+                if envelope.command in allowed_commands:
+                    del self._pending[index]
+                    return envelope
+            return None
 
     def clear(self) -> None:
         with self._lock:

@@ -8,6 +8,8 @@ import type {
   BackendState,
   DroneStatus,
   RcCommand,
+  MissionStartOptions,
+  ProfileSummary,
   RuntimeCapabilities,
   RuntimeEventsResponse,
   RuntimeSnapshot
@@ -253,6 +255,56 @@ export class SidecarManager {
     return this.request('GET', `/api/v1/runtime/events?since=${since}`)
   }
 
+  async startMission(options: MissionStartOptions): Promise<{ ok: boolean; mission: string }> {
+    this.lastStatus = { ...this.lastStatus, airborne: true }
+    this.updateState({ airborne: true, restartAllowed: false, error: undefined })
+    try {
+      return await this.commandRequest('mission.start', options)
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : '未知错误'
+      this.updateState({
+        airborne: true,
+        restartAllowed: false,
+        error: `自动任务起飞请求结果未知，真机可能已在空中。请目视确认并优先执行任务急停。${detail}`
+      })
+      throw error
+    }
+  }
+
+  async stopMission(): Promise<{ ok: boolean }> {
+    const result = await this.commandRequest<{ ok: boolean }>('mission.stop')
+    this.rememberStatus({ airborne: false })
+    return result
+  }
+
+  async emergencyStopMission(): Promise<{ ok: boolean }> {
+    const result = await this.commandRequest<{ ok: boolean }>('mission.emergency_stop')
+    this.rememberStatus({ airborne: false })
+    return result
+  }
+
+  async selectControlMode(mode: MissionStartOptions['initialControlMode']): Promise<{ ok: boolean; mode: string }> {
+    return this.commandRequest('mission.control_mode.select', { mode })
+  }
+
+  async toggleMissionPause(): Promise<{ ok: boolean }> {
+    return this.commandRequest('mission.pause.toggle')
+  }
+
+  async listProfiles(): Promise<ProfileSummary[]> {
+    const response = await this.request<{ apiVersion: '1'; profiles: ProfileSummary[] }>('GET', '/api/v1/profiles')
+    return response.profiles
+  }
+
+  async enrollProfile(name: string, imagePaths: string[], overwrite: boolean): Promise<ProfileSummary> {
+    const response = await this.request<{ apiVersion: '1'; profile: ProfileSummary }>(
+      'POST',
+      '/api/v1/profiles/enroll',
+      { name, imagePaths, overwrite }
+    )
+    return response.profile
+  }
+
   async shutdown(timeoutMs = STOP_TIMEOUT_MS): Promise<void> {
     const child = this.process
     if (!child) return
@@ -302,12 +354,13 @@ export class SidecarManager {
     return status
   }
 
-  private async commandRequest<Result>(type: string): Promise<Result> {
+  private async commandRequest<Result>(type: string, payload: Record<string, unknown> = {}): Promise<Result> {
     const commandId = randomBytes(16).toString('hex')
     const envelope = await this.request<V1CommandEnvelope<Result>>('POST', '/api/v1/commands', {
       type,
       commandId,
-      issuedAt: Date.now()
+      issuedAt: Date.now(),
+      ...payload
     })
     if (envelope.apiVersion !== '1' || envelope.commandId !== commandId) {
       throw new Error('本地后端返回了不兼容的命令响应。')
@@ -362,7 +415,10 @@ export class SidecarManager {
           ...(body === undefined ? {} : { 'Content-Type': 'application/json' })
         },
         body: body === undefined ? undefined : JSON.stringify(body),
-        signal: AbortSignal.timeout(path === '/api/sidecar/shutdown' ? STOP_TIMEOUT_MS : START_TIMEOUT_MS)
+        signal: AbortSignal.timeout(
+          path === '/api/sidecar/shutdown' ? STOP_TIMEOUT_MS :
+            path === '/api/v1/profiles/enroll' ? 120_000 : START_TIMEOUT_MS
+        )
       })
     } catch (error) {
       throw new Error(`无法连接本地后端：${error instanceof Error ? error.message : '未知错误'}`)

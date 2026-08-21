@@ -206,6 +206,19 @@ button:focus-visible { outline: 3px solid rgba(45, 120, 183, .25); outline-offse
 .mission-grid button { min-height: 34px; padding: 0 12px; border: 1px solid #9cb2c1; background: #fff; color: var(--navy-soft); cursor: pointer; font-size: 10px; }
 .mission-grid button:disabled { cursor: not-allowed; opacity: .42; }
 .mission-flow h2, .runtime-summary h2 { margin: 4px 0 20px; font: 600 22px "Arial Narrow", "Segoe UI", sans-serif; }
+.mission-field { display: grid; gap: 7px; margin-bottom: 12px; color: var(--slate); font-size: 9px; }
+.mission-field input, .mission-field select { min-height: 38px; padding: 0 10px; border: 1px solid var(--line); background: #fff; color: var(--navy); }
+.mission-check { display: flex; align-items: center; gap: 8px; margin: 4px 0 16px; font-size: 10px; }
+.profile-enroll { display: grid; grid-template-columns: 1fr auto; gap: 6px; margin: -3px 0 12px; }
+.profile-enroll input, .profile-enroll button { min-height: 36px; border: 1px solid var(--line); background: #fff; }
+.profile-enroll input { min-width: 0; padding: 0 10px; }
+.profile-enroll button { padding: 0 10px; cursor: pointer; font-size: 9px; }
+.profile-enroll button:disabled { cursor: not-allowed; opacity: .45; }
+.flow-label { margin-top: 26px; }
+.mission-live { display: grid; gap: 10px; margin: 14px 0; padding: 14px; border: 1px solid #d7b56d; background: #fff8ec; font-size: 10px; }
+.mission-live > div { display: flex; flex-wrap: wrap; gap: 6px; }
+.mission-live button { min-height: 32px; border: 1px solid var(--line); background: #fff; cursor: pointer; }
+.mission-live button.danger { border-color: #d78d8d; color: var(--red); }
 .mission-flow ol { display: grid; gap: 4px; margin: 0; padding: 0; list-style: none; }
 .mission-flow li { display: flex; gap: 12px; padding: 14px 0; border-bottom: 1px solid #e4ebf0; }
 .mission-flow li b { width: 25px; height: 25px; display: grid; place-items: center; flex: 0 0 auto; border: 1px solid var(--line); border-radius: 50%; color: var(--blue); font: 9px "SFMono-Regular", Consolas, monospace; }

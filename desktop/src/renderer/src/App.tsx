@@ -385,6 +385,48 @@ export default function App(): ReactElement {
 
 function MissionWorkspace({ runtime, onOpenFlight }: { runtime: RuntimeFeed; onOpenFlight: () => void }): ReactElement {
   const available = new Set(runtime.capabilities?.missions ?? [])
+  const readiness = runtime.capabilities?.missionReadiness
+  const [profileName, setProfileName] = useState('')
+  const [profiles, setProfiles] = useState<Array<{ name: string; photoCount?: number | null }>>([])
+  const [enrollmentName, setEnrollmentName] = useState('')
+  const [initialMode, setInitialMode] = useState<'manual' | 'normal' | 'side' | 'front'>('normal')
+  const [obstacleEnabled, setObstacleEnabled] = useState(false)
+  const [armedMission, setArmedMission] = useState<string | null>(null)
+  const [missionError, setMissionError] = useState<string | null>(null)
+  const activeMission = runtime.snapshot?.mission
+  const missionRunning = activeMission != null && !['idle', 'manual'].includes(activeMission)
+  useEffect(() => {
+    void window.phantomFilmer.listProfiles().then((items) => {
+      setProfiles(items)
+      setProfileName((current) => current || items[0]?.name || '')
+    }).catch((error) => setMissionError(error instanceof Error ? error.message : '人物档案读取失败。'))
+  }, [])
+  const enrollProfile = async (): Promise<void> => {
+    setMissionError(null)
+    try {
+      const profile = await window.phantomFilmer.enrollProfile(enrollmentName.trim(), false)
+      if (!profile) return
+      setProfiles((current) => [...current.filter((item) => item.name !== profile.name), profile])
+      setProfileName(profile.name)
+      setEnrollmentName('')
+    } catch (error) {
+      setMissionError(error instanceof Error ? error.message : '人物建档失败。')
+    }
+  }
+  const startMission = async (mission: 'follow' | 'reid_follow' | 'fixed_demo'): Promise<void> => {
+    if (armedMission !== mission) {
+      setArmedMission(mission)
+      window.setTimeout(() => setArmedMission((current) => current === mission ? null : current), 4000)
+      return
+    }
+    setArmedMission(null)
+    setMissionError(null)
+    try {
+      await window.phantomFilmer.startMission({ mission, profileName: profileName.trim(), initialControlMode: initialMode, obstacleEnabled })
+    } catch (error) {
+      setMissionError(error instanceof Error ? error.message : '任务启动失败。')
+    }
+  }
   const missions = [
     ['manual', '手动飞行', '起降、悬停、四通道 RC 与独占控制租约'],
     ['follow', '普通自动跟随', 'ReID 锁定、距离与画面中心闭环'],
@@ -402,13 +444,26 @@ function MissionWorkspace({ runtime, onOpenFlight }: { runtime: RuntimeFeed; onO
           <div className="subheading"><div><p className="eyebrow">MISSION TYPES</p><h2>飞行任务</h2></div></div>
           <div className="mission-grid">
             {missions.map(([id, title, detail]) => {
-              const enabled = available.has(id)
-              return <article className={enabled ? 'available' : 'unavailable'} key={id}><span>{enabled ? '已开放' : '后端尚未开放'}</span><h3>{title}</h3><p>{detail}</p><button disabled={!enabled || id !== 'manual'} onClick={id === 'manual' ? onOpenFlight : undefined}>{id === 'manual' ? '前往飞行控制' : '等待任务接口'}</button></article>
+              const implemented = available.has(id)
+              const isManual = id === 'manual'
+              const ready = isManual || readiness?.available === true
+              const enabled = implemented && ready
+              const disabled = !enabled || (!isManual && (!profileName.trim() || missionRunning))
+              const label = isManual ? '前往飞行控制' : !implemented ? '等待任务接口' : !ready ? '模型资产未就绪' : armedMission === id ? '再次点击确认起飞' : '启动任务'
+              return <article className={enabled ? 'available' : 'unavailable'} key={id}><span>{enabled ? '已开放' : implemented ? '运行资产未就绪' : '后端尚未开放'}</span><h3>{title}</h3><p>{detail}</p><button disabled={disabled} onClick={isManual ? onOpenFlight : () => void startMission(id)}>{label}</button></article>
             })}
           </div>
         </section>
         <aside className="mission-flow">
-          <p className="eyebrow">OPERATOR FLOW</p><h2>运行前工作流</h2>
+          <p className="eyebrow">MISSION SETUP</p><h2>任务设置</h2>
+          <label className="mission-field"><span>人物档案</span><select value={profileName} onChange={(event) => setProfileName(event.target.value)} disabled={missionRunning}><option value="">请选择人物档案</option>{profiles.map((profile) => <option key={profile.name} value={profile.name}>{profile.name} · {profile.photoCount ?? '?'} 张照片</option>)}</select></label>
+          <div className="profile-enroll"><input aria-label="新人物档案名" value={enrollmentName} onChange={(event) => setEnrollmentName(event.target.value)} placeholder="新档案名" disabled={runtime.snapshot?.connected === true} /><button disabled={!enrollmentName.trim() || runtime.snapshot?.connected === true} onClick={() => void enrollProfile()}>选择照片并建档</button></div>
+          <label className="mission-field"><span>初始控制模式</span><select value={initialMode} onChange={(event) => setInitialMode(event.target.value as typeof initialMode)} disabled={missionRunning}><option value="normal">普通跟随</option><option value="side">侧向跟随</option><option value="front">前向跟随</option><option value="manual">手动接管</option></select></label>
+          <label className="mission-check"><input type="checkbox" checked={obstacleEnabled} onChange={(event) => setObstacleEnabled(event.target.checked)} disabled={missionRunning} /><span>普通模式启用自动避障</span></label>
+          {readiness && !readiness.available && <p className="boundary-note">缺少运行资产：{readiness.missingAssets.join('、')}。任务按钮保持禁用。</p>}
+          {missionError && <p className="runtime-error">{missionError}</p>}
+          {missionRunning && <div className="mission-live"><strong>任务运行中：{activeMission}</strong><div><button onClick={() => void window.phantomFilmer.toggleMissionPause()}>暂停 / 继续</button><button onClick={() => void window.phantomFilmer.stopMission()}>停止并降落</button><button className="danger" onClick={() => void window.phantomFilmer.emergencyStopMission()}>急停并降落</button></div><div className="mode-actions">{(['normal', 'side', 'front', 'manual'] as const).map((mode) => <button key={mode} onClick={() => void window.phantomFilmer.selectControlMode(mode)}>{mode}</button>)}</div></div>}
+          <p className="eyebrow flow-label">OPERATOR FLOW</p><h2>运行前工作流</h2>
           <ol>
             <li><b>1</b><div><strong>选择或注册人物</strong><span>本地照片、特征摘要与模型兼容性</span></div></li>
             <li><b>2</b><div><strong>地面预览确认</strong><span>视频、ReID 结果、朝向与性能检查</span></div></li>

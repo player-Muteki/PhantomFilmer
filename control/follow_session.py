@@ -67,6 +67,10 @@ class FollowSession:
         OperatorCommand.SELECT_SIDE: ord("s"),
         OperatorCommand.SELECT_FRONT: ord("f"),
     }
+    _SAFETY_OPERATOR_COMMANDS = {
+        OperatorCommand.STOP,
+        OperatorCommand.EMERGENCY_STOP,
+    }
 
     def __init__(
         self,
@@ -267,7 +271,10 @@ class FollowSession:
             f"需要连续确认 {tracker.required_frames} 帧。"
         )
         while not self.stop_event.is_set():
-            if self._handle_pending_operator_command() in ("stop", "emergency"):
+            if self._handle_pending_operator_command(safety_only=True) in (
+                "stop",
+                "emergency",
+            ):
                 return {}
             if monotonic() - started_at >= self.initial_target_lock_timeout_seconds:
                 print("地面识别超时，未起飞。" "请调整人物位置、光线或参考照片。")
@@ -453,7 +460,10 @@ class FollowSession:
         frame_failures = 0
         detect_failures = 0
         while monotonic() < deadline and not self.stop_event.is_set():
-            if self._handle_pending_operator_command() in ("stop", "emergency"):
+            if self._handle_pending_operator_command(safety_only=True) in (
+                "stop",
+                "emergency",
+            ):
                 return False
             frame = self._read_frame()
             if frame is None:
@@ -540,7 +550,10 @@ class FollowSession:
         )
 
         while monotonic() < deadline and not self.stop_event.is_set():
-            if self._handle_pending_operator_command() in ("stop", "emergency"):
+            if self._handle_pending_operator_command(safety_only=True) in (
+                "stop",
+                "emergency",
+            ):
                 return False
             height = self._read_height()
             last_height = height
@@ -643,7 +656,10 @@ class FollowSession:
         )
 
         while not self.stop_event.is_set():
-            if self._handle_pending_operator_command() in ("stop", "emergency"):
+            if self._handle_pending_operator_command(safety_only=True) in (
+                "stop",
+                "emergency",
+            ):
                 return False
             now = monotonic()
             if now - climb_started_at >= self.base_hover_timeout_seconds:
@@ -1328,13 +1344,20 @@ class FollowSession:
 
         return None
 
-    def _poll_operator_key(self, *, control_ready: bool = False) -> Optional[int]:
+    def _poll_operator_key(
+        self,
+        *,
+        control_ready: bool = False,
+        safety_only: bool = False,
+    ) -> Optional[int]:
         """Translate one semantic GUI command at the existing keyboard seam."""
 
         channel = self.operator_commands
         if channel is None:
             return None
-        envelope = channel.receive()
+        envelope = channel.receive(
+            self._SAFETY_OPERATOR_COMMANDS if safety_only else None
+        )
         if envelope is None:
             return None
         if not control_ready:
@@ -1364,10 +1387,12 @@ class FollowSession:
         )
         return mapping.get(envelope.command)
 
-    def _handle_pending_operator_command(self) -> Optional[str]:
+    def _handle_pending_operator_command(
+        self, *, safety_only: bool = False
+    ) -> Optional[str]:
         """Apply at most one GUI command without blocking a lifecycle phase."""
 
-        key = self._poll_operator_key()
+        key = self._poll_operator_key(safety_only=safety_only)
         return None if key is None else self.handle_key(key)
 
     def request_stop(self) -> None:

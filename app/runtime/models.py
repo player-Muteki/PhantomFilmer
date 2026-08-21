@@ -44,6 +44,10 @@ class AllowedAction(str, Enum):
     MOVE_RC = "move_rc"
     STOP = "stop"
     EMERGENCY_LAND = "emergency_land"
+    START_MISSION = "start_mission"
+    STOP_MISSION = "stop_mission"
+    EMERGENCY_STOP_MISSION = "emergency_stop_mission"
+    SELECT_CONTROL_MODE = "select_control_mode"
 
 
 @dataclass(frozen=True)

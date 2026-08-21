@@ -1,7 +1,7 @@
 import { join } from 'node:path'
 import { app, BrowserWindow, dialog, ipcMain, session } from 'electron'
 import { is } from '@electron-toolkit/utils'
-import type { RcCommand } from '../preload/api'
+import type { MissionStartOptions, RcCommand } from '../preload/api'
 import { SidecarManager } from './sidecar'
 
 let mainWindow: BrowserWindow | null = null
@@ -120,6 +120,25 @@ function registerIpc(): void {
   ipcMain.handle('runtime:capabilities', () => sidecar.getRuntimeCapabilities())
   ipcMain.handle('runtime:snapshot', () => sidecar.getRuntimeSnapshot())
   ipcMain.handle('runtime:events', (_event, since: number) => sidecar.getRuntimeEvents(since))
+  ipcMain.handle('mission:start', (_event, options: MissionStartOptions) => sidecar.startMission(options))
+  ipcMain.handle('mission:stop', () => sidecar.stopMission())
+  ipcMain.handle('mission:emergency-stop', () => sidecar.emergencyStopMission())
+  ipcMain.handle('mission:control-mode', (_event, mode: MissionStartOptions['initialControlMode']) => sidecar.selectControlMode(mode))
+  ipcMain.handle('mission:pause-toggle', () => sidecar.toggleMissionPause())
+  ipcMain.handle('profiles:list', () => sidecar.listProfiles())
+  ipcMain.handle('profiles:enroll', async (_event, payload: { name: string; overwrite: boolean }) => {
+    const { name, overwrite } = payload ?? {}
+    if (typeof name !== 'string' || !name.trim() || typeof overwrite !== 'boolean') {
+      throw new Error('人物档案参数无效。')
+    }
+    const selected = await dialog.showOpenDialog({
+      title: '选择人物参考照片',
+      properties: ['openFile', 'multiSelections'],
+      filters: [{ name: '图片', extensions: ['jpg', 'jpeg', 'png', 'webp', 'tif', 'tiff'] }]
+    })
+    if (selected.canceled || selected.filePaths.length === 0) return null
+    return sidecar.enrollProfile(name.trim(), selected.filePaths, overwrite)
+  })
   ipcMain.handle('drone:move-rc', (_event, command: RcCommand) => {
     const channels = ['leftRight', 'forwardBack', 'upDown', 'yaw'] as const
     if (

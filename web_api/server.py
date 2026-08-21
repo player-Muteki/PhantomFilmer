@@ -24,14 +24,22 @@ from urllib.parse import parse_qs, urlsplit
 from app.runtime.commands import (
     ConnectCommand,
     EmergencyLandCommand,
+    EmergencyStopCommand,
     HoverCommand,
     LandCommand,
     MoveRcCommand,
     RefreshStatusCommand,
+    SelectControlModeCommand,
+    StartMissionCommand,
     StopCommand,
+    StopMissionCommand,
     TakeoffCommand,
+    ToggleMissionPauseCommand,
     command_from_payload,
 )
+from app.builder import build_obstacle_modules
+from app.config import load_runtime_config, read_control_interval
+from app.runtime.mission_factory import MissionFactory
 from app.runtime.mission_manager import MissionManager
 from app.runtime.models import (
     AllowedAction,
@@ -41,6 +49,14 @@ from app.runtime.models import (
     RuntimeSnapshot,
 )
 from app.runtime.rc_lease import RcLeaseManager
+from control.fixed_demo import FixedDemoManeuver
+from control.follow_control import FollowController
+from control.operator_commands import OperatorCommand, OperatorCommandChannel
+from drone.safety import SafetyManager
+from vision.detector_factory import create_detector
+from vision.reid_enrollment import build_reid_runtime_config
+from vision.reid_enrollment import validate_reference_images
+from vision.reid_profiles import list_reid_profiles, save_reid_profile
 
 from .tello_adapter import RealTelloAdapter
 
@@ -65,11 +81,18 @@ class DroneWebService(MissionManager):
         adapter_factory: Optional[Callable[[], Any]] = None,
         *,
         data_dir: str | Path = ".",
+        mission_session_factory: Optional[
+            Callable[[StartMissionCommand, Any, OperatorCommandChannel], Any]
+        ] = None,
     ) -> None:
         super().__init__()
         self.data_dir = Path(data_dir).expanduser().resolve()
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self._adapter_factory = adapter_factory or partial(RealTelloAdapter, self.data_dir)
+        self._custom_mission_session_factory = mission_session_factory is not None
+        self._mission_session_factory = (
+            mission_session_factory or self._build_mission_session
+        )
         self._adapter: Optional[Any] = None
         self._lock = RLock()
         self._video_ready = False
@@ -86,11 +109,125 @@ class DroneWebService(MissionManager):
         self._last_rc_at = 0.0
         self._rc_active = False
         self._rc_leases = RcLeaseManager(ttl_seconds=1.0)
+        self._operator_commands = OperatorCommandChannel()
+        self._mission_kind = MissionKind.IDLE
+        self._mission_session: Optional[Any] = None
+        self._mission_thread: Optional[Thread] = None
+        self._mission_error: Optional[str] = None
         self._watchdog_stop = Event()
         self._watchdog = Thread(target=self._watch_rc, daemon=True)
         self._tof_monitor = Thread(target=self._monitor_front_tof, daemon=True)
         self._watchdog.start()
         self._tof_monitor.start()
+
+    def capabilities(self) -> dict[str, Any]:
+        """Describe implemented commands separately from local asset readiness."""
+
+        missing_assets: list[str] = []
+        if not self._custom_mission_session_factory:
+            try:
+                config = load_runtime_config()
+                vision = config.get("vision", {})
+                cfg = vision if isinstance(vision, dict) else {}
+                project_root = Path(__file__).resolve().parents[1]
+                for key in (
+                    "person_detector_model",
+                    "reid_model_path",
+                    "jointbdoe_model_path",
+                ):
+                    value = str(cfg.get(key, "")).strip()
+                    if not value:
+                        missing_assets.append(key)
+                        continue
+                    path = Path(value).expanduser()
+                    resolved = path if path.is_absolute() else project_root / path
+                    if not resolved.is_file():
+                        missing_assets.append(key)
+            except Exception as exc:
+                missing_assets.append(f"config:{exc}")
+        return {
+            "apiVersion": API_VERSION,
+            "commands": [
+                "device.connect",
+                "device.status.refresh",
+                "flight.takeoff",
+                "flight.land",
+                "flight.hover",
+                "device.stop",
+                "flight.emergency_land",
+                "mission.start",
+                "mission.stop",
+                "mission.emergency_stop",
+                "mission.control_mode.select",
+                "mission.pause.toggle",
+            ],
+            "missions": ["manual", "follow", "reid_follow", "fixed_demo"],
+            "eventReplay": True,
+            "rcLease": {"required": True, "ttlMs": 1000},
+            "missionReadiness": {
+                "available": not missing_assets,
+                "missingAssets": missing_assets,
+                "profileRequired": True,
+            },
+        }
+
+    def list_profiles(self) -> list[dict[str, object]]:
+        return list_reid_profiles(self.data_dir / "reid_profiles")
+
+    def enroll_profile(
+        self,
+        *,
+        name: object,
+        image_paths: object,
+        overwrite: object = False,
+    ) -> dict[str, object]:
+        """Create a local profile from main-process-selected image paths."""
+
+        if self.connected or self._mission_session is not None:
+            raise RuntimeError("人物建档只能在无人机断开连接时执行。")
+        if not isinstance(name, str) or not name.strip():
+            raise RuntimeError("人物档案名不能为空。")
+        if not isinstance(image_paths, list) or not all(
+            isinstance(path, str) for path in image_paths
+        ):
+            raise RuntimeError("参考照片列表格式无效。")
+        if not isinstance(overwrite, bool):
+            raise RuntimeError("覆盖选项格式无效。")
+        selected_images = validate_reference_images(image_paths)
+        config = build_reid_runtime_config(load_runtime_config(), selected_images)
+        config = dict(config)
+        vision = config.get("vision", {})
+        runtime_vision = dict(vision) if isinstance(vision, dict) else {}
+        runtime_vision["jointbdoe_enabled"] = False
+        config["vision"] = runtime_vision
+        detector = create_detector(config)
+        prepare = getattr(detector, "prepare", None)
+        if not callable(prepare):
+            raise RuntimeError("当前检测器不支持人物档案注册。")
+        prepare()
+        reference_feature = getattr(detector, "reference_feature", None)
+        if reference_feature is None:
+            raise RuntimeError("当前检测器未生成可保存的人物特征。")
+        manifest = save_reid_profile(
+            name.strip(),
+            reference_feature,
+            config,
+            selected_images,
+            overwrite=overwrite,
+            profile_root=self.data_dir / "reid_profiles",
+        )
+        self.events.publish(
+            "profile.enrolled",
+            {"name": manifest["profile_name"]},
+            snapshot=self.runtime_snapshot(),
+        )
+        return {
+            "name": manifest["profile_name"],
+            "createdAt": manifest["created_at"],
+            "photoCount": manifest["photo_count"],
+            "embeddingDimension": manifest["embedding_dimension"],
+            "modelName": manifest["reid_model_name"],
+        }
 
     @property
     def connected(self) -> bool:
@@ -101,15 +238,41 @@ class DroneWebService(MissionManager):
         """Build a non-blocking state snapshot for events and future GUI clients."""
         with self._lock:
             connected = self.connected
-            if not connected:
+            mission_session = self._mission_session
+            mission_active = mission_session is not None
+            mission_airborne = bool(
+                mission_active and getattr(mission_session, "airborne", False)
+            )
+            airborne = mission_airborne or self._airborne
+            if error or self._mission_error:
+                phase = RuntimePhase.ERROR
+            elif not connected:
                 phase = RuntimePhase.ERROR if error else RuntimePhase.DISCONNECTED
+            elif mission_active:
+                session_state = str(
+                    getattr(mission_session, "session_state", "PREPARING")
+                )
+                if session_state in {
+                    "STOPPED",
+                    "EMERGENCY_STOP",
+                    "LOW_BATTERY_LANDING",
+                    "HEIGHT_LIMIT_LANDING",
+                    "TARGET_LOST_LANDING",
+                    "FRAME_LOST_LANDING",
+                    "HEIGHT_SENSOR_LANDING",
+                }:
+                    phase = RuntimePhase.LANDING
+                elif airborne:
+                    phase = RuntimePhase.AIRBORNE
+                else:
+                    phase = RuntimePhase.TAKING_OFF
             elif self._phase == "连接":
                 phase = RuntimePhase.CONNECTING
             elif self._phase == "起飞":
                 phase = RuntimePhase.TAKING_OFF
             elif self._phase == "降落":
                 phase = RuntimePhase.LANDING
-            elif self._airborne:
+            elif airborne:
                 phase = RuntimePhase.AIRBORNE
             else:
                 phase = RuntimePhase.PREFLIGHT
@@ -117,11 +280,22 @@ class DroneWebService(MissionManager):
             allowed = []
             if not connected:
                 allowed.append(AllowedAction.CONNECT)
+            elif mission_active:
+                allowed.extend(
+                    (
+                        AllowedAction.STOP_MISSION,
+                        AllowedAction.EMERGENCY_STOP_MISSION,
+                        AllowedAction.SELECT_CONTROL_MODE,
+                    )
+                )
+                manual_controller = getattr(mission_session, "manual_controller", None)
+                if airborne and getattr(manual_controller, "active", False):
+                    allowed.extend((AllowedAction.HOVER, AllowedAction.MOVE_RC))
             else:
                 allowed.extend((AllowedAction.REFRESH_STATUS, AllowedAction.STOP))
                 front_tof_ready = self._front_tof_state in ("clear", "out_of_range")
                 if (
-                    not self._airborne
+                    not airborne
                     and self._video_ready
                     and self._battery is not None
                     and self._battery >= MIN_TAKEOFF_BATTERY
@@ -129,7 +303,8 @@ class DroneWebService(MissionManager):
                     and front_tof_ready
                 ):
                     allowed.append(AllowedAction.TAKEOFF)
-                if self._airborne:
+                    allowed.append(AllowedAction.START_MISSION)
+                if airborne:
                     allowed.extend(
                         (
                             AllowedAction.LAND,
@@ -139,24 +314,60 @@ class DroneWebService(MissionManager):
                         )
                     )
 
+            if mission_active:
+                manual_controller = getattr(mission_session, "manual_controller", None)
+                if getattr(manual_controller, "active", False):
+                    control_mode = ControlMode.MANUAL
+                else:
+                    try:
+                        control_mode = ControlMode(
+                            str(getattr(mission_session, "follow_mode", "normal"))
+                        )
+                    except ValueError:
+                        control_mode = ControlMode.NONE
+                mission = self._mission_kind
+                flight_state = str(
+                    getattr(mission_session, "session_state", self._flight_state)
+                )
+            else:
+                control_mode = ControlMode.MANUAL if airborne else ControlMode.NONE
+                mission = MissionKind.MANUAL if connected else MissionKind.IDLE
+                flight_state = self._flight_state
+
+            telemetry_battery = (
+                getattr(mission_session, "last_battery", None)
+                if mission_active
+                else self._battery
+            )
+            telemetry_height = (
+                getattr(mission_session, "last_height", None)
+                if mission_active
+                else self._height
+            )
+            telemetry_control_hz = (
+                getattr(mission_session, "control_hz", 0.0)
+                if mission_active
+                else self._control_hz
+            )
+
             return RuntimeSnapshot(
                 sequence=self.events.latest_sequence,
                 phase=phase,
-                mission=MissionKind.MANUAL if connected else MissionKind.IDLE,
-                control_mode=ControlMode.MANUAL if self._airborne else ControlMode.NONE,
+                mission=mission,
+                control_mode=control_mode,
                 connected=connected,
-                airborne=self._airborne,
+                airborne=airborne,
                 streaming=self._video_ready,
-                flight_state=self._flight_state,
+                flight_state=flight_state,
                 allowed_actions=tuple(allowed),
                 telemetry={
-                    "battery": self._battery,
-                    "heightCm": self._height,
+                    "battery": telemetry_battery,
+                    "heightCm": telemetry_height,
                     "frontTofCm": self._front_tof,
                     "frontTofState": self._front_tof_state,
-                    "controlHz": round(self._control_hz, 1),
+                    "controlHz": round(float(telemetry_control_hz), 1),
                 },
-                error=error,
+                error=error or self._mission_error,
             )
 
     def connect(self) -> dict[str, Any]:
@@ -198,6 +409,8 @@ class DroneWebService(MissionManager):
         with self._lock:
             if not self.connected or self._adapter is None:
                 raise RuntimeError("真机未连接。")
+            if self._mission_session is not None:
+                return self._mission_status_locked()
 
             adapter = self._adapter
             if probe_video and not self._video_ready:
@@ -248,6 +461,7 @@ class DroneWebService(MissionManager):
     def takeoff(self) -> dict[str, Any]:
         """Take off only after all locally verifiable preflight gates pass."""
         with self._lock:
+            self._require_no_active_mission()
             self._rc_leases.revoke()
             if not self.connected or self._adapter is None:
                 raise RuntimeError("真机未连接，不能起飞。")
@@ -278,6 +492,7 @@ class DroneWebService(MissionManager):
     def land(self) -> dict[str, Any]:
         """Clear movement and land while retaining telemetry and video."""
         with self._lock:
+            self._require_no_active_mission()
             self._rc_leases.revoke()
             if not self.connected or self._adapter is None:
                 raise RuntimeError("真机未连接，无法降落。")
@@ -295,6 +510,7 @@ class DroneWebService(MissionManager):
     def hover(self) -> dict[str, Any]:
         """Immediately clear all four RC channels."""
         with self._lock:
+            self._require_no_active_mission()
             self._require_airborne()
             self._send_hover()
             self._flight_state = "手动悬停"
@@ -303,6 +519,7 @@ class DroneWebService(MissionManager):
     def move_rc(self, command: dict[str, Any]) -> dict[str, Any]:
         """Apply one bounded manual RC command; a backend watchdog clears it."""
         with self._lock:
+            self._require_no_active_mission()
             self._require_airborne()
             channels = {
                 key: self._bounded_channel(command.get(key, 0))
@@ -332,8 +549,110 @@ class DroneWebService(MissionManager):
             self._flight_state = "手动飞行" if self._rc_active else "手动悬停"
             return {"ok": True, "flightState": self._flight_state}
 
+    def start_mission(self, command: StartMissionCommand) -> dict[str, Any]:
+        """Start one shared FollowSession without blocking the HTTP worker."""
+
+        if command.mission not in {
+            MissionKind.FOLLOW,
+            MissionKind.REID_FOLLOW,
+            MissionKind.FIXED_DEMO,
+        }:
+            raise RuntimeError(f"桌面端暂不支持任务：{command.mission.value}")
+        with self._lock:
+            if not self.connected or self._adapter is None:
+                raise RuntimeError("真机未连接，无法启动自动任务。")
+            self._require_no_active_mission()
+            if self._airborne:
+                raise RuntimeError("自动任务必须从地面启动。")
+            current = self.status(probe_video=True)
+            if not current["canTakeoff"]:
+                raise RuntimeError("任务起飞检查未通过：请确认视频、电量和 ToF 均正常。")
+
+            self._rc_leases.revoke()
+            self._operator_commands.clear()
+            session = self._mission_session_factory(
+                command, self._adapter, self._operator_commands
+            )
+            mode_command = {
+                ControlMode.MANUAL: OperatorCommand.SELECT_MANUAL,
+                ControlMode.NORMAL: OperatorCommand.SELECT_NORMAL,
+                ControlMode.SIDE: OperatorCommand.SELECT_SIDE,
+                ControlMode.FRONT: OperatorCommand.SELECT_FRONT,
+            }.get(command.initial_control_mode)
+            if mode_command is None:
+                raise RuntimeError("自动任务初始控制模式无效。")
+            self._operator_commands.submit(mode_command)
+            authorize_takeoff = getattr(self._adapter, "authorize_next_takeoff", None)
+            if callable(authorize_takeoff):
+                authorize_takeoff()
+            self._mission_kind = command.mission
+            self._mission_session = session
+            self._mission_error = None
+            self._flight_state = "任务准备"
+            self._phase = "起飞"
+            thread = Thread(
+                target=self._run_mission,
+                args=(session, command.mission),
+                name="phantomfilmer-mission",
+                daemon=True,
+            )
+            self._mission_thread = thread
+            thread.start()
+            return {
+                "ok": True,
+                "mission": command.mission.value,
+                "initialControlMode": command.initial_control_mode.value,
+            }
+
+    def stop_mission(self) -> None:
+        """Request normal mission cleanup and wait for its landing boundary."""
+
+        session, thread = self._active_mission_handles()
+        session.request_stop()
+        thread.join(timeout=10.0)
+        if thread.is_alive():
+            raise RuntimeError("任务停止超时；无人机状态不确定，请目视确认并准备急停。")
+
+    def emergency_stop_mission(self) -> None:
+        """Collapse output immediately, then wait for mission landing cleanup."""
+
+        session, thread = self._active_mission_handles()
+        session.request_emergency_stop()
+        thread.join(timeout=10.0)
+        if thread.is_alive():
+            raise RuntimeError("任务急停清理超时；请目视确认无人机状态。")
+
+    def select_control_mode(
+        self, command: SelectControlModeCommand
+    ) -> dict[str, Any]:
+        """Queue an idempotent semantic mode choice for the active mission."""
+
+        operator_command = {
+            ControlMode.MANUAL: OperatorCommand.SELECT_MANUAL,
+            ControlMode.NORMAL: OperatorCommand.SELECT_NORMAL,
+            ControlMode.SIDE: OperatorCommand.SELECT_SIDE,
+            ControlMode.FRONT: OperatorCommand.SELECT_FRONT,
+        }.get(command.mode)
+        if operator_command is None:
+            raise RuntimeError("控制模式不能为 none。")
+        with self._lock:
+            self._require_active_mission()
+            envelope = self._operator_commands.submit(operator_command)
+            return {
+                "ok": True,
+                "operatorSequence": envelope.sequence,
+                "mode": command.mode.value,
+            }
+
+    def toggle_mission_pause(self) -> dict[str, Any]:
+        with self._lock:
+            self._require_active_mission()
+            envelope = self._operator_commands.submit(OperatorCommand.TOGGLE_PAUSE)
+            return {"ok": True, "operatorSequence": envelope.sequence}
+
     def stop(self) -> None:
         """Land first when necessary, then stop the stream and connection."""
+        self._stop_active_mission_if_present(emergency=False)
         with self._lock:
             self._rc_leases.revoke()
             adapter = self._adapter
@@ -353,13 +672,17 @@ class DroneWebService(MissionManager):
     def emergency_land(self) -> None:
         """Request landing, then close the connection regardless of outcome."""
         with self._lock:
+            had_active_mission = self._mission_session is not None
+        self._stop_active_mission_if_present(emergency=True)
+        with self._lock:
             self._rc_leases.revoke()
             adapter = self._adapter
             if adapter is None or not getattr(adapter, "connected", False):
                 raise RuntimeError("真机未连接，无法发送降落指令。")
             try:
-                adapter.move_rc(0, 0, 0, 0)
-                adapter.land()
+                if not had_active_mission:
+                    adapter.move_rc(0, 0, 0, 0)
+                    adapter.land()
             finally:
                 self._adapter = None
                 self._clear_session()
@@ -368,8 +691,12 @@ class DroneWebService(MissionManager):
     def acquire_rc_lease(self) -> dict[str, object]:
         """Grant exclusive, short-lived manual control authority while airborne."""
         with self._lock:
-            self._require_airborne()
-            self._send_hover()
+            if self._mission_session is not None:
+                self._require_mission_manual_control()
+                self._operator_commands.submit(OperatorCommand.HOVER)
+            else:
+                self._require_airborne()
+                self._send_hover()
             lease = self._rc_leases.acquire()
             self.events.publish(
                 "rc.lease.acquired",
@@ -381,25 +708,49 @@ class DroneWebService(MissionManager):
     def move_rc_with_lease(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Validate lease freshness before forwarding a versioned RC command."""
         with self._lock:
-            self._require_airborne()
+            mission_manual = self._mission_session is not None
+            if mission_manual:
+                self._require_mission_manual_control()
+            else:
+                self._require_airborne()
             lease = self._rc_leases.validate_and_refresh(
                 lease_id=payload.get("leaseId"),
                 sequence=payload.get("sequence"),
                 issued_at_ms=payload.get("issuedAt"),
             )
             try:
-                result = self.execute(
-                    MoveRcCommand(
-                        left_right=payload.get("leftRight", 0),
-                        forward_back=payload.get("forwardBack", 0),
-                        up_down=payload.get("upDown", 0),
-                        yaw=payload.get("yaw", 0),
+                if mission_manual:
+                    operator_command = self._operator_command_from_rc(payload)
+                    envelope = self._operator_commands.submit(operator_command)
+                    result = {
+                        "ok": True,
+                        "flightState": "自动任务手动接管",
+                        "operatorSequence": envelope.sequence,
+                    }
+                    self.events.publish(
+                        "mission.manual_rc.accepted",
+                        {
+                            "operatorSequence": envelope.sequence,
+                            "command": operator_command.value,
+                        },
+                        snapshot=self.runtime_snapshot(),
                     )
-                )
+                else:
+                    result = self.execute(
+                        MoveRcCommand(
+                            left_right=payload.get("leftRight", 0),
+                            forward_back=payload.get("forwardBack", 0),
+                            up_down=payload.get("upDown", 0),
+                            yaw=payload.get("yaw", 0),
+                        )
+                    )
             except Exception:
                 # A sequence is consumed during validation. Revoke authority so
                 # the client cannot continue from a state it did not observe.
-                self._send_hover()
+                if mission_manual:
+                    self._operator_commands.submit(OperatorCommand.HOVER)
+                else:
+                    self._send_hover()
                 raise
             return {**result, **lease.to_dict()}
 
@@ -407,7 +758,9 @@ class DroneWebService(MissionManager):
         """Release manual authority and always collapse output to hover."""
         with self._lock:
             released = self._rc_leases.release(lease_id)
-            if self._airborne:
+            if self._mission_session is not None:
+                self._operator_commands.submit(OperatorCommand.HOVER)
+            elif self._airborne:
                 self._send_hover()
                 self._flight_state = "手动悬停"
             self.events.publish(
@@ -452,6 +805,36 @@ class DroneWebService(MissionManager):
         if not self._airborne:
             raise RuntimeError("真机尚未起飞，手动控制不可用。")
 
+    def _require_mission_manual_control(self) -> None:
+        session = self._mission_session
+        if session is None or not bool(getattr(session, "airborne", False)):
+            raise RuntimeError("自动任务尚未进入空中手动接管状态。")
+        manual_controller = getattr(session, "manual_controller", None)
+        if not bool(getattr(manual_controller, "active", False)):
+            raise RuntimeError("请先把自动任务切换到手动接管模式。")
+
+    def _operator_command_from_rc(self, payload: dict[str, Any]) -> OperatorCommand:
+        channels = {
+            key: self._bounded_channel(payload.get(key, 0))
+            for key in ("leftRight", "forwardBack", "upDown", "yaw")
+        }
+        nonzero = [(key, value) for key, value in channels.items() if value]
+        if not nonzero:
+            return OperatorCommand.HOVER
+        if len(nonzero) != 1:
+            raise RuntimeError("自动任务手动接管每次只接受一个运动轴。")
+        key, value = nonzero[0]
+        return {
+            ("leftRight", 1): OperatorCommand.MOVE_RIGHT,
+            ("leftRight", -1): OperatorCommand.MOVE_LEFT,
+            ("forwardBack", 1): OperatorCommand.MOVE_FORWARD,
+            ("forwardBack", -1): OperatorCommand.MOVE_BACKWARD,
+            ("upDown", 1): OperatorCommand.MOVE_UP,
+            ("upDown", -1): OperatorCommand.MOVE_DOWN,
+            ("yaw", 1): OperatorCommand.YAW_RIGHT,
+            ("yaw", -1): OperatorCommand.YAW_LEFT,
+        }[(key, 1 if value > 0 else -1)]
+
     @staticmethod
     def _bounded_channel(value: Any) -> int:
         if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -485,7 +868,11 @@ class DroneWebService(MissionManager):
         """Poll the blocking expansion command without blocking manual RC handling."""
         while not self._watchdog_stop.wait(0.2):
             with self._lock:
-                adapter = self._adapter if self.connected else None
+                adapter = (
+                    self._adapter
+                    if self.connected and self._mission_session is None
+                    else None
+                )
             if adapter is None:
                 continue
             try:
@@ -502,6 +889,158 @@ class DroneWebService(MissionManager):
                     self._front_tof_state = state
                     self._front_tof_checked_at = monotonic()
 
+    def _run_mission(self, session: Any, mission: MissionKind) -> None:
+        """Own the background session result and publish its terminal state."""
+
+        result = None
+        failure: Optional[str] = None
+        try:
+            result = session.run()
+        except Exception as exc:
+            failure = str(exc)
+            logging.exception("automatic mission failed")
+        with self._lock:
+            if self._mission_session is not session:
+                return
+            self._airborne = bool(getattr(result, "airborne", False))
+            self._mission_error = failure
+            self._mission_session = None
+            self._mission_thread = None
+            self._mission_kind = MissionKind.IDLE
+            self._operator_commands.clear()
+            if failure:
+                self._flight_state = "任务失败"
+                self._phase = "检查"
+            elif self._airborne:
+                self._flight_state = "任务结束但仍报告空中"
+                self._phase = "降落"
+            else:
+                self._flight_state = "地面待机"
+                self._phase = "检查"
+        self.events.publish(
+            "mission.failed" if failure else "mission.finished",
+            {
+                "mission": mission.value,
+                "state": str(getattr(result, "state", "ERROR" if failure else "STOPPED")),
+                "error": failure,
+            },
+            snapshot=self.runtime_snapshot(),
+        )
+
+    def _build_mission_session(
+        self,
+        command: StartMissionCommand,
+        adapter: Any,
+        operator_commands: OperatorCommandChannel,
+    ) -> Any:
+        """Build the same detector/controller/kernel stack used by the CLI."""
+
+        if not command.profile_name:
+            raise RuntimeError("自动任务必须选择一个本地人物档案。")
+        config = load_runtime_config(command.obstacle_enabled)
+        config = build_reid_runtime_config(
+            config,
+            profile_name=command.profile_name,
+        )
+        config = dict(config)
+        config["display_console_camera"] = False
+        vision = config.get("vision", {})
+        runtime_vision = dict(vision) if isinstance(vision, dict) else {}
+        runtime_vision["reid_profile_root"] = str(self.data_dir / "reid_profiles")
+        config["vision"] = runtime_vision
+        safety = SafetyManager.from_dict(config)
+        detector = create_detector(config)
+        controller = FollowController.from_config(
+            safety_manager=safety,
+            config=config,
+        )
+        _, _, motion_arbiter = build_obstacle_modules(config, safety)
+        maneuver = (
+            FixedDemoManeuver(control_interval=read_control_interval(config))
+            if command.mission is MissionKind.FIXED_DEMO
+            else None
+        )
+        return MissionFactory(
+            drone=adapter,
+            safety_manager=safety,
+            detector=detector,
+            follow_controller=controller,
+            config=config,
+            motion_arbiter=motion_arbiter,
+            operator_commands=operator_commands,
+            manage_camera_stream=False,
+        ).create_follow_session(
+            mission=command.mission,
+            mode_label=f"DESKTOP {command.mission.value.upper()}",
+            window_name="PhantomFilmer Desktop Mission",
+            state_label="REID" if command.mission is MissionKind.REID_FOLLOW else "FOLLOW",
+            allow_pause=True,
+            pre_follow_maneuver=maneuver,
+            initial_target_lock_frames=0,
+            enable_target_search=True,
+        )
+
+    def _active_mission_handles(self) -> tuple[Any, Thread]:
+        with self._lock:
+            self._require_active_mission()
+            session = self._mission_session
+            thread = self._mission_thread
+            if session is None or thread is None:
+                raise RuntimeError("自动任务状态不完整，无法安全控制。")
+            return session, thread
+
+    def _stop_active_mission_if_present(self, *, emergency: bool) -> None:
+        with self._lock:
+            active = self._mission_session is not None
+        if not active:
+            return
+        if emergency:
+            self.emergency_stop_mission()
+        else:
+            self.stop_mission()
+
+    def _require_active_mission(self) -> None:
+        if self._mission_session is None:
+            raise RuntimeError("当前没有正在运行的自动任务。")
+
+    def _require_no_active_mission(self) -> None:
+        if self._mission_session is not None:
+            raise RuntimeError("自动任务运行中，不能执行独立手动飞行命令。")
+
+    def _mission_status_locked(self) -> dict[str, Any]:
+        session = self._mission_session
+        if session is None:
+            raise RuntimeError("自动任务状态已经结束，请重试。")
+        battery = getattr(session, "last_battery", None)
+        height = getattr(session, "last_height", None)
+        if battery is None:
+            battery = self._battery
+        if height is None:
+            height = self._height
+        airborne = bool(getattr(session, "airborne", False))
+        manual_controller = getattr(session, "manual_controller", None)
+        return {
+            "battery": battery,
+            "heightCm": height,
+            "frontTofCm": self._front_tof,
+            "frontTofState": self._front_tof_state,
+            "controlHz": round(float(getattr(session, "control_hz", 0.0)), 1),
+            "flightState": str(getattr(session, "session_state", "任务准备")),
+            "targetConfirmed": False,
+            "phase": "自动任务",
+            "videoReady": self._video_ready,
+            "airborne": airborne,
+            "canTakeoff": False,
+            "rcEnabled": bool(getattr(manual_controller, "active", False)),
+            "preflight": {
+                "sdk": True,
+                "video": self._video_ready,
+                "battery": battery is not None and int(battery) >= MIN_TAKEOFF_BATTERY,
+                "bottomTof": height is not None,
+                "frontTof": self._front_tof_state in ("clear", "out_of_range"),
+            },
+        }
+
     def _clear_session(self) -> None:
         self._rc_leases.revoke()
         self._adapter = None
@@ -517,6 +1056,11 @@ class DroneWebService(MissionManager):
         self._phase = "连接"
         self._last_rc_at = 0.0
         self._rc_active = False
+        self._mission_kind = MissionKind.IDLE
+        self._mission_session = None
+        self._mission_thread = None
+        self._mission_error = None
+        self._operator_commands.clear()
 
     def mjpeg_frames(self) -> Iterator[bytes]:
         """Yield JPEG frames for one browser client without any GUI window."""
@@ -621,29 +1165,18 @@ class DroneRequestHandler(BaseHTTPRequestHandler):
             )
             return
         if path == "/api/v1/capabilities":
-            self._json(
-                HTTPStatus.OK,
-                {
-                    "apiVersion": API_VERSION,
-                    "commands": [
-                        "device.connect",
-                        "device.status.refresh",
-                        "flight.takeoff",
-                        "flight.land",
-                        "flight.hover",
-                        "device.stop",
-                        "flight.emergency_land",
-                    ],
-                    "missions": ["manual"],
-                    "eventReplay": True,
-                    "rcLease": {"required": True, "ttlMs": 1000},
-                },
-            )
+            self._json(HTTPStatus.OK, self.service.capabilities())
             return
         if path == "/api/v1/runtime/snapshot":
             self._json(
                 HTTPStatus.OK,
                 {"apiVersion": API_VERSION, "snapshot": self.service.runtime_snapshot().to_dict()},
+            )
+            return
+        if path == "/api/v1/profiles":
+            self._json(
+                HTTPStatus.OK,
+                {"apiVersion": API_VERSION, "profiles": self.service.list_profiles()},
             )
             return
         if path == "/api/v1/runtime/events":
@@ -687,6 +1220,21 @@ class DroneRequestHandler(BaseHTTPRequestHandler):
                 self._v1_error(HTTPStatus.BAD_REQUEST, "INVALID_COMMAND", str(exc))
                 return
             self._run_v1_command(command)
+            return
+        if path == "/api/v1/profiles/enroll":
+            try:
+                payload = self._read_json()
+                profile = self.service.enroll_profile(
+                    name=payload.get("name"),
+                    image_paths=payload.get("imagePaths"),
+                    overwrite=payload.get("overwrite", False),
+                )
+                self._json(
+                    HTTPStatus.CREATED,
+                    {"apiVersion": API_VERSION, "profile": profile},
+                )
+            except Exception as exc:
+                self._v1_error(HTTPStatus.CONFLICT, "PROFILE_ENROLL_FAILED", str(exc))
             return
         if path == "/api/v1/rc/lease":
             try:

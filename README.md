@@ -332,8 +332,10 @@ GUI 与 CLI 共用 `MissionManager` 命令/事件模型和 `MissionFactory` 装�
 获取快照，不从界面局部状态猜测任务状态。
 
 共享 `FollowSession` 已具备无 OpenCV 窗口的语义化操作员命令通道，并能附着于 sidecar
-已持有的视频流；这是自动任务接入 GUI 的底层准备。sidecar capability 尚未开放这些任务，
-因此当前发布边界仍以界面实际禁用状态为准。
+已持有的视频流。sidecar 已实现普通跟随、ReID 跟拍和固定航线任务命令，GUI 提供本地
+人物建档、任务参数、二次起飞授权、模式切换、暂停、停止、急停和自动任务中的 RC 租约
+手动接管。capability 会分别报告“接口已实现”和“本机模型资产是否就绪”；模型权重缺失
+时任务保持禁用，不能仅因按钮存在就认为当前安装包可执行自动任务。
 
 优先交付 Linux x64 AppImage 与 macOS x64/arm64 DMG，Windows x64 NSIS 随后构建。
 首轮安装包未签名；从 CI 或 Release 下载对应产物并核对同目录 `SHA256SUMS` 后安装。

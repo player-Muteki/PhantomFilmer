@@ -2,12 +2,20 @@ import json
 import unittest
 from http.client import HTTPConnection
 from pathlib import Path
+from types import SimpleNamespace
 from tempfile import TemporaryDirectory
-from threading import Thread
+from threading import Event, Thread
 from time import sleep, time
 
-from app.runtime.commands import ConnectCommand, TakeoffCommand
-from app.runtime.models import AllowedAction, RuntimePhase
+from app.runtime.commands import (
+    ConnectCommand,
+    SelectControlModeCommand,
+    StartMissionCommand,
+    StopMissionCommand,
+    TakeoffCommand,
+    command_from_payload,
+)
+from app.runtime.models import AllowedAction, ControlMode, MissionKind, RuntimePhase
 from web_api.server import DroneWebService, create_server
 
 
@@ -75,7 +83,148 @@ class RealAdapterStub:
         self.connected = False
 
 
+class MissionSessionStub:
+    def __init__(self) -> None:
+        self.started = Event()
+        self.finished = Event()
+        self.session_state = "PREPARING"
+        self.airborne = False
+        self.last_battery = 76
+        self.last_height = 150
+        self.control_hz = 12.5
+        self.follow_mode = "normal"
+        self.manual_controller = SimpleNamespace(active=False)
+        self.emergency = False
+
+    def run(self):
+        self.airborne = True
+        self.session_state = "CONTROL_READY"
+        self.started.set()
+        self.finished.wait(timeout=2)
+        self.airborne = False
+        self.session_state = "EMERGENCY_STOP" if self.emergency else "STOPPED"
+        return SimpleNamespace(
+            state=self.session_state,
+            airborne=False,
+            streaming=False,
+        )
+
+    def request_stop(self) -> None:
+        self.finished.set()
+
+    def request_emergency_stop(self) -> None:
+        self.emergency = True
+        self.finished.set()
+
+
 class DroneWebServiceTests(unittest.TestCase):
+    def test_mission_payload_parses_profile_mode_and_obstacle_choice(self) -> None:
+        command = command_from_payload(
+            {
+                "type": "mission.start",
+                "mission": "reid_follow",
+                "profileName": "operator-a",
+                "initialControlMode": "side",
+                "obstacleEnabled": True,
+            }
+        )
+
+        self.assertIsInstance(command, StartMissionCommand)
+        self.assertEqual(command.profile_name, "operator-a")
+        self.assertEqual(command.initial_control_mode, ControlMode.SIDE)
+        self.assertTrue(command.obstacle_enabled)
+
+    def test_background_mission_updates_snapshot_accepts_mode_and_stops(self) -> None:
+        adapter = RealAdapterStub()
+        session = MissionSessionStub()
+        service = DroneWebService(
+            adapter_factory=lambda: adapter,
+            mission_session_factory=lambda _command, _adapter, _channel: session,
+        )
+        self.addCleanup(service.shutdown)
+        service.connect()
+
+        result = service.execute(
+            StartMissionCommand(
+                mission=MissionKind.FOLLOW,
+                profile_name="operator-a",
+                initial_control_mode=ControlMode.SIDE,
+            )
+        )
+        self.assertTrue(session.started.wait(timeout=1))
+        snapshot = service.runtime_snapshot()
+        mode_result = service.execute(
+            SelectControlModeCommand(mode=ControlMode.FRONT)
+        )
+        service.execute(StopMissionCommand())
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(snapshot.phase, RuntimePhase.AIRBORNE)
+        self.assertEqual(snapshot.mission, MissionKind.FOLLOW)
+        self.assertIn(AllowedAction.STOP_MISSION, snapshot.allowed_actions)
+        self.assertEqual(mode_result["mode"], "front")
+        self.assertFalse(service.runtime_snapshot().airborne)
+        self.assertTrue(service.connected)
+
+    def test_automatic_mission_rejects_parallel_manual_takeoff(self) -> None:
+        session = MissionSessionStub()
+        service = DroneWebService(
+            adapter_factory=RealAdapterStub,
+            mission_session_factory=lambda _command, _adapter, _channel: session,
+        )
+        self.addCleanup(service.shutdown)
+        service.connect()
+        service.start_mission(
+            StartMissionCommand(
+                mission=MissionKind.REID_FOLLOW,
+                profile_name="operator-a",
+            )
+        )
+        self.assertTrue(session.started.wait(timeout=1))
+
+        with self.assertRaisesRegex(RuntimeError, "自动任务运行中"):
+            service.takeoff()
+
+        service.emergency_stop_mission()
+        self.assertTrue(session.emergency)
+
+    def test_mission_manual_takeover_routes_leased_rc_through_operator_channel(self) -> None:
+        session = MissionSessionStub()
+        service = DroneWebService(
+            adapter_factory=RealAdapterStub,
+            mission_session_factory=lambda _command, _adapter, _channel: session,
+        )
+        self.addCleanup(service.shutdown)
+        service.connect()
+        service.start_mission(
+            StartMissionCommand(
+                mission=MissionKind.FOLLOW,
+                profile_name="operator-a",
+                initial_control_mode=ControlMode.MANUAL,
+            )
+        )
+        self.assertTrue(session.started.wait(timeout=1))
+        session.manual_controller.active = True
+        service._operator_commands.clear()
+        lease = service.acquire_rc_lease()
+        service._operator_commands.clear()
+
+        result = service.move_rc_with_lease(
+            {
+                "leaseId": lease["leaseId"],
+                "sequence": 1,
+                "issuedAt": int(time() * 1000),
+                "leftRight": 20,
+            }
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(
+            service._operator_commands.receive().command.value,
+            "move_right",
+        )
+        service.stop_mission()
+
     def test_typed_commands_publish_authoritative_snapshots(self) -> None:
         adapter = RealAdapterStub()
         service = DroneWebService(adapter_factory=lambda: adapter)

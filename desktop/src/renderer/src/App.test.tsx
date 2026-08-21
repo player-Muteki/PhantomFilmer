@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { BackendState, DroneStatus, PhantomFilmerApi } from '../../preload/api'
 import App from './App'
@@ -64,6 +64,13 @@ function createApi(overrides: Partial<PhantomFilmerApi> = {}): PhantomFilmerApi 
       resetRequired: false,
       events: []
     }),
+    startMission: vi.fn().mockResolvedValue({ ok: true, mission: 'follow' }),
+    stopMission: vi.fn().mockResolvedValue({ ok: true }),
+    emergencyStopMission: vi.fn().mockResolvedValue({ ok: true }),
+    selectControlMode: vi.fn().mockResolvedValue({ ok: true, mode: 'normal' }),
+    toggleMissionPause: vi.fn().mockResolvedValue({ ok: true }),
+    listProfiles: vi.fn().mockResolvedValue([]),
+    enrollProfile: vi.fn().mockResolvedValue(null),
     onBackendState: vi.fn().mockReturnValue(() => undefined),
     ...overrides
   }
@@ -164,5 +171,36 @@ describe('desktop flight console', () => {
     expect(await screen.findByText('42')).toBeInTheDocument()
     expect(screen.getByText('refresh_status')).toBeInTheDocument()
     expect(screen.getByText('takeoff')).toBeInTheDocument()
+  })
+
+  it('requires profile input and a second click before starting an automatic mission', async () => {
+    window.phantomFilmer = createApi({
+      getRuntimeCapabilities: vi.fn().mockResolvedValue({
+        apiVersion: '1',
+        commands: ['mission.start'],
+        missions: ['manual', 'follow', 'reid_follow', 'fixed_demo'],
+        eventReplay: true,
+        rcLease: { required: true, ttlMs: 1000 },
+        missionReadiness: { available: true, missingAssets: [], profileRequired: true }
+      }),
+      listProfiles: vi.fn().mockResolvedValue([{ name: 'operator-a', photoCount: 3 }])
+    })
+    render(<App />)
+    fireEvent.click(await screen.findByRole('button', { name: '任务与人物' }))
+    fireEvent.change(await screen.findByRole('combobox', { name: '人物档案' }), { target: { value: 'operator-a' } })
+    const followCard = screen.getByRole('heading', { name: '普通自动跟随' }).closest('article')
+    expect(followCard).not.toBeNull()
+    const start = within(followCard as HTMLElement).getByRole('button', { name: '启动任务' })
+
+    fireEvent.click(start)
+    expect(window.phantomFilmer.startMission).not.toHaveBeenCalled()
+    fireEvent.click(within(followCard as HTMLElement).getByRole('button', { name: '再次点击确认起飞' }))
+
+    await waitFor(() => expect(window.phantomFilmer.startMission).toHaveBeenCalledWith({
+      mission: 'follow',
+      profileName: 'operator-a',
+      initialControlMode: 'normal',
+      obstacleEnabled: false
+    }))
   })
 })

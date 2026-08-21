@@ -241,7 +241,15 @@ class PersonReIDDetector:
         if profile_name:
             from vision.reid_profiles import load_reid_profile
 
-            reference_features, _manifest = load_reid_profile(profile_name, config)
+            profile_root = cfg.get("reid_profile_root")
+            if profile_root:
+                reference_features, _manifest = load_reid_profile(
+                    profile_name,
+                    config,
+                    profile_root=Path(str(profile_root)).expanduser(),
+                )
+            else:
+                reference_features, _manifest = load_reid_profile(profile_name, config)
             reference_images = []
         orientation_estimator = None
         if _safe_bool(cfg.get("jointbdoe_enabled"), False):
