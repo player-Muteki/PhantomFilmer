@@ -6,7 +6,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
-from app.modes import run_connection_test
+from app.modes import run_basic_flight_test, run_connection_test
 from drone.tello_adapter import TelloDroneAdapter
 
 
@@ -110,6 +110,35 @@ class ConnectionTestDrone:
 
     def stream_on(self) -> None:
         raise AssertionError("connection-test must not start the camera")
+
+
+class BasicFlightTestDrone:
+    def __init__(self) -> None:
+        self.authorize_calls = 0
+        self.takeoff_calls = 0
+        self.land_calls = 0
+        self.stop_calls = 0
+
+    def connect(self) -> None:
+        pass
+
+    def get_battery(self) -> int:
+        return 91
+
+    def get_height(self) -> int:
+        return 12
+
+    def authorize_next_takeoff(self) -> None:
+        self.authorize_calls += 1
+
+    def takeoff(self) -> None:
+        self.takeoff_calls += 1
+
+    def land(self) -> None:
+        self.land_calls += 1
+
+    def stop(self) -> None:
+        self.stop_calls += 1
 
 
 class TelloDroneAdapterTestCase(unittest.TestCase):
@@ -217,6 +246,23 @@ class TelloDroneAdapterTestCase(unittest.TestCase):
         self.assertEqual(result, 0)
         self.assertEqual(drone.connect_calls, 1)
         self.assertEqual(drone.battery_calls, 1)
+        self.assertEqual(drone.stop_calls, 1)
+
+    def test_basic_flight_confirmation_authorizes_the_takeoff_once(self) -> None:
+        drone = BasicFlightTestDrone()
+
+        with patch("app.modes.TelloDroneAdapter", return_value=drone), patch(
+            "app.modes.load_config", return_value={}
+        ), patch("app.modes.sleep", return_value=None), patch(
+            "builtins.input", return_value="yes"
+        ) as input_mock, redirect_stdout(StringIO()):
+            result = run_basic_flight_test()
+
+        self.assertEqual(result, 0)
+        self.assertEqual(input_mock.call_count, 1)
+        self.assertEqual(drone.authorize_calls, 1)
+        self.assertEqual(drone.takeoff_calls, 1)
+        self.assertEqual(drone.land_calls, 1)
         self.assertEqual(drone.stop_calls, 1)
 
     def test_authorization_skips_one_takeoff_prompt(self) -> None:

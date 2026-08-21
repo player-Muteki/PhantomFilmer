@@ -99,6 +99,8 @@ class Handler(BaseHTTPRequestHandler):
                 threading.Timer(0.15, lambda: os._exit(23)).start()
         elif path == "/api/drone/takeoff":
             state["airborne"] = True
+            if os.environ.get("PHANTOMFILMER_TEST_CRASH_DURING_TAKEOFF") == "1":
+                os._exit(24)
             self._json(200, status())
         elif path == "/api/drone/land":
             state["airborne"] = False

@@ -179,6 +179,9 @@ def run_basic_flight_test() -> int:
             print("已取消基础飞行测试：未收到 yes 确认。")
             return 0
 
+        authorize_takeoff = getattr(drone, "authorize_next_takeoff", None)
+        if callable(authorize_takeoff):
+            authorize_takeoff()
         drone.takeoff()
         airborne = True
         print("已起飞，保持悬停 5 秒。")

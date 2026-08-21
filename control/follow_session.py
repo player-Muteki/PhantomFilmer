@@ -110,6 +110,9 @@ class FollowSession:
         self.display_enabled = bool(config.get("display_console_camera", True))
         self.frame_failure_limit = int(config.get("frame_failure_limit", 30))
         self.height_failure_limit = max(1, int(config.get("height_failure_limit", 10)))
+        self.base_hover_timeout_seconds = max(
+            1.0, float(config.get("base_hover_timeout_seconds", 30.0))
+        )
         self.height_filter_window = max(1, int(config.get("height_filter_window", 5)))
         self.height_max_valid_cm = max(
             self.safety_manager.config.max_height_cm,
@@ -596,13 +599,23 @@ class FollowSession:
         frame_failures = 0
         detect_failures = 0
         next_battery_check = monotonic()
+        climb_started_at = next_battery_check
         self.session_state = "REACHING_BASE_HEIGHT"
         print(
-            f"正在到达基础悬停高度：{target_height} cm（不受 ReID 结果和总时限影响）。"
+            f"正在到达基础悬停高度：{target_height} cm"
+            f"（不受 ReID 结果影响，最长 {self.base_hover_timeout_seconds:g} 秒）。"
         )
 
         while not self.stop_event.is_set():
             now = monotonic()
+            if now - climb_started_at >= self.base_hover_timeout_seconds:
+                print(
+                    f"基础悬停高度爬升超过 {self.base_hover_timeout_seconds:g} 秒，"
+                    "准备安全降落。"
+                )
+                self.session_state = "BASE_HEIGHT_TIMEOUT_LANDING"
+                self._safe_zero_output()
+                return False
             if now >= next_battery_check:
                 battery = self._read_battery()
                 next_battery_check = now + 1.0
@@ -615,7 +628,7 @@ class FollowSession:
             if height is None:
                 height_failures += 1
                 self._safe_zero_output()
-                if height_failures >= self.frame_failure_limit:
+                if height_failures >= self.height_failure_limit:
                     print("连续无法读取飞行高度，准备安全降落。")
                     self.session_state = "BASE_HEIGHT_FAILED"
                     return False

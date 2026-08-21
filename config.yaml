@@ -9,6 +9,8 @@ base_hover_height_cm: 150
 base_hover_height_tolerance_cm: 5
 base_hover_vertical_speed: 20
 base_hover_stable_readings: 3
+# 到达基础悬停高度的总时限；超时后清零 RC 并进入安全降落流程。
+base_hover_timeout_seconds: 30
 # 跳过起飞后的离地高度确认，起飞稳定后直接进入基础悬停高度控制。
 takeoff_height_verify_enabled: false
 # 以下参数仅在重新开启离地高度确认时生效。

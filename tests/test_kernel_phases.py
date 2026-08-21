@@ -262,6 +262,16 @@ class ControlReadyHandlerTestCase(unittest.TestCase):
         self.assertEqual(phase, KernelPhase.FOLLOW)
         self.assertTrue(session.manual_controller.available)
 
+    def test_front_selection_enters_follow_without_pre_follow_route(self) -> None:
+        session = BaseSession()
+        session.manual_controller = ManualControllerStub(enabled=True)
+        session.control_selection = "front"
+
+        phase = ControlReadyHandler().run(session, LifecycleContext())
+
+        self.assertEqual(phase, KernelPhase.FOLLOW)
+        self.assertTrue(session.manual_controller.available)
+
     def test_stopped_selection_ends_lifecycle(self) -> None:
         session = BaseSession()
         session.manual_controller = ManualControllerStub(enabled=True)

@@ -121,8 +121,7 @@ flowchart LR
 6. **RC 出口按运行时隔离**：CLI `FollowSession` 经 `_emit`，Console 工具和桌面 sidecar 各有自己的安全出口；三个入口不能同时控制同一真机。
 7. **测试状态**：测试覆盖软件链路，但未覆盖真机/Wi-Fi/真实 ToF 与真实人物视频，详见 [06](06-配置测试与源码索引.md) §5。
 8. **朝向模式绕过避障**：侧向和前向跟随直接使用朝向控制器及共用有界搜索，不进入 `ArbitrationEngine` 的顶部 ToF 避障路径。
-9. **初始前向选择缺口**：等待界面能返回 `front`，但当前 `ControlReadyHandler` 未将其推进到 `FOLLOW`；实际操作先按 `A` 进入普通自动，再按 `3` 安全切到前向模式。
-10. **GUI 仅覆盖 CLI 子集**：Electron 是旧 WebUI 的基础迁移，未接入 ReID、自动跟随、搜索、自动避障或 CLI 生命周期；sidecar 也不读取 `config.yaml`。
+9. **GUI 仅覆盖 CLI 子集**：Electron 是旧 WebUI 的基础迁移，未接入 ReID、自动跟随、搜索、自动避障或 CLI 生命周期；sidecar 也不读取 `config.yaml`。
 
 ## 8. 文档维护规则
 

@@ -53,3 +53,22 @@ test('locks controls and refuses restart after airborne backend crash', async ()
   await expect(window.getByRole('button', { name: /正常降落/ })).toBeDisabled()
   await forceClose(application)
 })
+
+test('treats a backend crash during takeoff as possibly airborne', async () => {
+  const application = await electron.launch({
+    args: [appEntry],
+    env: {
+      ...process.env,
+      PHANTOMFILMER_SIDECAR_PATH: sidecar,
+      PHANTOMFILMER_TEST_CRASH_DURING_TAKEOFF: '1'
+    }
+  })
+  const window = await application.firstWindow()
+  await window.getByRole('button', { name: '连接真机' }).click()
+  await window.getByRole('button', { name: /^起飞/ }).click()
+  await window.getByRole('button', { name: /^确认起飞/ }).click()
+
+  await expect(window.getByText('后端中断 · 最后状态为空中')).toBeVisible()
+  await expect(window.getByRole('button', { name: /禁止自动重启/ })).toBeDisabled()
+  await forceClose(application)
+})

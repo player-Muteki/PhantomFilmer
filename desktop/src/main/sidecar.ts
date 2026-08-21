@@ -133,7 +133,19 @@ export class SidecarManager {
   }
 
   async takeoff(): Promise<DroneStatus> {
-    return this.statusRequest('POST', '/api/drone/takeoff')
+    // Once the request leaves Electron, a transport failure cannot prove that
+    // the aircraft stayed on the ground. Keep the last-known state conservative
+    // until a successful landing/stop response explicitly clears it.
+    this.lastStatus = { ...this.lastStatus, airborne: true }
+    this.updateState({ airborne: true, restartAllowed: false, error: undefined })
+    try {
+      return await this.statusRequest('POST', '/api/drone/takeoff')
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : '未知错误'
+      const message = `起飞请求结果未知，真机可能已在空中。请目视确认并优先执行降落；禁止重启后端。${detail}`
+      this.updateState({ airborne: true, restartAllowed: false, error: message })
+      throw new Error(message)
+    }
   }
 
   async land(): Promise<DroneStatus> {

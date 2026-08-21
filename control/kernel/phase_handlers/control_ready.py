@@ -1,4 +1,4 @@
-"""Wait at base height until the operator explicitly selects manual or auto."""
+"""Wait at base height until the operator selects a supported control mode."""
 
 from typing import Any, Optional
 
@@ -6,7 +6,7 @@ from control.kernel.phases import KernelPhase
 
 
 class ControlReadyHandler:
-    """Own the indefinite zero-output M/A choice after the 150 cm climb."""
+    """Own the indefinite zero-output mode choice after the 150 cm climb."""
 
     phase = KernelPhase.CONTROL_READY
 
@@ -22,6 +22,8 @@ class ControlReadyHandler:
         if selection == "manual":
             return KernelPhase.FOLLOW
         if selection == "side":
+            return KernelPhase.FOLLOW
+        if selection == "front":
             return KernelPhase.FOLLOW
         if selection == "auto":
             return KernelPhase.PRE_FOLLOW

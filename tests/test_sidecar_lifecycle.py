@@ -29,7 +29,9 @@ def test_sidecar_prints_ready_json_and_accepts_protected_shutdown() -> None:
             ready = json.loads(process.stdout.readline())
             assert ready["event"] == "ready"
             assert ready["port"] > 0
-            assert Path(ready["logPath"]).parent == Path(temporary_directory) / "logs"
+            assert Path(ready["logPath"]).parent.resolve() == (
+                Path(temporary_directory) / "logs"
+            ).resolve()
 
             connection = HTTPConnection("127.0.0.1", ready["port"], timeout=3)
             connection.request(

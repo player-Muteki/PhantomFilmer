@@ -919,6 +919,59 @@ class ConsoleFollowSessionTestCase(unittest.TestCase):
         self.assertGreaterEqual(drone.height_cm, 175)
         self.assertEqual(session.console_state, "BASE_HEIGHT_READY")
 
+    def test_base_height_timeout_zeros_output_and_requests_landing(self) -> None:
+        drone = FakeDroneAdapter(verbose_rc=False)
+        drone.height_cm = 70
+        safety = SafetyManager(SafetyConfig(30, 20, 220, 60, 35, 1, 2))
+        session = FollowSession(
+            drone=drone,
+            safety_manager=safety,
+            detector=StaticDetector(),
+            follow_controller=FollowController(safety_manager=safety),
+            config={
+                "display_console_camera": False,
+                "control_interval": 0.02,
+                "base_hover_height_cm": 180,
+                "base_hover_timeout_seconds": 1,
+            },
+            mode_label="FAKE",
+        )
+        clock = iter([0.0, 0.0, 0.5, 1.0])
+
+        with patch("control.follow_session.monotonic", side_effect=clock), patch(
+            "control.follow_session.sleep", return_value=None
+        ):
+            self.assertFalse(session._reach_base_hover_height())
+
+        self.assertEqual(session.console_state, "BASE_HEIGHT_TIMEOUT_LANDING")
+        self.assertEqual(drone.last_rc_command, (0, 0, 0, 0))
+
+    def test_base_height_uses_height_sensor_failure_limit(self) -> None:
+        drone = FakeDroneAdapter(verbose_rc=False)
+        safety = SafetyManager(SafetyConfig(30, 20, 220, 60, 35, 1, 2))
+        session = FollowSession(
+            drone=drone,
+            safety_manager=safety,
+            detector=StaticDetector(),
+            follow_controller=FollowController(safety_manager=safety),
+            config={
+                "display_console_camera": False,
+                "control_interval": 0.02,
+                "base_hover_height_cm": 180,
+                "base_hover_timeout_seconds": 30,
+                "height_failure_limit": 2,
+                "frame_failure_limit": 30,
+            },
+            mode_label="FAKE",
+        )
+        session._read_height = lambda: None
+
+        with patch("control.follow_session.sleep", return_value=None):
+            self.assertFalse(session._reach_base_hover_height())
+
+        self.assertEqual(session.console_state, "BASE_HEIGHT_FAILED")
+        self.assertEqual(drone.last_rc_command, (0, 0, 0, 0))
+
     def test_takeoff_height_ignores_transient_zero_readings(self) -> None:
         drone = FakeDroneAdapter(verbose_rc=False)
         safety = build_safety()
