@@ -129,6 +129,16 @@ class SideFollowControllerTestCase(unittest.TestCase):
         self.assertLess(command.left_right, 0)
         self.assertEqual(side.last_debug.orbit_direction, "CLOCKWISE")
 
+    def test_orbit_uses_faster_gain_and_speed_limit(self):
+        side = controller(orbit_entry_frames=1)
+        for now in range(3):
+            command = side.compute_command(result(40), 640, 480, now)
+
+        self.assertEqual(command.left_right, -18)
+
+        limited = side.compute_command(result(350), 640, 480, 4)
+        self.assertEqual(limited.left_right, -25)
+
     def test_smaller_target_angle_orbits_counterclockwise_to_decrease_angle(self):
         side = controller()
         for now in range(5):
@@ -148,15 +158,15 @@ class SideFollowControllerTestCase(unittest.TestCase):
         self.assertGreater(command.forward_backward, 0)
         self.assertGreater(command.up_down, 0)
 
-    def test_unfinished_orbit_times_out_to_hover(self):
-        side = controller(max_orbit_seconds=2.0)
+    def test_unfinished_orbit_continues_without_time_limit(self):
+        side = controller()
         for now in range(5):
             side.compute_command(result(10), 640, 480, now)
 
-        timed_out = side.compute_command(result(10), 640, 480, 6.1)
+        continuing = side.compute_command(result(10), 640, 480, 10_000.0)
 
-        self.assertEqual(timed_out.as_tuple(), (0, 0, 0, 0))
-        self.assertEqual(side.last_debug.state, "SIDE_TIMEOUT")
+        self.assertNotEqual(continuing.left_right, 0)
+        self.assertEqual(side.last_debug.state, "SIDE_ORBITING")
 
     def test_manual_suspend_can_preserve_selected_side(self):
         side = controller()

@@ -91,7 +91,7 @@ side_follow:
   angle_tolerance_deg: 12
   angle_exit_tolerance_deg: 20
   # 连续多帧朝向偏离才判断为人物转身，避免角度抖动触发绕行。
-  orbit_entry_frames: 3
+  orbit_entry_frames: 2
   lock_stable_frames: 6
   # 跑道跟随：人物偏到画面左右时，飞机同方向横移，日常不偏航。
   tracking_lateral_kp: 55
@@ -101,12 +101,11 @@ side_follow:
   # 人物转身后的绕人修正：实测顺时针增大角度，逆时针减小角度。
   # 摄像头朝向人物时，顺时针绕行对应飞机向左横移。
   clockwise_lateral_direction: left
-  lateral_kp: 0.22
-  minimum_lateral_speed: 8
-  maximum_lateral_speed: 20
+  lateral_kp: 0.35
+  minimum_lateral_speed: 10
+  maximum_lateral_speed: 25
   # 正面/背面与两侧等距时固定选择 90°，避免随机切边。
   tie_break_target_angle: 90
-  max_orbit_seconds: 20
 control_interval: 0.05
 # 控制率低于该值（Hz）时控制台会周期性告警，提示检测或显示处理过慢。
 min_control_hz: 8

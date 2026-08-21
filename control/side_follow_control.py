@@ -19,18 +19,17 @@ class SideFollowConfig:
     minimum_match_iou: float = 0.20
     angle_tolerance_deg: float = 12.0
     angle_exit_tolerance_deg: float = 20.0
-    orbit_entry_frames: int = 3
+    orbit_entry_frames: int = 2
     lock_stable_frames: int = 6
     tracking_lateral_kp: float = 55.0
     minimum_tracking_lateral_speed: int = 8
     maximum_tracking_lateral_speed: int = 20
     tracking_lateral_direction_sign: int = 1
-    lateral_kp: float = 0.22
-    minimum_lateral_speed: int = 8
-    maximum_lateral_speed: int = 20
+    lateral_kp: float = 0.35
+    minimum_lateral_speed: int = 10
+    maximum_lateral_speed: int = 25
     clockwise_lateral_sign: int = -1
     tie_break_target_angle: int = 90
-    max_orbit_seconds: float = 20.0
 
     @classmethod
     def from_config(cls, config: Dict[str, object]) -> "SideFollowConfig":
@@ -65,9 +64,9 @@ class SideFollowConfig:
             tolerance,
             min(90.0, as_float("angle_exit_tolerance_deg", 20.0)),
         )
-        minimum_speed = as_int("minimum_lateral_speed", 8, 0)
+        minimum_speed = as_int("minimum_lateral_speed", 10, 0)
         maximum_speed = max(
-            minimum_speed, as_int("maximum_lateral_speed", 20, 1)
+            minimum_speed, as_int("maximum_lateral_speed", 25, 1)
         )
         minimum_tracking_speed = as_int(
             "minimum_tracking_lateral_speed", 8, 0
@@ -88,18 +87,17 @@ class SideFollowConfig:
             minimum_match_iou=min(1.0, as_float("minimum_match_iou", 0.20)),
             angle_tolerance_deg=tolerance,
             angle_exit_tolerance_deg=exit_tolerance,
-            orbit_entry_frames=as_int("orbit_entry_frames", 3),
+            orbit_entry_frames=as_int("orbit_entry_frames", 2),
             lock_stable_frames=as_int("lock_stable_frames", 6),
             tracking_lateral_kp=as_float("tracking_lateral_kp", 55.0),
             minimum_tracking_lateral_speed=minimum_tracking_speed,
             maximum_tracking_lateral_speed=maximum_tracking_speed,
             tracking_lateral_direction_sign=tracking_sign,
-            lateral_kp=as_float("lateral_kp", 0.22),
+            lateral_kp=as_float("lateral_kp", 0.35),
             minimum_lateral_speed=minimum_speed,
             maximum_lateral_speed=maximum_speed,
             clockwise_lateral_sign=clockwise_sign,
             tie_break_target_angle=tie_angle,
-            max_orbit_seconds=as_float("max_orbit_seconds", 20.0, 1.0),
         )
 
 
@@ -126,7 +124,6 @@ class SideFollowController:
         self._orbit_entry_frames = 0
         self._lock_frames = 0
         self._orbit_active = False
-        self._orbit_started_at: Optional[float] = None
         self.last_debug = SideFollowDebugInfo()
 
     @classmethod
@@ -146,7 +143,6 @@ class SideFollowController:
         self._orbit_entry_frames = 0
         self._lock_frames = 0
         self._orbit_active = False
-        self._orbit_started_at = None
         self.last_debug = SideFollowDebugInfo(selected_angle=self._selected_angle)
 
     def compute_command(
@@ -189,19 +185,7 @@ class SideFollowController:
             self._selected_angle = self._choose_nearest_side(average)
 
         error = self._signed_angle_error(float(self._selected_angle), angle)
-        self._update_orbit_state(error, now)
-        if (
-            self._orbit_started_at is not None
-            and now - self._orbit_started_at >= self.config.max_orbit_seconds
-            and self._orbit_active
-        ):
-            self.last_debug = SideFollowDebugInfo(
-                state="SIDE_TIMEOUT",
-                current_angle=angle,
-                selected_angle=self._selected_angle,
-                angle_error=error,
-            )
-            return self.follow_controller.hover()
+        self._update_orbit_state(error)
 
         horizontal_error, forward, vertical = self._tracking_axes(
             target_result, frame_width, frame_height
@@ -240,7 +224,7 @@ class SideFollowController:
         )
         return command
 
-    def _update_orbit_state(self, error: float, now: float) -> None:
+    def _update_orbit_state(self, error: float) -> None:
         absolute_error = abs(error)
         if self._orbit_active:
             if absolute_error <= self.config.angle_tolerance_deg:
@@ -249,7 +233,6 @@ class SideFollowController:
                     self._orbit_active = False
                     self._orbit_entry_frames = 0
                     self._lock_frames = 0
-                    self._orbit_started_at = None
             else:
                 self._lock_frames = 0
             return
@@ -259,7 +242,6 @@ class SideFollowController:
             if self._orbit_entry_frames >= self.config.orbit_entry_frames:
                 self._orbit_active = True
                 self._lock_frames = 0
-                self._orbit_started_at = now
         else:
             self._orbit_entry_frames = 0
 
