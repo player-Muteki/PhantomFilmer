@@ -16,3 +16,7 @@ data/datasets/
 logs/
 third_party/JointBDOE/
 reasonix.toml
+.venv-webui/
+webui/node_modules/
+webui/.next/
+webui/out/
