@@ -1,0 +1,7 @@
+__pycache__/
+*.py[cod]
+.DS_Store
+.venv-webui/
+webui/node_modules/
+webui/.next/
+webui/out/
