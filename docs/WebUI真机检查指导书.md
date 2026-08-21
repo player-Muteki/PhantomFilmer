@@ -25,8 +25,7 @@
 ## 3. 首次联网安装
 
 ```bash
-git clone --branch feat/webui-real-device-handoff --single-branch \
-  https://github.com/player-Muteki/PhantomFilmer.git
+git clone https://github.com/player-Muteki/PhantomFilmer.git
 cd PhantomFilmer
 bash scripts/install_webui.sh
 ```
