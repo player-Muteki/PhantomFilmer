@@ -4,6 +4,7 @@ Heavy third-party models are loaded lazily so non-vision modes keep working
 when the optional ReID dependencies are not installed.
 """
 
+import math
 import os
 from pathlib import Path
 from time import perf_counter
@@ -193,6 +194,7 @@ class PersonReIDDetector:
         visual_object_classes: Sequence[str] = DEFAULT_VISUAL_OBJECT_CLASSES,
         person_detector: Optional[Any] = None,
         feature_extractor: Optional[Any] = None,
+        orientation_estimator: Optional[Any] = None,
         reference_features: Optional[Any] = None,
     ) -> None:
         self.reference_image_paths = [str(path) for path in reference_image_paths if str(path).strip()]
@@ -221,6 +223,8 @@ class PersonReIDDetector:
         self._last_visual_objects: List[DetectionResult] = []
         self._person_detector = person_detector
         self._feature_extractor = feature_extractor
+        self._orientation_estimator = orientation_estimator
+        self._orientation_prepared = False
         self._reference_feature: Optional[np.ndarray] = None
         self._lost_count = 0
         self._last_valid_result: Optional[DetectionResult] = None
@@ -239,6 +243,11 @@ class PersonReIDDetector:
 
             reference_features, _manifest = load_reid_profile(profile_name, config)
             reference_images = []
+        orientation_estimator = None
+        if _safe_bool(cfg.get("jointbdoe_enabled"), False):
+            from vision.jointbdoe_orientation import JointBDOEOrientationEstimator
+
+            orientation_estimator = JointBDOEOrientationEstimator.from_config(config)
         return cls(
             reference_image_paths=reference_images,
             detector_model_path=str(
@@ -262,6 +271,7 @@ class PersonReIDDetector:
             temporary_lost_frames=_safe_int(cfg.get("reid_temporary_lost_frames"), 0),
             target_area_ratio_min=_safe_float(config.get("target_area_ratio_min"), 0.03),
             target_area_ratio_max=_safe_float(config.get("target_area_ratio_max"), 0.08),
+            orientation_estimator=orientation_estimator,
             reference_features=reference_features,
         )
 
@@ -335,6 +345,10 @@ class PersonReIDDetector:
             "visual_objects": list(self._last_visual_objects),
             "similarity_threshold": self.similarity_threshold,
         }
+        if self._orientation_estimator is not None:
+            orientation = self._orientation_estimator.estimate(frame, result["bbox"])
+            if orientation:
+                result.update(orientation)
         self._lost_count = 0
         self._last_valid_result = dict(result)
         return result
@@ -457,6 +471,39 @@ class PersonReIDDetector:
             status_color,
             2,
         )
+        angle = result.get("body_orientation_angle")
+        if result.get("found") and angle is not None:
+            detection_confidence = float(
+                result.get("body_orientation_detection_confidence") or 0.0
+            )
+            match_iou = float(result.get("body_orientation_match_iou") or 0.0)
+            latency_ms = float(result.get("body_orientation_latency_ms") or 0.0)
+            cv2.putText(
+                debug,
+                f"JointBDOE angle={float(angle):.1f} deg det={detection_confidence:.2f} iou={match_iou:.2f} {latency_ms:.0f} ms",
+                (20, 88),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
+                (0, 255, 255),
+                2,
+            )
+            x, y, box_width, box_height = result["bbox"]
+            start = (int(x + box_width / 2), int(y + box_height / 2))
+            arrow_length = max(12, int(min(box_width, box_height) / 3))
+            radians = math.radians(float(angle))
+            end = (
+                int(start[0] - arrow_length * math.sin(radians)),
+                int(start[1] - arrow_length * math.cos(radians)),
+            )
+            cv2.arrowedLine(
+                debug,
+                start,
+                end,
+                (0, 255, 255),
+                2,
+                line_type=cv2.LINE_AA,
+                tipLength=0.3,
+            )
         return debug
 
     def _distance_state(self, area_ratio: float) -> str:
@@ -471,6 +518,10 @@ class PersonReIDDetector:
         self._last_visual_objects = []
         self._lost_count = 0
         self._last_valid_result = None
+        if self._orientation_estimator is not None and hasattr(
+            self._orientation_estimator, "reset"
+        ):
+            self._orientation_estimator.reset()
 
     def _detect_scene(self, frame: Any) -> Dict[str, List[DetectionResult]]:
         if self._person_detector is not None and hasattr(
@@ -532,6 +583,14 @@ class PersonReIDDetector:
             initialized_component = True
         elif initialized_component:
             print("ReID 准备 3/3：已直接加载人物档案特征，无需计算照片。")
+        if self._orientation_estimator is not None and not self._orientation_prepared:
+            step_started = perf_counter()
+            print("JointBDOE 准备：正在加载人体朝向模型...")
+            if hasattr(self._orientation_estimator, "prepare"):
+                self._orientation_estimator.prepare()
+            self._orientation_prepared = True
+            print(f"JointBDOE 准备完成：{perf_counter() - step_started:.2f} 秒")
+            initialized_component = True
         if initialized_component:
             print(f"ReID 模型准备完成：共 {perf_counter() - prepare_started:.2f} 秒")
 

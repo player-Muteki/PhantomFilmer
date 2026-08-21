@@ -14,3 +14,6 @@ gdown==6.1.0
 imageio==2.37.4
 chardet==7.5.1
 tensorboard==2.21.0
+pandas==3.0.5
+seaborn==0.13.2
+thop==0.1.1.post2209072238

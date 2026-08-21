@@ -14,4 +14,5 @@ data/reid_profiles/
 data/reid_test/
 data/datasets/
 logs/
+third_party/JointBDOE/
 reasonix.toml

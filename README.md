@@ -137,6 +137,21 @@ MPLCONFIGDIR=.matplotlib YOLO_CONFIG_DIR=.ultralytics \
   .venv-reid/bin/python tools/reid_offline_eval.py
 ```
 
+### JointBDOE 人体朝向角验证
+
+可选 JointBDOE 后端会在 ReID 接受目标身份后，匹配同一人物框并附加连续的
+`0～360°`人体朝向角。该角度目前只显示和记录，不参与飞控。
+
+```bash
+bash scripts/setup_jointbdoe.sh
+.venv-reid/bin/python tools/jointbdoe_angle_eval.py \
+  data/reid_target/现场注册/一组照片 --output-dir /tmp/jointbdoe-results
+```
+
+官方角度约定在当前实拍中表现为：背面约 `0°`、正面约 `180°`、两个侧面约
+`90°/270°`。先验证视频连续性和 CPU 速度，再将 `vision.jointbdoe_enabled`
+改为 `true`。模型只提供人体检测置信度，没有独立的角度置信度。
+
 ReID 只进行外观匹配，不识别真实姓名；俯视、遮挡、换衣、逆光和低分辨率都会降低可靠性。完成真实目标视频测试以前，不得启用真机 ReID 起飞跟随。
 
 ### 现场 ReID 演示

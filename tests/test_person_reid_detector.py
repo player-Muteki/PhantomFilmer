@@ -31,6 +31,30 @@ class FakeFeatureExtractor:
         return self.features[: len(images)]
 
 
+class FakeOrientationEstimator:
+    def __init__(self):
+        self.prepare_calls = 0
+        self.reset_calls = 0
+        self.estimate_calls = []
+
+    def prepare(self):
+        self.prepare_calls += 1
+
+    def estimate(self, frame, bbox):
+        self.estimate_calls.append((frame, bbox))
+        return {
+            "body_orientation_model": "jointbdoe",
+            "body_orientation_angle": 92.5,
+            "body_orientation_raw_angle": 95.0,
+            "body_orientation_detection_confidence": 0.88,
+            "body_orientation_match_iou": 0.74,
+            "body_orientation_latency_ms": 12.0,
+        }
+
+    def reset(self):
+        self.reset_calls += 1
+
+
 class FakeYOLO:
     def __init__(self, model_path):
         self.model_path = model_path
@@ -140,6 +164,29 @@ class PersonReIDDetectorTestCase(unittest.TestCase):
         self.assertEqual(result["candidate_count"], 2)
         self.assertEqual(result["candidates"][0]["display_label"], "非目标人物")
         self.assertEqual(result["candidates"][1]["display_label"], "目标人物")
+
+    def test_jointbdoe_runs_only_after_reid_accepts_target(self):
+        orientation = FakeOrientationEstimator()
+        detector = build_detector(
+            [
+                {"bbox_xyxy": (5, 10, 35, 90)},
+                {"bbox_xyxy": (60, 20, 110, 90)},
+            ],
+            [[0.0, 1.0], [1.0, 0.0]],
+            orientation_estimator=orientation,
+        )
+
+        result = detector.detect(self.frame)
+
+        self.assertTrue(result["found"])
+        self.assertEqual(result["body_orientation_model"], "jointbdoe")
+        self.assertEqual(result["body_orientation_angle"], 92.5)
+        self.assertEqual(result["body_orientation_detection_confidence"], 0.88)
+        self.assertEqual(orientation.prepare_calls, 1)
+        self.assertEqual(orientation.estimate_calls[0][1], (60, 20, 50, 70))
+
+        detector.reset()
+        self.assertEqual(orientation.reset_calls, 1)
 
     def test_below_threshold_is_rejected(self):
         detector = build_detector(

@@ -2,4 +2,7 @@
 torch
 torchvision
 ultralytics==8.4.117
+pandas
+seaborn
+thop
 git+https://github.com/KaiyangZhou/deep-person-reid.git

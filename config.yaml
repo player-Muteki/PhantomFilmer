@@ -26,7 +26,9 @@ camera_height: 480
 vision:
   # 多张参考图用英文逗号分隔，路径相对于项目根目录。
   reference_images: "data/reid_target/front.jpg,data/reid_target/side.jpg"
-  person_detector_model: "weights/yolo11n.pt"
+  # 实时免起飞测试使用已注册并与 yolov8n 权重匹配的人物档案。
+  reference_profile: "person-a-current-outfit"
+  person_detector_model: "weights/yolov8n.pt"
   person_detection_confidence: 0.45
   reid_model_name: "osnet_x0_25"
   reid_model_path: "weights/osnet_x0_25_msmt17.pth"
@@ -35,6 +37,17 @@ vision:
   reid_ambiguity_margin: 0.05
   # 真机初测保持为 0：未确认身份时立即视为丢失并悬停。
   reid_temporary_lost_frames: 0
+  # JointBDOE 仅输出人体相对摄像机的朝向角，当前不参与飞控。
+  # 先用 tools/jointbdoe_angle_eval.py 验证现场角度和 CPU 帧率后再开启。
+  jointbdoe_enabled: true
+  jointbdoe_source_path: "third_party/JointBDOE"
+  jointbdoe_model_path: "weights/jointbdoe_s.pt"
+  jointbdoe_device: "cpu"
+  jointbdoe_image_size: 640
+  jointbdoe_confidence_threshold: 0.30
+  jointbdoe_iou_threshold: 0.45
+  jointbdoe_match_iou_threshold: 0.20
+  jointbdoe_smoothing_window: 5
   # 视觉物体框只用于屏幕提示，不参与飞控避障；先关闭并完成 CPU 性能测试。
   visual_object_detection_enabled: false
   visual_object_confidence: 0.35
