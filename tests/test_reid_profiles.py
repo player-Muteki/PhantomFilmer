@@ -106,17 +106,16 @@ def test_profile_name_rejects_path_traversal() -> None:
 def test_runtime_config_selects_profile_without_mutating_default() -> None:
     original = {
         "vision": {
-            "detector_type": "aruco",
             "reference_images": ["old.jpg"],
+            "reid_device": "cpu",
         }
     }
 
     runtime = build_reid_runtime_config(original, profile_name="person-a")
 
-    assert runtime["vision"]["detector_type"] == "person_reid"
     assert runtime["vision"]["reference_profile"] == "person-a"
     assert "reference_images" not in runtime["vision"]
-    assert original["vision"]["detector_type"] == "aruco"
+    assert original["vision"]["reid_device"] == "cpu"
 
 
 def test_manifest_is_plain_json_without_source_paths_or_filenames(tmp_path: Path) -> None:

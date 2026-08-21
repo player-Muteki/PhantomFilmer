@@ -1,6 +1,6 @@
 # PhantomFilmer 代码调研文档 · 总入口
 
-> 本文档是对 PhantomFilmer 仓库**当前实现**（HEAD `7f5fcf6`）的从功能出发、由外到内的代码调研。它以源码为唯一事实源，不沿用旧版本文档或本地旧日志中的描述；凡与代码不一致的旧说法会标为“已知限制/历史线索”。
+> 本文档是对 PhantomFilmer 当前工作树的从功能出发、由外到内的代码调研；以源码为唯一事实源。
 
 ## 0. 阅读导航
 
@@ -16,17 +16,17 @@
 
 ## 1. 系统是什么
 
-**PhantomFilmer** 是一个面向 **RoboMaster TT / Tello Talent** 无人机的自动跟拍系统 **Python 原型**。核心能力：开启视频流 → 视觉识别目标（红色 / ArUco / 人物 ReID）→ 起飞并闭环到基础悬停高度 → 低俗目标跟随 → 目标丢失时有界搜索 → 可选前向 ToF 避障 → 电量/高度/超时安全降落。
+**PhantomFilmer** 是一个面向 **RoboMaster TT / Tello Talent** 无人机的自动跟拍系统 **Python 原型**。核心能力：开启视频流 → 人物 ReID → 起飞并闭环到基础悬停高度 → 低速目标跟随 → 目标丢失时有界搜索 → 可选前向 ToF 避障 → 电量/高度/超时安全降落。
 
 - **单进程、单机**：所有逻辑运行在一个 Python 进程内，通过 UDP（`djitellopy` SDK）与无人机通信。
 - **原型而非产品**：当前能力边界与未实现项见 [05-安全机制与硬件边界](05-安全机制与硬件边界.md)。
 
 ## 2. 外部功能地图
 
-CLI 入口 `main.py::main`（[main.py:120](../main.py#L120)）根据 `--mode` 分发到 `app/modes.py::run_*`。14 种模式分为几类：
+CLI 入口 `main.py::main` 根据 `--mode` 分发到 `app/modes.py::run_*`。13 种模式分为几类：
 
 - **描述 / 诊断**：`demo`（默认，只 describe 系统）、`status`、`connection-test`
-- **摄像头**：`camera`（用配置检测器）、`camera-debug`（强制红色检测）
+- **摄像头**：`camera`（地面 ReID 预览）
 - **飞行**：`follow`、`fixed-demo`、`basic-flight-test`（真机确认后起飞悬停 5 s）、`reid-demo`
 - **只算不飞**：`follow-dry-run`（复用生产仲裁、不起飞不发 RC）
 - **纯测试**：`follow-test`、`safety-test`（不起飞）
@@ -65,7 +65,7 @@ flowchart LR
 
 ## 4. 混合架构：兼容 facade + 精简内核
 
-`FollowSession`（[control/follow_session.py:39](../control/follow_session.py#L39)，1335 行）是 **兼容性门面**：保留构造签名、UI/遥测、传感器、阻塞子循环和大量状态，其 `run()` 直接委托给 `KernelSession`（[control/follow_session.py:175](../control/follow_session.py#L175)）。
+`FollowSession`（[control/follow_session.py:40](../control/follow_session.py#L40)，1744 行）是 **兼容性门面**：保留构造签名、UI/遥测、传感器、阻塞子循环和大量状态，其 `run()` 直接委托给 `KernelSession`。
 
 `KernelSession`（[control/kernel/session.py:19](../control/kernel/session.py#L19)）是**精简内核**：拥有生命周期 phase FSM、唯一自治 RC 发射缝（`_emit`）、feature fail-safe（`_failsafe`）和 finally 清理。详见 [02-系统架构与生命周期](02-系统架构与生命周期.md)。
 
@@ -105,12 +105,11 @@ flowchart LR
 
 1. **避障输入不是视觉**：障碍信号仅来自 RoboMaster TT 顶部扩展前向 ToF，`DistanceOnlyObstacleDetector` 不分析任何像素（[vision/obstacle_detect.py:108](../vision/obstacle_detect.py#L108)）。
 2. **ToF 盲区**：顶部 ToF 不能保护后方、侧方、上方、下方；1 m 侧移是速度—时间估算，非里程计实测。
-3. **ReID 是实验能力**：只做外观匹配，不识别身份；俯视/遮挡/换衣/逆光/低分辨率都不可靠。默认检测器是 `aruco`。
+3. **ReID 是唯一识别能力**：只做外观匹配，不识别真实姓名；俯视/遮挡/换衣/逆光/低分辨率都不可靠。
 4. **`--lock-frames` 是兼容参数**：被解析（[main.py:112](../main.py#L112)）但在 `run_reid_demo` 中 `del lock_frames` 不参与流程（[app/modes.py:425](../app/modes.py#L425)）。
 5. **初始 ReID 接受**：当前实现可在单个 fresh 帧后进入 FOLLOWING（受相似度阈值与歧义 margin 约束）；`reacquire_frames=5` 主要约束搜索后的重新确认，不是“起飞前连续五帧锁定”。
 6. **“单 RC 出口”是设计目标而非全量事实**：正常自治运动经 `_emit`，但零命令兼容路径会直接发 `move_rc`。
-7. **`camera` 模式 docstring 过期**：docstring 写“red targets”，实际用配置选择的检测器（[app/modes.py:99](../app/modes.py#L99)）。
-8. **测试状态**：2026-08-17 实测 `pytest tests/` 全绿（316 passed，0 skipped）；但未覆盖真机/Wi-Fi/真实 ToF，详见 [06](06-配置测试与源码索引.md) §5。
+7. **测试状态**：测试覆盖软件链路，但未覆盖真机/Wi-Fi/真实 ToF 与真实人物视频，详见 [06](06-配置测试与源码索引.md) §5。
 
 ## 8. 文档维护规则
 

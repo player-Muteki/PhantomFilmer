@@ -22,12 +22,10 @@ from app.config import (
     load_runtime_config,
     prompt_obstacle_enabled,
     read_control_interval,
-    selected_detector_type,
 )
 from app.modes import (
     run_basic_flight_test,
     run_camera,
-    run_camera_debug,
     run_console,
     run_connection_test,
     run_fixed_demo,
@@ -55,7 +53,6 @@ def parse_args() -> argparse.Namespace:
             "follow-dry-run",
             "fixed-demo",
             "basic-flight-test",
-            "camera-debug",
             "camera",
             "follow",
             "reid-enroll",
@@ -149,8 +146,6 @@ def main() -> int:
         )
     if args.mode == "basic-flight-test":
         return run_basic_flight_test()
-    if args.mode == "camera-debug":
-        return run_camera_debug(use_fake=args.fake)
     if args.mode == "camera":
         return run_camera(use_fake=args.fake)
     if args.mode == "follow":

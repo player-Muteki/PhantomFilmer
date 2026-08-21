@@ -29,7 +29,6 @@ from vision.reid_enrollment import (
     validate_reference_directory,
 )
 from vision.reid_profiles import save_reid_profile
-from vision.target_detect import TargetDetector
 
 
 def run_status(use_fake: bool = False) -> int:
@@ -97,11 +96,11 @@ def run_console(
 
 
 def run_camera(use_fake: bool = False) -> int:
-    """Connect to the drone, show camera stream, and detect red targets."""
+    """Connect to the drone, show camera stream, and run person ReID."""
     try:
         import cv2
     except ModuleNotFoundError:
-        print("缺少 opencv-contrib-python 依赖：请先安装 requirements.txt。")
+        print("缺少 opencv-python 依赖：请先安装 requirements.txt。")
         return 1
 
     config = load_config()
@@ -110,6 +109,9 @@ def run_camera(use_fake: bool = False) -> int:
     detector = create_detector(config)
 
     try:
+        prepare_detector = getattr(detector, "prepare", None)
+        if callable(prepare_detector):
+            prepare_detector()
         print("正在连接模拟无人机..." if use_fake else "正在连接 RoboMaster TT / Tello...")
         drone.connect()
         camera = CameraStream(
@@ -129,10 +131,6 @@ def run_camera(use_fake: bool = False) -> int:
             result = detector.detect(frame)
             debug_frame = detector.draw_debug(frame, result)
             cv2.imshow("PhantomFilmer Camera", debug_frame)
-            last_mask = getattr(detector, "last_mask", None)
-            if last_mask is not None:
-                cv2.imshow("PhantomFilmer Red Mask", last_mask)
-
             key = cv2.waitKey(1) & 0xFF
             if key == ord("q"):
                 print("已收到退出指令，正在关闭视频流。")
@@ -154,70 +152,6 @@ def run_camera(use_fake: bool = False) -> int:
                 print(str(exc))
         drone.stop()
         cv2.destroyAllWindows()
-
-
-def run_camera_debug(use_fake: bool = False) -> int:
-    """Show BGR, channel-swapped, and red-mask windows for camera diagnosis."""
-    try:
-        import cv2
-    except ModuleNotFoundError:
-        print("缺少 opencv-contrib-python 依赖：请先安装 requirements.txt。")
-        return 1
-
-    config = load_config()
-    drone = create_drone_adapter(use_fake, config=config)
-    camera = None
-    detector = TargetDetector.from_config(config)
-
-    try:
-        print("正在连接模拟无人机..." if use_fake else "正在连接 RoboMaster TT / Tello...")
-        drone.connect()
-        camera = CameraStream(
-            drone=drone,
-            width=int(config.get("camera_width", 640)),
-            height=int(config.get("camera_height", 480)),
-        )
-        camera.start()
-        print("camera-debug 已启动：不允许起飞，不发送 move_rc。按 q 退出。")
-
-        while True:
-            frame = camera.read_frame()
-            if frame is None:
-                print("未读取到画面，请检查无人机视频流。")
-                continue
-
-            result = detector.detect(frame)
-            debug_frame = detector.draw_debug(frame, result)
-            swapped_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            mask = detector.last_mask if detector.last_mask is not None else detector.create_red_mask(frame)
-
-            cv2.imshow("camera-debug original BGR", debug_frame)
-            cv2.imshow("camera-debug BGR/RGB swapped", swapped_frame)
-            cv2.imshow("camera-debug red mask", mask)
-
-            key = cv2.waitKey(1) & 0xFF
-            if key == ord("q"):
-                print("已收到退出指令，正在关闭视频流。")
-                break
-
-        return 0
-    except RuntimeError as exc:
-        print(str(exc))
-        if not use_fake:
-            print("请先连接 RoboMaster TT / Tello 的 Wi-Fi。")
-        return 1
-    except KeyboardInterrupt:
-        print("已手动中断，正在关闭视频流。")
-        return 0
-    finally:
-        if camera is not None:
-            try:
-                camera.stop()
-            except RuntimeError as exc:
-                print(str(exc))
-        drone.stop()
-        cv2.destroyAllWindows()
-
 
 def run_basic_flight_test() -> int:
     """Run a real-drone takeoff, 5-second hover, and landing test."""
@@ -566,7 +500,7 @@ def run_follow_dry_run(
     try:
         import cv2
     except ModuleNotFoundError:
-        print("缺少 opencv-contrib-python 依赖：请先安装 requirements.txt。")
+        print("缺少 opencv-python 依赖：请先安装 requirements.txt。")
         return 1
 
     config = load_runtime_config(obstacle_enabled)

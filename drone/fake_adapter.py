@@ -21,9 +21,6 @@ class FakeDroneAdapter(DroneAdapter):
         target_lost_interval_seconds: float = 12.0,
         target_lost_duration_seconds: float = 2.0,
         takeoff_height_cm: int = 70,
-        detector_type: str = "red",
-        aruco_dictionary: str = "DICT_4X4_50",
-        target_marker_id: int = 23,
     ) -> None:
         self.connected = False
         self.streaming = False
@@ -36,9 +33,6 @@ class FakeDroneAdapter(DroneAdapter):
         self.target_lost_interval_seconds = target_lost_interval_seconds
         self.target_lost_duration_seconds = target_lost_duration_seconds
         self.takeoff_height_cm = max(20, int(takeoff_height_cm))
-        self.detector_type = str(detector_type).strip().lower()
-        self.aruco_dictionary = str(aruco_dictionary)
-        self.target_marker_id = int(target_marker_id)
         self.last_rc_command = (0, 0, 0, 0)
         self.frame_index = 0
         self.target_visible = True
@@ -120,11 +114,11 @@ class FakeDroneAdapter(DroneAdapter):
         print("模拟视频流关闭")
 
     def get_frame(self) -> Any:
-        """Return a dynamic BGR test image with a moving red target."""
+        """Return a dynamic BGR test image with a moving simulated subject."""
         try:
             import cv2
         except ModuleNotFoundError as exc:
-            raise RuntimeError("缺少 opencv-contrib-python 依赖：请先安装 requirements.txt。") from exc
+            raise RuntimeError("缺少 opencv-python 依赖：请先安装 requirements.txt。") from exc
 
         self.frame_index += 1
         frame = np.zeros((self.camera_height, self.camera_width, 3), dtype=np.uint8)
@@ -173,65 +167,11 @@ class FakeDroneAdapter(DroneAdapter):
         y1 = max(0, center_y - half_size)
         x2 = min(self.camera_width - 1, center_x + half_size)
         y2 = min(self.camera_height - 1, center_y + half_size)
-        if self.detector_type == "aruco":
-            self._draw_aruco_target(frame, cv2, x1, y1, x2, y2)
-        else:
-            cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 255), -1)
+        head_radius = max(6, half_size // 4)
+        cv2.circle(frame, (center_x, y1 + head_radius), head_radius, (210, 210, 210), -1)
+        body_top = min(y2, y1 + head_radius * 2)
+        cv2.rectangle(frame, (x1, body_top), (x2, y2), (160, 160, 160), -1)
         return frame
-
-    def _draw_aruco_target(
-        self,
-        frame: Any,
-        cv2: Any,
-        x1: int,
-        y1: int,
-        x2: int,
-        y2: int,
-    ) -> None:
-        """Draw a detectable ArUco marker with a white quiet zone."""
-        if not hasattr(cv2, "aruco"):
-            raise RuntimeError(
-                "当前 OpenCV 不包含 ArUco，请安装 requirements.txt 中的 "
-                "opencv-contrib-python。"
-            )
-
-        marker_size = max(24, min(x2 - x1, y2 - y1))
-        marker_x2 = x1 + marker_size
-        marker_y2 = y1 + marker_size
-        quiet_zone = max(6, marker_size // 8)
-        cv2.rectangle(
-            frame,
-            (max(0, x1 - quiet_zone), max(0, y1 - quiet_zone)),
-            (
-                min(self.camera_width - 1, marker_x2 + quiet_zone),
-                min(self.camera_height - 1, marker_y2 + quiet_zone),
-            ),
-            (255, 255, 255),
-            -1,
-        )
-
-        dictionary_id = getattr(
-            cv2.aruco,
-            self.aruco_dictionary,
-            cv2.aruco.DICT_4X4_50,
-        )
-        dictionary = cv2.aruco.getPredefinedDictionary(dictionary_id)
-        if hasattr(cv2.aruco, "generateImageMarker"):
-            marker = cv2.aruco.generateImageMarker(
-                dictionary,
-                self.target_marker_id,
-                marker_size,
-            )
-        else:
-            marker = np.zeros((marker_size, marker_size), dtype=np.uint8)
-            cv2.aruco.drawMarker(
-                dictionary,
-                self.target_marker_id,
-                marker_size,
-                marker,
-                1,
-            )
-        frame[y1:marker_y2, x1:marker_x2] = cv2.cvtColor(marker, cv2.COLOR_GRAY2BGR)
 
     def _is_target_visible(self) -> bool:
         """Return whether the fake target should be drawn this frame."""

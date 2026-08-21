@@ -170,11 +170,3 @@ def read_control_interval(config: dict) -> float:
     if interval <= 0:
         return 0.05
     return max(0.02, min(0.2, interval))
-
-
-def selected_detector_type(config: dict) -> str:
-    """Return the normalized detector type selected by project config."""
-    vision = config.get("vision", {})
-    if not isinstance(vision, dict):
-        return "red"
-    return str(vision.get("detector_type", "red")).strip().lower()

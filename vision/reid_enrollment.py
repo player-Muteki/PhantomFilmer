@@ -65,7 +65,6 @@ def build_reid_runtime_config(
     runtime = dict(config)
     raw_vision = config.get("vision", {})
     vision = dict(raw_vision) if isinstance(raw_vision, dict) else {}
-    vision["detector_type"] = "person_reid"
     if selected_profile:
         vision["reference_profile"] = selected_profile
         vision.pop("reference_images", None)
@@ -73,17 +72,6 @@ def build_reid_runtime_config(
         vision["reference_images"] = [str(path) for path in images]
         vision.pop("reference_profile", None)
     runtime["vision"] = vision
-    # ReID 人物距离带与默认 ArUco 分开标定：仅在 ReID 运行期覆盖到 shared 顶层
-    # 键，避免默认 ArUco 跟随被静默调近。
-    for key in (
-        "target_area_ratio_min",
-        "target_area_ratio_max",
-        "target_lock_exit_area_ratio_min",
-        "target_lock_exit_area_ratio_max",
-    ):
-        reid_key = f"reid_{key}"
-        if reid_key in runtime:
-            runtime[key] = runtime[reid_key]
     return runtime
 
 

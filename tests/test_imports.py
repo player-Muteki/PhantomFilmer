@@ -30,10 +30,9 @@ class ImportTestCase(unittest.TestCase):
         import main
         import ui.dashboard
         import vision.camera
-        import vision.target_detect
-        import vision.aruco_detect
         import vision.detector_factory
         import vision.obstacle_detect
+        import vision.person_reid_detect
 
         self.assertIsNotNone(main)
         self.assertIsNotNone(console.console_controller)
@@ -51,10 +50,9 @@ class ImportTestCase(unittest.TestCase):
         self.assertIsNotNone(drone.tello_adapter)
         self.assertIsNotNone(ui.dashboard)
         self.assertIsNotNone(vision.camera)
-        self.assertIsNotNone(vision.target_detect)
-        self.assertIsNotNone(vision.aruco_detect)
         self.assertIsNotNone(vision.detector_factory)
         self.assertIsNotNone(vision.obstacle_detect)
+        self.assertIsNotNone(vision.person_reid_detect)
 
     def test_safety_manager_import(self) -> None:
         from drone.safety import SafetyConfig, SafetyManager

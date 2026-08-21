@@ -1,7 +1,6 @@
 # Tested offline ReID runtime on macOS arm64 / Python 3.12.13.
 # Install this file before installing Torchreid with --no-build-isolation.
 numpy==2.5.2
-opencv-python==5.0.0.93
 PyYAML==6.0.3
 torch==2.13.0
 torchvision==0.28.0

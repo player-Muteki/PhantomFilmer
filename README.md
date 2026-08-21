@@ -5,7 +5,7 @@
 ## 依赖
 
 - `djitellopy` - 无人机通信控制
-- `opencv-contrib-python` - 摄像头图像处理、目标检测与 ArUco 支持
+- `opencv-python` - 摄像头图像处理与调试画面
 - `numpy` - 数值计算
 - `pyyaml` - 配置文件读取
 
@@ -14,7 +14,7 @@
 `DroneAdapter` 是统一抽象基类，定义 `connect/takeoff/land/stop/move_rc/get_battery/get_height/stream_on/stream_off/get_frame` 接口。其他模块只依赖此接口，不直接导入硬件 SDK。
 
 - **TelloDroneAdapter** - RoboMaster TT / Tello Talent 真机实现，唯一直接导入 `djitellopy` 的模块。
-- **FakeDroneAdapter** - 模拟实现，按检测器配置生成动态红色目标或 ArUco 标记，支持移动、大小变化和间歇丢失；无真机时使用 `--fake` 启用。
+- **FakeDroneAdapter** - 模拟实现，生成动态人物轮廓，支持移动、大小变化和间歇丢失；无真机时使用 `--fake` 启用。
 
 如需接入其他型号无人机，新增 `DroneAdapter` 子类即可。
 
@@ -38,7 +38,7 @@ python3 -m venv .venv
 .venv/bin/python main.py --mode <mode> [--fake]
 ```
 
-开发和测试环境使用 `requirements-dev.txt`。OpenCV 核心包与 contrib 包固定为同一版本，并让 contrib 最后安装，以兼容 `djitellopy` 的传递依赖和 ArUco 模块。
+开发和测试环境使用 `requirements-dev.txt`。人物 ReID 的模型依赖较重，建议使用下文的独立环境安装脚本。
 
 ### 模式列表
 
@@ -48,7 +48,6 @@ python3 -m venv .venv
 | `status` | 连接无人机，读取电量与高度 | 是 |
 | `connection-test` | 只验证 `command -> ok` 和 `battery?`，不飞行、不打开摄像头 | 是 |
 | `camera` | 开启视频流与目标检测画面 | 是 |
-| `camera-debug` | 显示 BGR 原图、通道互换和红色掩膜，不发送 RC | 是 |
 | `follow` | 起飞并目标跟随，支持按次选择是否开启避障 | 是 |
 | `reid-enroll` | 从参考照片创建本地具名人物特征档案，不连接无人机 | 否 |
 | `reid-demo` | 现场录入人物，地面连续识别和人工确认后才起飞跟随 | 仅可验证失败保护 |
@@ -88,21 +87,14 @@ python3 -m venv .venv
 手动选择依赖 OpenCV 摄像头窗口；若 `display_console_camera: false`，系统没有键盘
 输入源，会安全停止并降落。
 
-## 检测器
+## 识别链路
 
-`config.yaml` 中 `vision.detector_type` 决定检测器类型：
+系统只保留人物 ReID：YOLO11n 检测画面中的行人，Torchreid/OSNet 提取外观特征，
+再与本地参考照片或具名档案进行余弦相似度匹配。`create_detector()` 始终创建
+`PersonReIDDetector`，不存在运行时识别策略开关。
 
-- **`red`** - 红色目标检测，使用 HSV 颜色阈值和 RGB 主色过滤
-- **`aruco`** - ArUco 标记检测，支持坐标/面积平滑和临时丢失容忍
-- **`person_reid`** - 实验性人物 ReID，使用 YOLO 行人检测和 Torchreid/OSNet 外观特征匹配
-
-当前默认选择 `aruco`；检测器工厂在未配置类型时使用 `red`。
-
-```bash
-python3 tools/generate_aruco_marker.py
-```
-
-各检测器保持相同的基础输出接口（`found`、`center`、`area`、`bbox`），下游控制器无需按检测器类型分支。
+检测结果使用稳定的基础接口（`found`、`center`、`area`、`bbox`、`ambiguous`），
+供跟随、搜索、避障和安全模块消费。
 
 ## 人物 ReID
 
@@ -145,12 +137,12 @@ MPLCONFIGDIR=.matplotlib YOLO_CONFIG_DIR=.ultralytics \
   .venv-reid/bin/python tools/reid_offline_eval.py
 ```
 
-ReID 只进行外观匹配，不识别真实姓名；俯视、遮挡、换衣、逆光和低分辨率都会降低可靠性。完成真实目标视频测试以前，不得启用真机 ReID 起飞跟随，ArUco 模式必须保留为安全降级方案。
+ReID 只进行外观匹配，不识别真实姓名；俯视、遮挡、换衣、逆光和低分辨率都会降低可靠性。完成真实目标视频测试以前，不得启用真机 ReID 起飞跟随。
 
 ### 现场 ReID 演示
 
-`reid-demo` 不会修改 `config.yaml` 的默认 ArUco 设置。它只在本次运行内强制启用
-`person_reid`。推荐先将一组照片注册成只保存在本地的具名档案：
+`reid-demo` 不会修改 `config.yaml`，只在本次运行内选择参考照片或本地档案。
+推荐先将一组照片注册成只保存在本地的具名档案：
 
 ```bash
 .venv-reid/bin/python main.py --mode reid-enroll \
@@ -264,11 +256,12 @@ ReID 只进行外观匹配，不识别真实姓名；俯视、遮挡、换衣、
 无真机时通过 `--fake` 启用 `FakeDroneAdapter`：
 
 - 返回模拟电量和高度
-- 按 `vision.detector_type` 生成动态红色目标或 ArUco 标记
+- 生成会移动、缩放并间歇丢失的中性人物轮廓
 - 目标会移动、缩放并间歇丢失
-- 画面仍经过检测器、控制器、安全层和模拟 RC 输出链路
+- 画面仍经过 ReID、控制器、安全层和模拟 RC 输出链路
 
-Fake ArUco 可验证软件链路，但无法复现光照、运动模糊和无线视频延迟。`person_reid` 仍需要真实参考图、模型权重和可检测的人物画面。
+模拟人物轮廓不保证能被 YOLO/ReID 接受，因此 Fake 模式主要验证目标丢失保护、
+控制生命周期和模拟 RC 输出。完整识别验证仍需要真实参考图、模型权重和真实人物画面。
 
 ## 测试
 

@@ -1,4 +1,4 @@
-"""Low-speed target-following control for red target tracking."""
+"""Low-speed target-following control for person ReID tracking."""
 
 from dataclasses import dataclass
 from typing import Dict, Optional, Tuple

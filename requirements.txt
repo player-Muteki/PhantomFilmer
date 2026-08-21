@@ -1,8 +1,5 @@
 djitellopy==2.5.0
-# djitellopy declares opencv-python; keep both OpenCV distributions on the
-# same release and install contrib last so the shared cv2 package has ArUco.
 opencv-python==4.14.0.94
-opencv-contrib-python==4.14.0.94
 numpy==2.5.2
 PyYAML==6.0.3
 Pillow==12.3.0

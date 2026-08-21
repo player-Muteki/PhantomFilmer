@@ -28,8 +28,23 @@ from drone.fake_adapter import FakeDroneAdapter
 from drone.safety import SafetyConfig, SafetyManager
 import main
 from app import modes as app_modes
-from vision.aruco_detect import ArucoTargetDetector
-from vision.target_detect import TargetDetector
+
+
+class StaticDetector:
+    """Return a stable target for control-session unit tests."""
+
+    def detect(self, frame):
+        return {
+            "found": True,
+            "is_predicted": False,
+            "ambiguous": False,
+            "center": (320, 240),
+            "area": 12000,
+            "bbox": (280, 120, 80, 240),
+        }
+
+    def draw_debug(self, frame, result):
+        return frame
 
 
 def build_safety(max_rc_speed: int = 25) -> SafetyManager:
@@ -52,7 +67,7 @@ def build_session(drone: FakeDroneAdapter, safety: SafetyManager) -> ConsoleFoll
     return ConsoleFollowSession(
         drone=drone,
         safety_manager=safety,
-        detector=TargetDetector(),
+        detector=StaticDetector(),
         follow_controller=FollowController(safety_manager=safety),
         config={
             "display_console_camera": False,
@@ -166,70 +181,36 @@ class StuckSession:
     airborne = False
 
 
-@unittest.skipIf(cv2 is None, "opencv-contrib-python is required for fake camera and visual detection tests")
+@unittest.skipIf(cv2 is None, "opencv-python is required for fake camera tests")
 class FakeAdapterTestCase(unittest.TestCase):
     """Verify the fake camera behaves like a real image source."""
 
-    def test_fake_frame_shape_and_detection(self) -> None:
+    def test_fake_frame_shape_and_subject_visibility(self) -> None:
         drone = FakeDroneAdapter(verbose_rc=False)
         frame = drone.get_frame()
-        detector = TargetDetector()
-        result = detector.detect(frame)
 
         self.assertEqual(frame.shape, (480, 640, 3))
-        self.assertTrue(result["found"])
+        self.assertTrue(drone.target_visible)
+        self.assertGreater(int(frame.max()), 0)
 
-    def test_fake_target_center_and_area_change(self) -> None:
+    def test_fake_subject_frame_changes_over_time(self) -> None:
         drone = FakeDroneAdapter(verbose_rc=False, target_speed=8)
-        detector = TargetDetector()
-        centers = []
-        areas = []
-
+        first = drone.get_frame()
+        latest = first
         for _ in range(35):
-            result = detector.detect(drone.get_frame())
-            if result["found"]:
-                centers.append(result["center"])
-                areas.append(round(float(result["area"] or 0.0), 1))
+            latest = drone.get_frame()
 
-        self.assertGreater(len(set(centers)), 1)
-        self.assertGreater(len(set(areas)), 1)
+        self.assertTrue((first != latest).any())
 
     def test_fake_target_lost_and_rc_memory(self) -> None:
         drone = FakeDroneAdapter(verbose_rc=False)
         drone.force_target_visible = False
-        detector = TargetDetector()
 
-        result = detector.detect(drone.get_frame())
+        drone.get_frame()
         drone.move_rc(3, 4, 0, -2)
 
-        self.assertFalse(result["found"])
+        self.assertFalse(drone.target_visible)
         self.assertEqual(drone.last_rc_command, (3, 4, 0, -2))
-
-    @unittest.skipUnless(
-        cv2 is not None and hasattr(cv2, "aruco"),
-        "OpenCV ArUco support is required",
-    )
-    def test_fake_aruco_frame_is_detected(self) -> None:
-        config = {
-            "vision": {
-                "detector_type": "aruco",
-                "aruco_dictionary": "DICT_4X4_50",
-                "target_marker_id": 23,
-                "min_marker_area": 100,
-            }
-        }
-        drone = FakeDroneAdapter(
-            verbose_rc=False,
-            detector_type="aruco",
-            aruco_dictionary="DICT_4X4_50",
-            target_marker_id=23,
-        )
-        detector = ArucoTargetDetector.from_config(config)
-
-        result = detector.detect(drone.get_frame())
-
-        self.assertTrue(result["found"])
-        self.assertEqual(result["marker_id"], 23)
 
 
 class FollowControllerTestCase(unittest.TestCase):
@@ -608,7 +589,7 @@ class ConsoleFollowSessionTestCase(unittest.TestCase):
         tools = ConsoleTools(
             drone=drone,
             safety_manager=safety,
-            detector=TargetDetector(),
+            detector=StaticDetector(),
             follow_controller=FollowController(safety_manager=safety),
             config={"display_console_camera": False},
             mode_label="FAKE",
@@ -637,7 +618,7 @@ class ConsoleFollowSessionTestCase(unittest.TestCase):
         tools = ConsoleTools(
             drone=drone,
             safety_manager=safety,
-            detector=TargetDetector(),
+            detector=StaticDetector(),
             follow_controller=FollowController(safety_manager=safety),
             config={"display_console_camera": False},
             mode_label="FAKE",
@@ -666,7 +647,7 @@ class ConsoleFollowSessionTestCase(unittest.TestCase):
         tools = ConsoleTools(
             drone=drone,
             safety_manager=safety,
-            detector=TargetDetector(),
+            detector=StaticDetector(),
             follow_controller=FollowController(safety_manager=safety),
             config={"task_stop_timeout_seconds": 1},
             mode_label="FAKE",
@@ -740,7 +721,7 @@ class ConsoleFollowSessionTestCase(unittest.TestCase):
         session = FollowSession(
             drone=drone,
             safety_manager=safety,
-            detector=TargetDetector(),
+            detector=StaticDetector(),
             follow_controller=FollowController(safety_manager=safety),
             config={
                 "display_console_camera": False,
@@ -836,7 +817,7 @@ class ConsoleFollowSessionTestCase(unittest.TestCase):
         session = FollowSession(
             drone=drone,
             safety_manager=safety,
-            detector=TargetDetector(),
+            detector=StaticDetector(),
             follow_controller=FollowController(safety_manager=safety),
             config={
                 "display_console_camera": False,
@@ -944,7 +925,7 @@ class ConsoleFollowSessionTestCase(unittest.TestCase):
         session = FollowSession(
             drone=drone,
             safety_manager=safety,
-            detector=TargetDetector(),
+            detector=StaticDetector(),
             follow_controller=FollowController(safety_manager=safety),
             config={
                 "display_console_camera": False,
@@ -996,7 +977,7 @@ class ConsoleFollowSessionTestCase(unittest.TestCase):
         session = FollowSession(
             drone=drone,
             safety_manager=safety,
-            detector=TargetDetector(),
+            detector=StaticDetector(),
             follow_controller=FollowController(safety_manager=safety),
             config={
                 "display_console_camera": False,
@@ -1019,7 +1000,7 @@ class ConsoleFollowSessionTestCase(unittest.TestCase):
         session = FollowSession(
             drone=drone,
             safety_manager=safety,
-            detector=TargetDetector(),
+            detector=StaticDetector(),
             follow_controller=FollowController(safety_manager=safety),
             config={"display_console_camera": False, "base_hover_height_cm": 180},
             mode_label="FAKE",
@@ -1034,7 +1015,7 @@ class ConsoleFollowSessionTestCase(unittest.TestCase):
         session = RaisingLoopSession(
             drone=drone,
             safety_manager=safety,
-            detector=TargetDetector(),
+            detector=StaticDetector(),
             follow_controller=FollowController(safety_manager=safety),
             config={
                 "display_console_camera": False,
@@ -1057,7 +1038,7 @@ class ConsoleFollowSessionTestCase(unittest.TestCase):
         session = FailedHeightTakeoffSession(
             drone=drone,
             safety_manager=safety,
-            detector=TargetDetector(),
+            detector=StaticDetector(),
             follow_controller=FollowController(safety_manager=safety),
             config={
                 "display_console_camera": False,

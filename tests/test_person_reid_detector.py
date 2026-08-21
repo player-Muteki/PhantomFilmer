@@ -261,7 +261,6 @@ class PersonReIDDetectorTestCase(unittest.TestCase):
         detector = PersonReIDDetector(reference_image_paths=[])
         result = detector.detect(None)
         self.assertFalse(result["found"])
-        self.assertEqual(result["detector_type"], "person_reid")
 
     def test_from_config_reads_comma_separated_reference_images(self):
         detector = PersonReIDDetector.from_config(

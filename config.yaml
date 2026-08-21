@@ -24,14 +24,6 @@ max_rc_speed: 35
 camera_width: 640
 camera_height: 480
 vision:
-  detector_type: aruco
-  # ArUco 面积与红色轮廓面积不同；真机前请先用 follow-dry-run 标定面积阈值。
-  aruco_dictionary: DICT_4X4_50
-  target_marker_id: 23
-  smoothing_alpha: 0.30
-  temporary_lost_frames: 0
-  min_marker_area: 300
-  # 人物 ReID 模式：改为 person_reid 后才会加载以下模型。
   # 多张参考图用英文逗号分隔，路径相对于项目根目录。
   reference_images: "data/reid_target/front.jpg,data/reid_target/side.jpg"
   person_detector_model: "weights/yolo11n.pt"
@@ -62,32 +54,22 @@ horizontal_dead_zone_ratio: 0.08
 yaw_kp: 160
 minimum_yaw_speed: 15
 maximum_yaw_speed: 25
-# ArUco 前后距离分区：0.030–0.080 悬停，区外全速调整。
-target_area_ratio_min: 0.030
-target_area_ratio_max: 0.080
-# ReID 人物距离带：人物框占画面 0.22–0.32 时保持前后距离；
-# 仅 reid-demo 运行期覆盖到 shared 配置，不影响默认 ArUco 跟随。
-reid_target_area_ratio_min: 0.22
-reid_target_area_ratio_max: 0.32
+# ReID 人物框占画面 0.22–0.32 时保持前后距离。
+target_area_ratio_min: 0.22
+target_area_ratio_max: 0.32
 maximum_forward_speed: 25
 forward_speed_while_aligning: 16
 vertical_dead_zone_ratio: 0.10
 vertical_speed: 20
 target_lock_stable_frames: 15
-# 锁定退出面积带比进入带（0.030–0.080）更宽：0.025–0.085 形成面积滞回，
-# 避免面积在中带边界附近波动时反复锁定/解锁。
-target_lock_exit_area_ratio_min: 0.025
-target_lock_exit_area_ratio_max: 0.085
-# ReID 锁定退出面积带比进入带（0.22–0.32）略宽：0.20–0.34 形成面积滞回。
-reid_target_lock_exit_area_ratio_min: 0.20
-reid_target_lock_exit_area_ratio_max: 0.34
+# 锁定退出面积带略宽于进入带，形成面积滞回。
+target_lock_exit_area_ratio_min: 0.20
+target_lock_exit_area_ratio_max: 0.34
 target_lock_exit_horizontal_dead_zone_ratio: 0.12
 target_lock_exit_vertical_dead_zone_ratio: 0.15
 control_interval: 0.05
 # 控制率低于该值（Hz）时控制台会周期性告警，提示检测或显示处理过慢。
 min_control_hz: 8
-detector_min_area_ratio: 0.002
-detector_min_area: 500
 manual_control:
   enabled: true
   # 到达150 cm后持续悬停，必须在摄像头窗口按 m（手动）或 a（自动）。

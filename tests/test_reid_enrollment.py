@@ -101,16 +101,15 @@ def test_lock_tracker_requires_fresh_unambiguous_consecutive_matches() -> None:
     assert tracker.progress == "0/2"
 
 
-def test_runtime_config_enables_reid_without_mutating_project_default(tmp_path: Path) -> None:
+def test_runtime_config_sets_images_without_mutating_project_default(tmp_path: Path) -> None:
     photo = tmp_path / "person.jpg"
     photo.write_bytes(b"test")
-    original = {"vision": {"detector_type": "aruco", "reid_device": "cpu"}}
+    original = {"vision": {"reid_device": "cpu"}}
 
     runtime = build_reid_runtime_config(original, [photo])
 
-    assert runtime["vision"]["detector_type"] == "person_reid"
     assert runtime["vision"]["reference_images"] == [str(photo)]
-    assert original["vision"]["detector_type"] == "aruco"
+    assert original["vision"]["reid_device"] == "cpu"
     assert "reference_images" not in original["vision"]
 
 
@@ -239,7 +238,7 @@ def test_reid_demo_terminal_y_skips_ground_lock_and_enables_search(monkeypatch) 
     config = {
         "min_battery_takeoff": 30,
         "base_hover_height_cm": 150,
-        "vision": {"detector_type": "aruco"},
+        "vision": {"reid_device": "cpu"},
         "target_search": {"enabled": True},
     }
     monkeypatch.setattr(app_modes, "load_runtime_config", lambda value: config)

@@ -2,7 +2,7 @@
 
 from typing import Optional
 
-from app.config import load_config, load_runtime_config, selected_detector_type
+from app.config import load_config, load_runtime_config
 from console.command_parser import CommandParser
 from console.console_controller import ConsoleController
 from console.llm_client import (
@@ -56,9 +56,6 @@ def create_drone_adapter(
     """Create either the fake drone adapter or the real Tello adapter."""
     if use_fake:
         config = config or {}
-        vision_config = config.get("vision", {})
-        if not isinstance(vision_config, dict):
-            vision_config = {}
         return FakeDroneAdapter(
             verbose_rc=verbose_fake_rc,
             camera_width=int(config.get("camera_width", 640)),
@@ -71,11 +68,6 @@ def create_drone_adapter(
                 config.get("fake_target_lost_duration_seconds", 2)
             ),
             takeoff_height_cm=int(config.get("base_hover_height_cm", 70)),
-            detector_type=selected_detector_type(config),
-            aruco_dictionary=str(
-                vision_config.get("aruco_dictionary", "DICT_4X4_50")
-            ),
-            target_marker_id=int(vision_config.get("target_marker_id", 23)),
         )
     return TelloDroneAdapter()
 

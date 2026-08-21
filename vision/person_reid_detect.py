@@ -1,8 +1,7 @@
 """Person detection plus appearance-based target re-identification.
 
-The detector keeps the same small result contract as the red and ArUco
-detectors.  Heavy third-party models are loaded lazily so existing modes keep
-working when the optional ReID dependencies are not installed.
+Heavy third-party models are loaded lazily so non-vision modes keep working
+when the optional ReID dependencies are not installed.
 """
 
 import os
@@ -328,7 +327,6 @@ class PersonReIDDetector:
             "area": float(width * height),
             "area_ratio": float(width * height) / frame_area,
             "bbox": (x, y, width, height),
-            "detector_type": "person_reid",
             "similarity": best_similarity,
             "second_similarity": second_similarity if len(order) > 1 else None,
             "ambiguous": False,
@@ -641,7 +639,6 @@ class PersonReIDDetector:
             "target_center_y": None,
             "area": 0.0,
             "bbox": None,
-            "detector_type": "person_reid",
             "similarity": best_similarity,
             "second_similarity": second_similarity,
             "ambiguous": ambiguous,
