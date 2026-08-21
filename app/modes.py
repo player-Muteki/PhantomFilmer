@@ -4,6 +4,9 @@ from pathlib import Path
 from time import monotonic, sleep
 from typing import Optional, Sequence
 
+from app.runtime.commands import ConnectCommand
+from app.runtime.mission_factory import MissionFactory
+from app.runtime.models import MissionKind
 from app.builder import (
     build_obstacle_modules,
     build_safety_manager,
@@ -14,7 +17,6 @@ from app.config import load_config, load_runtime_config, read_control_interval
 from control.features import build_features
 from control.fixed_demo import FixedDemoManeuver
 from control.follow_control import FollowController
-from control.follow_session import FollowSession
 from control.kernel.arbitration import ArbitrationEngine
 from control.kernel.features import ArbitrationContext
 from control.kernel.phases import KernelPhase
@@ -83,7 +85,7 @@ def run_console(
     )
     try:
         print("正在连接模拟无人机..." if use_fake else "正在连接 RoboMaster TT / Tello...")
-        controller.tools.connect()
+        controller.tools.execute(ConnectCommand())
         return controller.run()
     except RuntimeError as exc:
         print(str(exc))
@@ -235,17 +237,19 @@ def run_follow(
                 print("已取消跟随模式：未收到用户确认。")
                 return 0
 
-        session = FollowSession(
+        session = MissionFactory(
             drone=drone,
             safety_manager=safety,
             detector=detector,
             follow_controller=controller,
             config=config,
+            motion_arbiter=motion_arbiter,
+        ).create_follow_session(
+            mission=MissionKind.FOLLOW,
             mode_label="FAKE" if use_fake else "REAL",
             window_name="PhantomFilmer Follow",
             state_label="FOLLOW",
             allow_pause=False,
-            motion_arbiter=motion_arbiter,
         )
         session.run()
         return 0
@@ -409,17 +413,19 @@ def run_reid_demo(
 
         _, _, motion_arbiter = build_obstacle_modules(config, safety)
 
-        session = FollowSession(
+        session = MissionFactory(
             drone=drone,
             safety_manager=safety,
             detector=detector,
             follow_controller=controller,
             config=config,
+            motion_arbiter=motion_arbiter,
+        ).create_follow_session(
+            mission=MissionKind.REID_FOLLOW,
             mode_label="REID-DEMO FAKE" if use_fake else "REID-DEMO REAL",
             window_name="PhantomFilmer ReID Demo",
             state_label="REID",
             allow_pause=False,
-            motion_arbiter=motion_arbiter,
             initial_target_lock_frames=0,
             enable_target_search=True,
         )
@@ -466,12 +472,15 @@ def run_fixed_demo(
                 print("已取消固定演示：未收到用户确认。")
                 return 0
 
-        session = FollowSession(
+        session = MissionFactory(
             drone=drone,
             safety_manager=safety,
             detector=detector,
             follow_controller=controller,
             config=config,
+            motion_arbiter=motion_arbiter,
+        ).create_follow_session(
+            mission=MissionKind.FIXED_DEMO,
             mode_label="FIXED-DEMO FAKE" if use_fake else "FIXED-DEMO REAL",
             window_name="PhantomFilmer Fixed Demo",
             state_label="FOLLOW",
@@ -479,7 +488,6 @@ def run_fixed_demo(
             pre_follow_maneuver=FixedDemoManeuver(
                 control_interval=read_control_interval(config)
             ),
-            motion_arbiter=motion_arbiter,
         )
         session.run()
         return 0

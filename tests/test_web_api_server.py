@@ -5,6 +5,8 @@ from tempfile import TemporaryDirectory
 from threading import Thread
 from time import sleep
 
+from app.runtime.commands import ConnectCommand, TakeoffCommand
+from app.runtime.models import AllowedAction, RuntimePhase
 from web_api.server import DroneWebService, create_server
 
 
@@ -73,6 +75,48 @@ class RealAdapterStub:
 
 
 class DroneWebServiceTests(unittest.TestCase):
+    def test_typed_commands_publish_authoritative_snapshots(self) -> None:
+        adapter = RealAdapterStub()
+        service = DroneWebService(adapter_factory=lambda: adapter)
+        self.addCleanup(service.shutdown)
+
+        connected = service.execute(ConnectCommand(command_id="connect-1"))
+        airborne = service.execute(TakeoffCommand(command_id="takeoff-1"))
+        events = service.events.events_since(0)
+
+        self.assertTrue(connected["canTakeoff"])
+        self.assertTrue(airborne["airborne"])
+        self.assertEqual(
+            [event.event_type for event in events],
+            [
+                "command.accepted",
+                "command.completed",
+                "command.accepted",
+                "command.completed",
+            ],
+        )
+        snapshot = events[-1].snapshot
+        self.assertIsNotNone(snapshot)
+        assert snapshot is not None
+        self.assertEqual(snapshot.phase, RuntimePhase.AIRBORNE)
+        self.assertIn(AllowedAction.LAND, snapshot.allowed_actions)
+        self.assertNotIn(AllowedAction.TAKEOFF, snapshot.allowed_actions)
+
+    def test_rejected_command_is_recorded_without_hiding_the_error(self) -> None:
+        service = DroneWebService(adapter_factory=RealAdapterStub)
+        self.addCleanup(service.shutdown)
+
+        with self.assertRaisesRegex(RuntimeError, "真机未连接"):
+            service.execute(TakeoffCommand(command_id="unsafe-takeoff"))
+
+        events = service.events.events_since(0)
+        self.assertEqual(
+            [event.event_type for event in events],
+            ["command.accepted", "command.rejected"],
+        )
+        self.assertEqual(events[-1].payload["commandId"], "unsafe-takeoff")
+        self.assertEqual(events[-1].snapshot.phase, RuntimePhase.ERROR)
+
     def test_connect_opens_stream_only_after_real_connection(self) -> None:
         adapter = RealAdapterStub()
         service = DroneWebService(adapter_factory=lambda: adapter)
@@ -226,6 +270,10 @@ class SidecarServerTests(unittest.TestCase):
         self.assertEqual(connect_status, 200)
         self.assertEqual(health_status, 200)
         self.assertIn('"connected": true', body)
+        self.assertEqual(
+            [event.payload["command"] for event in self.service.events.events_since(0)],
+            ["device.connect", "device.connect"],
+        )
 
     def test_video_token_is_short_lived_and_single_use(self) -> None:
         payload = self.server.issue_video_token(lifetime_seconds=10)

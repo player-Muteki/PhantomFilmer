@@ -2,6 +2,13 @@
 
 from typing import Optional
 
+from app.runtime.commands import (
+    EmergencyStopCommand,
+    RefreshStatusCommand,
+    StartMissionCommand,
+    StopMissionCommand,
+)
+from app.runtime.models import MissionKind
 from console.command_parser import CommandParser
 from console.commands import ConsoleCommand
 from console.llm_client import LLMClient
@@ -49,9 +56,9 @@ class ConsoleController:
             elif action == ConsoleCommand.START_FOLLOW:
                 self._start_task()
             elif action == ConsoleCommand.STOP_TASK:
-                self.tools.stop_task()
+                self._execute(StopMissionCommand(), self.tools.stop_task)
             elif action == ConsoleCommand.EMERGENCY_STOP:
-                self.tools.emergency_stop()
+                self._execute(EmergencyStopCommand(), self.tools.emergency_stop)
             elif action == ConsoleCommand.EXIT:
                 self.tools.close()
                 print("控制台已退出。")
@@ -62,7 +69,7 @@ class ConsoleController:
     def _show_status(self) -> None:
         """Print battery, height, and current mode."""
         try:
-            status = self.tools.get_status()
+            status = self._execute(RefreshStatusCommand(), self.tools.get_status)
         except RuntimeError as exc:
             print(f"状态读取失败：{exc}")
             return
@@ -86,4 +93,12 @@ class ConsoleController:
             print("已取消开始任务。")
             return
 
-        self.tools.start_follow_task()
+        self._execute(
+            StartMissionCommand(mission=MissionKind.FOLLOW),
+            self.tools.start_follow_task,
+        )
+
+    def _execute(self, command, fallback):
+        """Use MissionManager in production while retaining lightweight test doubles."""
+        execute = getattr(self.tools, "execute", None)
+        return execute(command) if callable(execute) else fallback()

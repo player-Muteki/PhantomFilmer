@@ -296,7 +296,7 @@ ReID 只进行外观匹配，不识别真实姓名；俯视、遮挡、换衣、
 
 自然语言控制台先使用本地规则，无法确定时可调用 OpenAI 兼容接口做白名单动作分类。所有结果只会映射为 `GET_STATUS`、`START_FOLLOW`、`STOP_TASK`、`EMERGENCY_STOP`、`EXIT` 或 `UNKNOWN`。
 
-控制台只能通过 `ConsoleTools` 调用任务级工具，底层输出必须经过 `SafetyManager`。跟随任务在后台线程运行，停止、急停和退出命令会清零输出并等待降落清理完成。
+控制台只能通过 `ConsoleTools` 调用任务级工具，连接、状态、任务启动/停止和急停统一进入 `MissionManager` 强类型命令总线；底层输出仍必须经过 `SafetyManager`。普通跟随、ReID、固定航线和 Console 任务统一由 `MissionFactory` 构造 `FollowSession`。跟随任务在后台线程运行，停止、急停和退出命令会清零输出并等待降落清理完成。
 
 启用 LLM 分类需在配置中设置 `llm_enabled: true`，并提供环境变量 `LLM_API_KEY`；未设置密钥时自动退回本地规则。
 

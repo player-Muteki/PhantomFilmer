@@ -19,7 +19,9 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-import console.tools as console_tools_module
+import app.runtime.mission_factory as mission_factory_module
+from app.runtime.commands import ConnectCommand, RefreshStatusCommand
+from app.runtime.models import RuntimePhase
 from console.follow_session import ConsoleFollowSession
 from console.tools import ConsoleTools
 from control.follow_control import FollowController, RCCommand
@@ -578,9 +580,38 @@ class ConsoleFollowSessionTestCase(unittest.TestCase):
         follow_source = inspect.getsource(app_modes.run_follow)
         console_source = inspect.getsource(ConsoleTools.start_follow_task)
 
-        self.assertIn("FollowSession", follow_source)
-        self.assertIn("FollowSession", console_source)
+        self.assertIn("MissionFactory", follow_source)
+        self.assertIn("MissionFactory", console_source)
         self.assertTrue(issubclass(ConsoleFollowSession, FollowSession))
+
+    def test_console_device_commands_use_shared_runtime_events(self) -> None:
+        drone = FakeDroneAdapter(verbose_rc=False)
+        safety = build_safety()
+        tools = ConsoleTools(
+            drone=drone,
+            safety_manager=safety,
+            detector=StaticDetector(),
+            follow_controller=FollowController(safety_manager=safety),
+            config={"display_console_camera": False},
+            mode_label="FAKE",
+        )
+
+        connected = tools.execute(ConnectCommand(command_id="console-connect"))
+        status = tools.execute(RefreshStatusCommand(command_id="console-status"))
+        events = tools.events.events_since(0)
+
+        self.assertEqual(connected["battery"], status["battery"])
+        self.assertEqual(events[-1].snapshot.phase, RuntimePhase.PREFLIGHT)
+        self.assertEqual(
+            [event.payload["command"] for event in events],
+            [
+                "device.connect",
+                "device.connect",
+                "device.status.refresh",
+                "device.status.refresh",
+            ],
+        )
+        tools.close()
 
     def test_console_start_follow_task_runs_session_in_background(self) -> None:
         drone = FakeDroneAdapter(verbose_rc=False)
@@ -597,13 +628,13 @@ class ConsoleFollowSessionTestCase(unittest.TestCase):
         tools.connected = True
         ImmediateSession.run_count = 0
 
-        original_session = console_tools_module.FollowSession
-        console_tools_module.FollowSession = ImmediateSession
+        original_session = mission_factory_module.FollowSession
+        mission_factory_module.FollowSession = ImmediateSession
         try:
             result = tools.start_follow_task()
             stopped = tools.wait_for_task(timeout=1)
         finally:
-            console_tools_module.FollowSession = original_session
+            mission_factory_module.FollowSession = original_session
 
         self.assertTrue(result)
         self.assertTrue(stopped)
@@ -626,15 +657,15 @@ class ConsoleFollowSessionTestCase(unittest.TestCase):
         tools.connected = True
         BlockingSession.started.clear()
 
-        original_session = console_tools_module.FollowSession
-        console_tools_module.FollowSession = BlockingSession
+        original_session = mission_factory_module.FollowSession
+        mission_factory_module.FollowSession = BlockingSession
         try:
             self.assertTrue(tools.start_follow_task())
             self.assertTrue(BlockingSession.started.wait(timeout=1))
             self.assertTrue(tools.is_task_active())
             tools.stop_task()
         finally:
-            console_tools_module.FollowSession = original_session
+            mission_factory_module.FollowSession = original_session
 
         self.assertFalse(tools.is_task_active())
         self.assertEqual(tools.current_mode, "待机")

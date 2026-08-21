@@ -18,6 +18,7 @@ from vision.reid_enrollment import (
     validate_reference_images,
 )
 from app import modes as app_modes
+import app.runtime.mission_factory as mission_factory_module
 
 
 class SequenceDetector:
@@ -245,7 +246,7 @@ def test_reid_demo_terminal_y_skips_ground_lock_and_enables_search(monkeypatch) 
     monkeypatch.setattr(app_modes, "create_drone_adapter", lambda *args, **kwargs: drone)
     monkeypatch.setattr(app_modes, "create_detector", lambda value: detector)
     monkeypatch.setattr(app_modes, "build_obstacle_modules", lambda *args: (None, None, None))
-    monkeypatch.setattr(app_modes, "FollowSession", RecordingSession)
+    monkeypatch.setattr(mission_factory_module, "FollowSession", RecordingSession)
     monkeypatch.setattr("builtins.input", lambda prompt: "y")
 
     result = app_modes.run_reid_demo(use_fake=False, profile_name="person-a")

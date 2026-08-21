@@ -3,6 +3,16 @@
 from threading import Event, Lock, Thread, current_thread
 from typing import Dict, Optional, Tuple
 
+from app.runtime.commands import StartMissionCommand
+from app.runtime.mission_factory import MissionFactory
+from app.runtime.mission_manager import MissionManager
+from app.runtime.models import (
+    AllowedAction,
+    ControlMode,
+    MissionKind,
+    RuntimePhase,
+    RuntimeSnapshot,
+)
 from control.follow_control import FollowController
 from control.follow_session import FollowSession
 from control.motion_arbiter import MotionArbiter
@@ -13,7 +23,7 @@ from vision.detector_protocol import DetectorProtocol
 from vision.obstacle_detect import DistanceOnlyObstacleDetector
 
 
-class ConsoleTools:
+class ConsoleTools(MissionManager):
     """Safe task-level operations available to the console.
 
     The console may call these task tools, but it never receives direct access to
@@ -37,6 +47,7 @@ class ConsoleTools:
         follow_task_allowed: bool = True,
         follow_task_block_reason: Optional[str] = None,
     ) -> None:
+        super().__init__()
         self._drone = drone
         self._safety_manager = safety_manager
         self._detector = detector
@@ -64,23 +75,79 @@ class ConsoleTools:
             1.0,
             float(self._config.get("task_stop_timeout_seconds", 10.0)),
         )
+        self._last_battery: Optional[int] = None
+        self._last_height: Optional[int] = None
 
-    def connect(self) -> None:
+    def connect(self) -> Dict[str, object]:
         """Connect through the selected DroneAdapter."""
         if self.connected:
-            return
+            return self.get_status()
         self._drone.connect()
         self.connected = True
         self.current_mode = "待机"
+        return self.get_status()
 
     def get_status(self) -> Dict[str, object]:
         """Return battery, height, and current task mode."""
         self._require_connection()
+        self._last_battery = self._drone.get_battery()
+        self._last_height = self._drone.get_height()
         return {
-            "battery": self._drone.get_battery(),
-            "height": self._drone.get_height(),
+            "battery": self._last_battery,
+            "height": self._last_height,
             "mode": self.current_mode,
         }
+
+    def status(self, probe_video: bool = True) -> Dict[str, object]:
+        del probe_video
+        return self.get_status()
+
+    def runtime_snapshot(self, *, error: str | None = None) -> RuntimeSnapshot:
+        with self._task_lock:
+            session = self._active_session
+        airborne = bool(self.airborne or (session is not None and session.airborne))
+        streaming = bool(self.streaming or (session is not None and session.streaming))
+        if not self.connected:
+            phase = RuntimePhase.ERROR if error else RuntimePhase.DISCONNECTED
+        elif airborne:
+            phase = RuntimePhase.AIRBORNE
+        else:
+            phase = RuntimePhase.PREFLIGHT
+        mode = ControlMode.NONE
+        if session is not None:
+            if session.manual_controller.active:
+                mode = ControlMode.MANUAL
+            else:
+                mode = ControlMode(session.follow_mode)
+        allowed = [AllowedAction.REFRESH_STATUS] if self.connected else [AllowedAction.CONNECT]
+        if self.connected and session is None:
+            allowed.append(AllowedAction.STOP)
+        if session is not None:
+            allowed.extend((AllowedAction.STOP, AllowedAction.EMERGENCY_LAND))
+        return RuntimeSnapshot(
+            sequence=self.events.latest_sequence,
+            phase=phase,
+            mission=MissionKind.FOLLOW if session is not None else MissionKind.IDLE,
+            control_mode=mode,
+            connected=self.connected,
+            airborne=airborne,
+            streaming=streaming,
+            flight_state=session.session_state if session is not None else self.current_mode,
+            allowed_actions=tuple(allowed),
+            telemetry={"battery": self._last_battery, "heightCm": self._last_height},
+            error=error,
+        )
+
+    def start_mission(self, command: StartMissionCommand) -> bool:
+        if command.mission is not MissionKind.FOLLOW:
+            raise RuntimeError(f"控制台暂不支持任务类型：{command.mission.value}")
+        return self.start_follow_task()
+
+    def stop_mission(self) -> None:
+        self.stop_task()
+
+    def emergency_stop_mission(self) -> None:
+        self.emergency_stop()
 
     def can_start_task(self) -> Tuple[bool, str]:
         """Check the takeoff battery threshold through SafetyManager."""
@@ -109,12 +176,17 @@ class ConsoleTools:
             print(message)
             return False
 
-        session = FollowSession(
+        session = MissionFactory(
             drone=self._drone,
             safety_manager=self._safety_manager,
             detector=self._detector,
             follow_controller=self._follow_controller,
             config=self._config,
+            obstacle_detector=self._obstacle_detector,
+            obstacle_planner=self._obstacle_planner,
+            motion_arbiter=self._motion_arbiter,
+        ).create_follow_session(
+            mission=MissionKind.FOLLOW,
             mode_label=self._mode_label,
             window_name=str(
                 self._config.get("console_window_name", "PhantomFilmer Console Follow")
@@ -122,9 +194,6 @@ class ConsoleTools:
             state_label="CONSOLE",
             allow_pause=True,
             stop_event=self._stop_event,
-            obstacle_detector=self._obstacle_detector,
-            obstacle_planner=self._obstacle_planner,
-            motion_arbiter=self._motion_arbiter,
         )
         task_thread = Thread(
             target=self._run_follow_session,

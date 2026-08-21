@@ -21,6 +21,25 @@ from time import monotonic, sleep, time
 from typing import Any, Callable, Iterator, Optional
 from urllib.parse import parse_qs, urlsplit
 
+from app.runtime.commands import (
+    ConnectCommand,
+    EmergencyLandCommand,
+    HoverCommand,
+    LandCommand,
+    MoveRcCommand,
+    RefreshStatusCommand,
+    StopCommand,
+    TakeoffCommand,
+)
+from app.runtime.mission_manager import MissionManager
+from app.runtime.models import (
+    AllowedAction,
+    ControlMode,
+    MissionKind,
+    RuntimePhase,
+    RuntimeSnapshot,
+)
+
 from .tello_adapter import RealTelloAdapter
 
 
@@ -35,7 +54,7 @@ MIN_DESCENT_HEIGHT_CM = 40
 MAX_ASCENT_HEIGHT_CM = 200
 
 
-class DroneWebService:
+class DroneWebService(MissionManager):
     """Own one real-aircraft session shared by all local HTTP requests."""
 
     def __init__(
@@ -44,6 +63,7 @@ class DroneWebService:
         *,
         data_dir: str | Path = ".",
     ) -> None:
+        super().__init__()
         self.data_dir = Path(data_dir).expanduser().resolve()
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self._adapter_factory = adapter_factory or partial(RealTelloAdapter, self.data_dir)
@@ -72,6 +92,68 @@ class DroneWebService:
     def connected(self) -> bool:
         adapter = self._adapter
         return bool(adapter is not None and getattr(adapter, "connected", False))
+
+    def runtime_snapshot(self, *, error: str | None = None) -> RuntimeSnapshot:
+        """Build a non-blocking state snapshot for events and future GUI clients."""
+        with self._lock:
+            connected = self.connected
+            if not connected:
+                phase = RuntimePhase.ERROR if error else RuntimePhase.DISCONNECTED
+            elif self._phase == "连接":
+                phase = RuntimePhase.CONNECTING
+            elif self._phase == "起飞":
+                phase = RuntimePhase.TAKING_OFF
+            elif self._phase == "降落":
+                phase = RuntimePhase.LANDING
+            elif self._airborne:
+                phase = RuntimePhase.AIRBORNE
+            else:
+                phase = RuntimePhase.PREFLIGHT
+
+            allowed = []
+            if not connected:
+                allowed.append(AllowedAction.CONNECT)
+            else:
+                allowed.extend((AllowedAction.REFRESH_STATUS, AllowedAction.STOP))
+                front_tof_ready = self._front_tof_state in ("clear", "out_of_range")
+                if (
+                    not self._airborne
+                    and self._video_ready
+                    and self._battery is not None
+                    and self._battery >= MIN_TAKEOFF_BATTERY
+                    and self._height is not None
+                    and front_tof_ready
+                ):
+                    allowed.append(AllowedAction.TAKEOFF)
+                if self._airborne:
+                    allowed.extend(
+                        (
+                            AllowedAction.LAND,
+                            AllowedAction.HOVER,
+                            AllowedAction.MOVE_RC,
+                            AllowedAction.EMERGENCY_LAND,
+                        )
+                    )
+
+            return RuntimeSnapshot(
+                sequence=self.events.latest_sequence,
+                phase=phase,
+                mission=MissionKind.MANUAL if connected else MissionKind.IDLE,
+                control_mode=ControlMode.MANUAL if self._airborne else ControlMode.NONE,
+                connected=connected,
+                airborne=self._airborne,
+                streaming=self._video_ready,
+                flight_state=self._flight_state,
+                allowed_actions=tuple(allowed),
+                telemetry={
+                    "battery": self._battery,
+                    "heightCm": self._height,
+                    "frontTofCm": self._front_tof,
+                    "frontTofState": self._front_tof_state,
+                    "controlHz": round(self._control_hz, 1),
+                },
+                error=error,
+            )
 
     def connect(self) -> dict[str, Any]:
         """Connect to a real aircraft, then and only then request its stream."""
@@ -473,7 +555,7 @@ class DroneRequestHandler(BaseHTTPRequestHandler):
             self._json(HTTPStatus.OK, {"ok": True, "connected": self.service.connected})
             return
         if path == "/api/drone/status":
-            self._run_json(self.service.status)
+            self._run_command(RefreshStatusCommand())
             return
         self._json(HTTPStatus.NOT_FOUND, {"error": "接口不存在。"})
 
@@ -483,29 +565,35 @@ class DroneRequestHandler(BaseHTTPRequestHandler):
             return
         path = urlsplit(self.path).path
         if path == "/api/drone/connect":
-            self._run_json(self.service.connect)
+            self._run_command(ConnectCommand())
             return
         if path == "/api/drone/takeoff":
-            self._run_json(self.service.takeoff)
+            self._run_command(TakeoffCommand())
             return
         if path == "/api/drone/land":
-            self._run_json(self.service.land)
+            self._run_command(LandCommand())
             return
         if path == "/api/drone/hover":
-            self._run_json(self.service.hover)
+            self._run_command(HoverCommand())
             return
         if path == "/api/drone/rc":
             try:
-                command = self._read_json()
-                self._json(HTTPStatus.OK, self.service.move_rc(command))
+                payload = self._read_json()
+                command = MoveRcCommand(
+                    left_right=payload.get("leftRight", 0),
+                    forward_back=payload.get("forwardBack", 0),
+                    up_down=payload.get("upDown", 0),
+                    yaw=payload.get("yaw", 0),
+                )
+                self._json(HTTPStatus.OK, self.service.execute(command))
             except Exception as exc:
                 self._json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(exc)})
             return
         if path == "/api/drone/stop":
-            self._run_empty(self.service.stop)
+            self._run_command(StopCommand())
             return
         if path == "/api/drone/emergency-land":
-            self._run_empty(self.service.emergency_land)
+            self._run_command(EmergencyLandCommand())
             return
         if path == "/api/drone/video-token":
             self._json(HTTPStatus.OK, self.application.issue_video_token())
@@ -527,16 +615,9 @@ class DroneRequestHandler(BaseHTTPRequestHandler):
         supplied = query.get("token", [""])[0]
         return self.application.consume_video_token(supplied)
 
-    def _run_json(self, action: Callable[[], dict[str, Any]]) -> None:
+    def _run_command(self, command: Any) -> None:
         try:
-            self._json(HTTPStatus.OK, action())
-        except Exception as exc:
-            self._json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(exc)})
-
-    def _run_empty(self, action: Callable[[], None]) -> None:
-        try:
-            action()
-            self._json(HTTPStatus.OK, {"ok": True})
+            self._json(HTTPStatus.OK, self.service.execute(command))
         except Exception as exc:
             self._json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": str(exc)})
 
