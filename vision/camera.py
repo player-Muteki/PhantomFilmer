@@ -8,16 +8,25 @@ from drone.drone_adapter import DroneAdapter
 class CameraStream:
     """Read camera frames through DroneAdapter instead of a hardware SDK."""
 
-    def __init__(self, drone: DroneAdapter, width: int = 640, height: int = 480) -> None:
+    def __init__(
+        self,
+        drone: DroneAdapter,
+        width: int = 640,
+        height: int = 480,
+        *,
+        manage_stream: bool = True,
+    ) -> None:
         self.drone = drone
         self.width = width
         self.height = height
+        self.manage_stream = bool(manage_stream)
         self.running = False
 
     def start(self) -> None:
         """Start the drone video stream."""
         try:
-            self.drone.stream_on()
+            if self.manage_stream:
+                self.drone.stream_on()
             self.running = True
         except RuntimeError:
             raise
@@ -40,6 +49,7 @@ class CameraStream:
         if not self.running:
             return
         try:
-            self.drone.stream_off()
+            if self.manage_stream:
+                self.drone.stream_off()
         finally:
             self.running = False

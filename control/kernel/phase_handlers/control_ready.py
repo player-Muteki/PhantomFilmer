@@ -14,7 +14,7 @@ class ControlReadyHandler:
         controller = session.manual_controller
         if not controller.config.enabled and not getattr(
             session, "side_follow_available", False
-        ):
+        ) and not getattr(session, "front_follow_available", False):
             return KernelPhase.PRE_FOLLOW
 
         controller.make_available()

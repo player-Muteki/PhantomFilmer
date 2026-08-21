@@ -18,6 +18,7 @@ from control.kernel.session import KernelSession
 from control.manual_control import ManualControlController
 from control.motion_arbiter import MotionArbiter, MotionContext
 from control.obstacle_avoidance import AvoidanceDecision, ObstacleAvoidancePlanner
+from control.operator_commands import OperatorCommand, OperatorCommandChannel
 from control.side_follow_control import SideFollowController
 from control.side_follow_logging import SideFollowEventRecorder, SideFollowLogConfig
 from control.target_search import TargetSearchController
@@ -42,6 +43,31 @@ class FollowSessionResult:
 class FollowSession:
     """Run one shared visual target-following task."""
 
+    _RUNTIME_OPERATOR_KEYS = {
+        OperatorCommand.SELECT_MANUAL: ord("m"),
+        OperatorCommand.SELECT_NORMAL: ord("1"),
+        OperatorCommand.SELECT_SIDE: ord("2"),
+        OperatorCommand.SELECT_FRONT: ord("3"),
+        OperatorCommand.TOGGLE_PAUSE: ord("p"),
+        OperatorCommand.MOVE_FORWARD: ord("w"),
+        OperatorCommand.MOVE_BACKWARD: ord("s"),
+        OperatorCommand.MOVE_LEFT: ord("a"),
+        OperatorCommand.MOVE_RIGHT: ord("d"),
+        OperatorCommand.MOVE_UP: ord("r"),
+        OperatorCommand.MOVE_DOWN: ord("f"),
+        OperatorCommand.YAW_LEFT: ord("j"),
+        OperatorCommand.YAW_RIGHT: ord("l"),
+        OperatorCommand.HOVER: ord(" "),
+        OperatorCommand.STOP: ord("q"),
+        OperatorCommand.EMERGENCY_STOP: ord("e"),
+    }
+    _CONTROL_READY_OPERATOR_KEYS = {
+        **_RUNTIME_OPERATOR_KEYS,
+        OperatorCommand.SELECT_NORMAL: ord("a"),
+        OperatorCommand.SELECT_SIDE: ord("s"),
+        OperatorCommand.SELECT_FRONT: ord("f"),
+    }
+
     def __init__(
         self,
         drone: DroneAdapter,
@@ -63,6 +89,8 @@ class FollowSession:
         pre_takeoff_confirmation: Optional[Callable[[Dict[str, object]], bool]] = None,
         window_takeoff_confirmation: bool = False,
         enable_target_search: Optional[bool] = None,
+        operator_commands: Optional[OperatorCommandChannel] = None,
+        manage_camera_stream: bool = True,
     ) -> None:
         self.drone = drone
         self.safety_manager = safety_manager
@@ -98,6 +126,8 @@ class FollowSession:
         )
         self.pre_takeoff_confirmation = pre_takeoff_confirmation
         self.window_takeoff_confirmation = bool(window_takeoff_confirmation)
+        self.operator_commands = operator_commands
+        self.manage_camera_stream = bool(manage_camera_stream)
         self.config = config
         self.mode_label = mode_label
         self.window_name = window_name or str(
@@ -237,6 +267,8 @@ class FollowSession:
             f"需要连续确认 {tracker.required_frames} 帧。"
         )
         while not self.stop_event.is_set():
+            if self._handle_pending_operator_command() in ("stop", "emergency"):
+                return {}
             if monotonic() - started_at >= self.initial_target_lock_timeout_seconds:
                 print("地面识别超时，未起飞。" "请调整人物位置、光线或参考照片。")
                 return {}
@@ -421,6 +453,8 @@ class FollowSession:
         frame_failures = 0
         detect_failures = 0
         while monotonic() < deadline and not self.stop_event.is_set():
+            if self._handle_pending_operator_command() in ("stop", "emergency"):
+                return False
             frame = self._read_frame()
             if frame is None:
                 frame_failures += 1
@@ -506,6 +540,8 @@ class FollowSession:
         )
 
         while monotonic() < deadline and not self.stop_event.is_set():
+            if self._handle_pending_operator_command() in ("stop", "emergency"):
+                return False
             height = self._read_height()
             last_height = height
             if height is not None and height >= minimum_height:
@@ -607,6 +643,8 @@ class FollowSession:
         )
 
         while not self.stop_event.is_set():
+            if self._handle_pending_operator_command() in ("stop", "emergency"):
+                return False
             now = monotonic()
             if now - climb_started_at >= self.base_hover_timeout_seconds:
                 print(
@@ -733,6 +771,7 @@ class FollowSession:
 
     def _pre_follow_should_abort(self) -> bool:
         """Stop a predefined maneuver for stop, emergency, or manual takeover."""
+        self._handle_pending_operator_command()
         return (
             self.stop_event.is_set()
             or self.emergency_stop
@@ -747,6 +786,8 @@ class FollowSession:
 
     def _show_pre_follow_progress(self, progress: FixedDemoProgress) -> bool:
         """Display the raw camera during the route and keep m/q/e responsive."""
+        if self._handle_pending_operator_command() in ("stop", "emergency"):
+            return False
         if not self.display_enabled:
             return not self._pre_follow_should_abort()
 
@@ -1287,6 +1328,48 @@ class FollowSession:
 
         return None
 
+    def _poll_operator_key(self, *, control_ready: bool = False) -> Optional[int]:
+        """Translate one semantic GUI command at the existing keyboard seam."""
+
+        channel = self.operator_commands
+        if channel is None:
+            return None
+        envelope = channel.receive()
+        if envelope is None:
+            return None
+        if not control_ready:
+            if (
+                envelope.command is OperatorCommand.SELECT_MANUAL
+                and self.manual_controller.active
+            ):
+                return None
+            selected_modes = {
+                OperatorCommand.SELECT_NORMAL: "normal",
+                OperatorCommand.SELECT_SIDE: "side",
+                OperatorCommand.SELECT_FRONT: "front",
+            }
+            selected_mode = selected_modes.get(envelope.command)
+            if selected_mode is not None and (
+                self.manual_controller.active
+                or (
+                    selected_mode == self.follow_mode
+                    and self._pending_follow_mode is None
+                )
+            ):
+                return None
+        mapping = (
+            self._CONTROL_READY_OPERATOR_KEYS
+            if control_ready
+            else self._RUNTIME_OPERATOR_KEYS
+        )
+        return mapping.get(envelope.command)
+
+    def _handle_pending_operator_command(self) -> Optional[str]:
+        """Apply at most one GUI command without blocking a lifecycle phase."""
+
+        key = self._poll_operator_key()
+        return None if key is None else self.handle_key(key)
+
     def request_stop(self) -> None:
         """Request a normal stop from outside the OpenCV window loop."""
         with self._lifecycle_lock:
@@ -1501,13 +1584,15 @@ class FollowSession:
 
     def _wait_for_control_selection(self) -> Optional[str]:
         """Hover indefinitely until manual, normal auto, or side follow is chosen."""
-        if not self.display_enabled:
+        if not self.display_enabled and self.operator_commands is None:
             print("手动/自动选择需要启用摄像头窗口；当前已停止并准备降落。")
             self.session_state = "STOPPED"
             self._safe_zero_output()
             return None
 
-        import cv2
+        cv2 = None
+        if self.display_enabled:
+            import cv2
 
         self.session_state = "CONTROL_READY"
         self._safe_zero_output()
@@ -1562,40 +1647,47 @@ class FollowSession:
 
             frame_failures = 0
             self._safe_zero_output()
-            preview = frame.copy()
-            shown_height = "N/A" if height is None else f"{height} cm"
-            shown_battery = (
-                "N/A" if self.last_battery is None else f"{self.last_battery}%"
-            )
-            cv2.putText(
-                preview,
-                (
-                    "M MANUAL | A AUTO | S SIDE | F FRONT | Q LAND | E STOP"
-                    if self.side_follow_available and self.front_follow_available
-                    else "M MANUAL | A AUTO | S SIDE | Q LAND | E STOP"
-                    if self.side_follow_available
-                    else "M MANUAL | A AUTO | F FRONT | Q LAND | E STOP"
-                    if self.front_follow_available
-                    else "M: MANUAL   A: AUTO   Q: LAND   E: EMERGENCY"
-                ),
-                (20, max(36, preview.shape[0] - 48)),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.58,
-                (255, 255, 255),
-                2,
-            )
-            cv2.putText(
-                preview,
-                f"HOVERING | height={shown_height} battery={shown_battery}",
-                (20, max(68, preview.shape[0] - 20)),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.55,
-                (0, 255, 255),
-                2,
-            )
-            preview = self._draw_state_label(preview, "STATE: 等待选择", (255, 160, 0))
-            cv2.imshow(self.window_name, preview)
-            key = cv2.waitKey(1) & 0xFF
+            key = 255
+            if self.display_enabled:
+                preview = frame.copy()
+                shown_height = "N/A" if height is None else f"{height} cm"
+                shown_battery = (
+                    "N/A" if self.last_battery is None else f"{self.last_battery}%"
+                )
+                cv2.putText(
+                    preview,
+                    (
+                        "M MANUAL | A AUTO | S SIDE | F FRONT | Q LAND | E STOP"
+                        if self.side_follow_available and self.front_follow_available
+                        else "M MANUAL | A AUTO | S SIDE | Q LAND | E STOP"
+                        if self.side_follow_available
+                        else "M MANUAL | A AUTO | F FRONT | Q LAND | E STOP"
+                        if self.front_follow_available
+                        else "M: MANUAL   A: AUTO   Q: LAND   E: EMERGENCY"
+                    ),
+                    (20, max(36, preview.shape[0] - 48)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.58,
+                    (255, 255, 255),
+                    2,
+                )
+                cv2.putText(
+                    preview,
+                    f"HOVERING | height={shown_height} battery={shown_battery}",
+                    (20, max(68, preview.shape[0] - 20)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.55,
+                    (0, 255, 255),
+                    2,
+                )
+                preview = self._draw_state_label(
+                    preview, "STATE: 等待选择", (255, 160, 0)
+                )
+                cv2.imshow(self.window_name, preview)
+                key = cv2.waitKey(1) & 0xFF
+            operator_key = self._poll_operator_key(control_ready=True)
+            if operator_key is not None:
+                key = operator_key
             if key in (ord("m"), ord("M")):
                 self.paused = False
                 if self._enter_manual_mode():
@@ -1809,6 +1901,11 @@ class FollowSession:
         next_manual_battery_check = monotonic()
 
         while True:
+            operator_key = self._poll_operator_key()
+            if operator_key is not None:
+                action = self.handle_key(operator_key)
+                if action in ("stop", "emergency"):
+                    break
             if self.stop_event.is_set():
                 if self.emergency_stop:
                     self.session_state = "EMERGENCY_STOP"
@@ -2103,6 +2200,7 @@ class FollowSession:
             drone=self.drone,
             width=int(self.config.get("camera_width", 640)),
             height=int(self.config.get("camera_height", 480)),
+            manage_stream=self.manage_camera_stream,
         )
         try:
             self.camera.start()

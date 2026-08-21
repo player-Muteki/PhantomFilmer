@@ -331,6 +331,10 @@ GUI 与 CLI 共用 `MissionManager` 命令/事件模型和 `MissionFactory` 装�
 任务保持禁用；诊断页以权威运行时快照和带序号事件为准，断线补读出现历史缺口时会重新
 获取快照，不从界面局部状态猜测任务状态。
 
+共享 `FollowSession` 已具备无 OpenCV 窗口的语义化操作员命令通道，并能附着于 sidecar
+已持有的视频流；这是自动任务接入 GUI 的底层准备。sidecar capability 尚未开放这些任务，
+因此当前发布边界仍以界面实际禁用状态为准。
+
 优先交付 Linux x64 AppImage 与 macOS x64/arm64 DMG，Windows x64 NSIS 随后构建。
 首轮安装包未签名；从 CI 或 Release 下载对应产物并核对同目录 `SHA256SUMS` 后安装。
 运行前连接 `RMTT-XXXXXX` 无人机 Wi-Fi，不需要浏览器或外部网络服务。

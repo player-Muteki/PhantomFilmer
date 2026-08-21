@@ -11,6 +11,7 @@ from control.follow_control import FollowController
 from control.follow_session import FollowSession
 from control.motion_arbiter import MotionArbiter
 from control.obstacle_avoidance import ObstacleAvoidancePlanner
+from control.operator_commands import OperatorCommandChannel
 from drone.drone_adapter import DroneAdapter
 from drone.safety import SafetyManager
 from vision.detector_protocol import DetectorProtocol
@@ -31,6 +32,8 @@ class MissionFactory:
         motion_arbiter: Optional[MotionArbiter] = None,
         obstacle_detector: Optional[DistanceOnlyObstacleDetector] = None,
         obstacle_planner: Optional[ObstacleAvoidancePlanner] = None,
+        operator_commands: Optional[OperatorCommandChannel] = None,
+        manage_camera_stream: bool = True,
     ) -> None:
         self.drone = drone
         self.safety_manager = safety_manager
@@ -40,6 +43,8 @@ class MissionFactory:
         self.motion_arbiter = motion_arbiter
         self.obstacle_detector = obstacle_detector
         self.obstacle_planner = obstacle_planner
+        self.operator_commands = operator_commands
+        self.manage_camera_stream = bool(manage_camera_stream)
 
     def create_follow_session(
         self,
@@ -79,4 +84,6 @@ class MissionFactory:
             motion_arbiter=self.motion_arbiter,
             initial_target_lock_frames=initial_target_lock_frames,
             enable_target_search=enable_target_search,
+            operator_commands=self.operator_commands,
+            manage_camera_stream=self.manage_camera_stream,
         )

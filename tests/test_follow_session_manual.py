@@ -14,6 +14,7 @@ from control.kernel.arbitration import FollowTickOutcome
 from control.kernel.phase_handlers import LifecycleContext
 from control.kernel.phase_handlers.pre_follow import PreFollowHandler
 from control.kernel.phases import KernelPhase
+from control.operator_commands import OperatorCommand, OperatorCommandChannel
 from drone.fake_adapter import FakeDroneAdapter
 from drone.front_tof import FrontToFSnapshot
 from drone.safety import SafetyConfig, SafetyManager
@@ -213,6 +214,7 @@ def build_session(
     display=False,
     motion_arbiter=None,
     manual_overrides=None,
+    operator_commands=None,
 ):
     drone = drone or RecordingDrone()
     detector = detector or CountingDetector()
@@ -249,6 +251,7 @@ def build_session(
         },
         mode_label="MANUAL TEST",
         motion_arbiter=motion_arbiter,
+        operator_commands=operator_commands,
     )
     return session, drone, detector
 
@@ -261,6 +264,37 @@ def enter_manual(session, now=10.0) -> None:
 
 
 class FollowSessionManualIntegrationTestCase(unittest.TestCase):
+    def test_headless_control_ready_accepts_semantic_auto_selection(self) -> None:
+        commands = OperatorCommandChannel()
+        commands.submit(OperatorCommand.SELECT_NORMAL)
+        session, drone, detector = build_session(operator_commands=commands)
+        session.camera = ScriptedCamera(session, [frame()])
+        session.manual_controller.make_available()
+
+        with patch("control.follow_session.sleep", return_value=None):
+            selection = session._wait_for_control_selection()
+
+        self.assertEqual(selection, "auto")
+        self.assertEqual(session.session_state, "FOLLOWING")
+        self.assertEqual(detector.detect_calls, 0)
+        self.assertEqual(drone.command_log[-1][1], (0, 0, 0, 0))
+
+    def test_headless_follow_loop_honors_operator_emergency_before_frame_work(
+        self,
+    ) -> None:
+        commands = OperatorCommandChannel()
+        commands.submit(OperatorCommand.EMERGENCY_STOP)
+        session, drone, detector = build_session(operator_commands=commands)
+        session.camera = ScriptedCamera(session, [frame()])
+
+        session._loop()
+
+        self.assertTrue(session.emergency_stop)
+        self.assertEqual(session.session_state, "EMERGENCY_STOP")
+        self.assertEqual(detector.detect_calls, 0)
+        self.assertEqual(session.camera.reads, 0)
+        self.assertEqual(drone.command_log[-1][1], (0, 0, 0, 0))
+
     def test_control_ready_hovers_without_reid_until_m_is_pressed(self) -> None:
         session, drone, detector = build_session(display=True)
         session.camera = ScriptedCamera(session, [frame(), frame(), frame()])
