@@ -118,6 +118,10 @@ side_follow:
   centered_turn_max_deviation_deg: 8
   # 侧向中心容差为普通跟随的70%，即从0.08降至0.056（降低30%）。
   center_tolerance_scale: 0.70
+  # 侧身的人物框比正面更窄。将侧向模式的距离面积带缩小到普通/前向跟随的
+  # 70%，使无人机在与另外两种模式相近的真实距离上悬停，而不是为了填满
+  # 相同像素面积继续靠近。
+  distance_area_scale: 0.70
   # 跑道跟随：人物偏到画面左右时，飞机同方向横移，日常不偏航。
   tracking_lateral_kp: 70
   minimum_tracking_lateral_speed: 8
