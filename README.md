@@ -165,9 +165,11 @@ ReID 只进行外观匹配，不识别真实姓名；俯视、遮挡、换衣、
   --reference-dir data/reid_target/现场注册/一组照片
 ```
 
-注册会验证每张照片恰好包含一个人物，提取并平均 OSNet 特征，再写入已被 Git
-忽略的 `data/reid_profiles/<profile>/`。档案同时记录 YOLO、OSNet 权重哈希和特征
-格式；权重或预处理版本变化时会拒绝加载并要求重新注册。后续直接加载档案：
+注册会验证每张照片恰好包含一个人物，分别保留每张照片的归一化 OSNet 模板，再写入
+已被 Git 忽略的 `data/reid_profiles/<profile>/`。运行时综合最佳视角模板和模板中心
+相似度；已锁定目标若要跳到画面中不连续的人物，还必须连续确认。档案同时记录
+YOLO、OSNet 权重哈希和特征格式；权重或预处理版本变化时会拒绝加载并要求重新注册。
+后续直接加载档案：
 
 ```bash
 .venv-reid/bin/python main.py --mode reid-demo \

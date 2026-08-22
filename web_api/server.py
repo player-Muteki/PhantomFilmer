@@ -382,12 +382,12 @@ class DroneWebService(MissionManager):
         if not callable(prepare):
             raise RuntimeError("当前检测器不支持人物档案注册。")
         prepare()
-        reference_feature = getattr(detector, "reference_feature", None)
-        if reference_feature is None:
+        reference_features = getattr(detector, "reference_features", None)
+        if reference_features is None:
             raise RuntimeError("当前检测器未生成可保存的人物特征。")
         manifest = save_reid_profile(
             name.strip(),
-            reference_feature,
+            reference_features,
             config,
             selected_images,
             overwrite=overwrite,

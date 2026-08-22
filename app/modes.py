@@ -298,12 +298,12 @@ def run_reid_enroll(
         if not callable(prepare_detector):
             raise RuntimeError("当前检测器不支持人物档案注册。")
         prepare_detector()
-        reference_feature = getattr(detector, "reference_feature", None)
-        if reference_feature is None:
+        reference_features = getattr(detector, "reference_features", None)
+        if reference_features is None:
             raise RuntimeError("当前检测器未生成可保存的人物特征。")
         manifest = save_reid_profile(
             str(profile_name),
-            reference_feature,
+            reference_features,
             config,
             selected_images,
             overwrite=overwrite_profile,
