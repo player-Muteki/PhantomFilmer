@@ -29,6 +29,11 @@ test('connects, streams, refreshes RC, lands, and cleans up', async () => {
   await window.getByRole('button', { name: '连接真机' }).click()
   await expect(window.getByText('真机已连接')).toBeVisible()
   await expect(window.getByAltText('无人机实时视频流')).toBeVisible()
+  const videoFrame = window.locator('.video-panel')
+  await expect.poll(async () => {
+    const box = await videoFrame.boundingBox()
+    return box ? box.width / box.height : 0
+  }).toBeCloseTo(4 / 3, 2)
 
   await window.getByRole('button', { name: /^起飞/ }).click()
   await window.getByRole('button', { name: /^确认起飞/ }).click()
@@ -113,6 +118,23 @@ test('disconnects the drone from the top bar while grounded', async () => {
   await window.getByRole('button', { name: '断开真机' }).click()
   await expect(window.getByText('已断开真机连接。')).toBeVisible()
   await expect(window.getByText('真机未连接')).toBeVisible()
+  await application.close()
+})
+
+test('renames and recoverably deletes a local person profile', async () => {
+  const application = await launchTestApp()
+  const window = await application.firstWindow()
+  await expect(window.getByRole('combobox', { name: '人物档案' })).toHaveValue('operator-a')
+
+  await window.getByRole('button', { name: '重命名' }).click()
+  await window.getByRole('textbox', { name: '新档案名' }).fill('operator-renamed')
+  await window.getByRole('button', { name: '确认重命名' }).click()
+  await expect(window.getByRole('combobox', { name: '人物档案' })).toHaveValue('operator-renamed')
+
+  window.once('dialog', (dialog) => void dialog.accept())
+  await window.getByRole('button', { name: '删除档案' }).click()
+  await expect(window.getByRole('combobox', { name: '人物档案' })).toHaveValue('')
+  await expect(window.getByText('人物档案“operator-renamed”已删除。')).toBeVisible()
   await application.close()
 })
 

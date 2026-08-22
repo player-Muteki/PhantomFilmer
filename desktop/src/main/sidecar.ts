@@ -11,6 +11,8 @@ import type {
   RcCommand,
   MissionStartOptions,
   ProfileSummary,
+  ProfileDetails,
+  DeletedProfile,
   GroundPreviewStatus,
   RuntimeCapabilities,
   RuntimeEventsResponse,
@@ -322,6 +324,14 @@ export class SidecarManager {
     return response.profiles
   }
 
+  async getProfile(name: string): Promise<ProfileDetails> {
+    const response = await this.request<{ apiVersion: '1'; profile: ProfileDetails }>(
+      'GET',
+      `/api/v1/profiles/${encodeURIComponent(name)}`
+    )
+    return response.profile
+  }
+
   async enrollProfile(name: string, imagePaths: string[], overwrite: boolean): Promise<ProfileSummary> {
     const response = await this.request<{ apiVersion: '1'; profile: ProfileSummary }>(
       'POST',
@@ -329,6 +339,23 @@ export class SidecarManager {
       { name, imagePaths, overwrite }
     )
     return response.profile
+  }
+
+  async renameProfile(name: string, newName: string): Promise<ProfileDetails> {
+    const response = await this.request<{ apiVersion: '1'; profile: ProfileDetails }>(
+      'PATCH',
+      `/api/v1/profiles/${encodeURIComponent(name)}`,
+      { name: newName }
+    )
+    return response.profile
+  }
+
+  async deleteProfile(name: string): Promise<DeletedProfile> {
+    const response = await this.request<{ apiVersion: '1'; deleted: DeletedProfile }>(
+      'DELETE',
+      `/api/v1/profiles/${encodeURIComponent(name)}`
+    )
+    return response.deleted
   }
 
   async startPreview(profileName: string): Promise<GroundPreviewStatus & { ok: boolean }> {
@@ -467,7 +494,7 @@ export class SidecarManager {
   }
 
   private async request<Result>(
-    method: 'GET' | 'POST',
+    method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
     path: string,
     body?: unknown,
     timeoutMs?: number

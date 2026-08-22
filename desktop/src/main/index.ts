@@ -126,6 +126,10 @@ function registerIpc(): void {
   ipcMain.handle('mission:control-mode', (_event, mode: MissionStartOptions['initialControlMode']) => sidecar.selectControlMode(mode))
   ipcMain.handle('mission:pause-toggle', () => sidecar.toggleMissionPause())
   ipcMain.handle('profiles:list', () => sidecar.listProfiles())
+  ipcMain.handle('profiles:get', (_event, name: string) => {
+    if (typeof name !== 'string' || !name.trim()) throw new Error('人物档案名无效。')
+    return sidecar.getProfile(name.trim())
+  })
   ipcMain.handle('preview:start', (_event, profileName: string) => sidecar.startPreview(profileName))
   ipcMain.handle('preview:stop', () => sidecar.stopPreview())
   ipcMain.handle('shell:open-logs', async () => {
@@ -161,6 +165,17 @@ function registerIpc(): void {
       return sidecar.enrollProfile(name.trim(), photoPaths, overwrite)
     }
   )
+  ipcMain.handle('profiles:rename', (_event, payload: { name: string; newName: string }) => {
+    const { name, newName } = payload ?? {}
+    if (typeof name !== 'string' || !name.trim() || typeof newName !== 'string' || !newName.trim()) {
+      throw new Error('人物档案重命名参数无效。')
+    }
+    return sidecar.renameProfile(name.trim(), newName.trim())
+  })
+  ipcMain.handle('profiles:delete', (_event, name: string) => {
+    if (typeof name !== 'string' || !name.trim()) throw new Error('人物档案名无效。')
+    return sidecar.deleteProfile(name.trim())
+  })
   ipcMain.handle('drone:move-rc', (_event, command: RcCommand) => {
     const channels = ['leftRight', 'forwardBack', 'upDown', 'yaw'] as const
     if (

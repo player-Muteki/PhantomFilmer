@@ -1,4 +1,4 @@
-import type { ReactElement } from 'react'
+import { useLayoutEffect, useRef, useState, type CSSProperties, type ReactElement, type SyntheticEvent } from 'react'
 import { Icon } from '../Icons'
 import type { ConnectionState } from '../app/ui'
 
@@ -19,10 +19,42 @@ type Props = {
 export function VideoPanel({
   videoUrl, connection, backendReady, connected, awaitingModeSelection, canReconnectVideo, onConnect, onRetryVideo, onVideoError, overlay, children
 }: Props): ReactElement {
+  const viewportRef = useRef<HTMLDivElement>(null)
+  const [aspectRatio, setAspectRatio] = useState(4 / 3)
+  const [frameSize, setFrameSize] = useState<{ width: number; height: number } | null>(null)
+
+  useLayoutEffect(() => {
+    const viewport = viewportRef.current
+    if (!viewport) return
+    const update = (): void => {
+      const { width, height } = viewport.getBoundingClientRect()
+      if (width <= 0 || height <= 0) return
+      const frameWidth = Math.min(width, height * aspectRatio)
+      setFrameSize({ width: Math.floor(frameWidth), height: Math.floor(frameWidth / aspectRatio) })
+    }
+    update()
+    if (typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(update)
+    observer.observe(viewport)
+    return () => observer.disconnect()
+  }, [aspectRatio])
+
+  const onVideoLoad = (event: SyntheticEvent<HTMLImageElement>): void => {
+    const image = event.currentTarget
+    if (image.naturalWidth > 0 && image.naturalHeight > 0) {
+      const ratio = image.naturalWidth / image.naturalHeight
+      if (Number.isFinite(ratio) && ratio >= 0.5 && ratio <= 3) setAspectRatio(ratio)
+    }
+  }
+
+  const frameStyle: CSSProperties = frameSize
+    ? { width: `${frameSize.width}px`, height: `${frameSize.height}px`, aspectRatio: String(aspectRatio) }
+    : { width: '100%', aspectRatio: String(aspectRatio) }
   return (
-    <section className={`video-panel core-video ${videoUrl ? 'streaming' : ''}`}>
+    <div className={`video-viewport ${videoUrl ? 'streaming' : ''}`} ref={viewportRef}>
+    <section className={`video-panel core-video ${videoUrl ? 'streaming' : ''}`} style={frameStyle} data-aspect-ratio={aspectRatio.toFixed(6)}>
       {videoUrl ? (
-        <img src={videoUrl} alt="无人机实时视频流" onError={onVideoError} />
+        <img src={videoUrl} alt="无人机实时视频流" onLoad={onVideoLoad} onError={onVideoError} />
       ) : (
         <div className="video-empty">
           <div className="reticle" aria-hidden="true">
@@ -54,5 +86,6 @@ export function VideoPanel({
       {overlay}
       {children}
     </section>
+    </div>
   )
 }

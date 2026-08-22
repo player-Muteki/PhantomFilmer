@@ -199,6 +199,19 @@ class DroneWebServiceTests(unittest.TestCase):
         self.assertEqual(command.initial_control_mode, ControlMode.SIDE)
         self.assertTrue(command.obstacle_enabled)
 
+    def test_desktop_mission_cannot_disable_required_front_tof_safety(self) -> None:
+        service = DroneWebService(adapter_factory=RealAdapterStub)
+        self.addCleanup(service.shutdown)
+
+        with self.assertRaisesRegex(RuntimeError, "强制项"):
+            service.start_mission(
+                StartMissionCommand(
+                    mission=MissionKind.FOLLOW,
+                    profile_name="operator-a",
+                    obstacle_enabled=False,
+                )
+            )
+
     def test_preview_payload_requires_profile_name(self) -> None:
         command = command_from_payload(
             {"type": "preview.start", "profileName": "operator-a"}

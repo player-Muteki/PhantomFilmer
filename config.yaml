@@ -161,7 +161,8 @@ manual_control:
   minimum_descent_height_cm: 40
   maximum_ascent_height_cm: 200
 obstacle:
-  enabled: false
+  # 桌面自动任务的前向 ToF 安全保护不可关闭；普通跟随同时启用完整绕行。
+  enabled: true
   # RoboMaster TT 顶部扩展红外 ToF：有效距离 <= 60 cm 时进入 BLOCKED。
   front_tof_enabled: true
   front_tof_blocked_distance_cm: 60

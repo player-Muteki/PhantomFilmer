@@ -1,5 +1,5 @@
-import type { ReactElement } from 'react'
-import type { DroneStatus, RuntimeEvent } from '../../../preload/api'
+import { useEffect, useState, type ReactElement } from 'react'
+import type { DroneStatus, ProfileDetails, ProfileSummary, RuntimeEvent } from '../../../preload/api'
 import type { MissionType } from '../app/types'
 import { missionTypeLabel } from '../app/types'
 import { EventTimeline } from './EventTimeline'
@@ -7,7 +7,8 @@ import { PreflightChecklist } from './PreflightChecklist'
 import { SetupTabs, type SetupTab } from './SetupTabs'
 
 type Props = {
-  profiles: Array<{ name: string; photoCount?: number | null }>
+  profiles: ProfileSummary[]
+  profileDetails: ProfileDetails | null
   profileName: string
   onProfileName: (name: string) => void
   enrollmentName: string
@@ -16,14 +17,15 @@ type Props = {
   onPickPhotos: () => void
   onConfirmEnroll: () => void
   onCancelEnroll: () => void
+  onReplaceProfile: () => void
+  onRenameProfile: (nextName: string) => void
+  onDeleteProfile: () => void
   enrollBusy: boolean
   connected: boolean
   missionRunning: boolean
   actionBusy: boolean
   missionType: MissionType
   onMissionType: (type: MissionType) => void
-  obstacleEnabled: boolean
-  onObstacleEnabled: (enabled: boolean) => void
   canStartMission: boolean
   launchArmed: boolean
   onLaunch: () => void
@@ -36,14 +38,29 @@ type Props = {
 
 export function ProfilePanel(props: Props): ReactElement {
   const {
-    profiles, profileName, onProfileName, enrollmentName, onEnrollmentName,
+    profiles, profileDetails, profileName, onProfileName, enrollmentName, onEnrollmentName,
     pendingPhotos, onPickPhotos, onConfirmEnroll, onCancelEnroll, enrollBusy,
+    onReplaceProfile, onRenameProfile, onDeleteProfile,
     connected, missionRunning, actionBusy,
-    missionType, onMissionType, obstacleEnabled, onObstacleEnabled,
+    missionType, onMissionType,
     canStartMission, launchArmed, onLaunch, missingAssets, preflight,
     events, activeTab, onActiveTab
   } = props
   const enrolling = pendingPhotos != null
+  const [renaming, setRenaming] = useState(false)
+  const [renameValue, setRenameValue] = useState(profileName)
+
+  useEffect(() => {
+    setRenameValue(profileName)
+    setRenaming(false)
+  }, [profileName])
+
+  const submitRename = (): void => {
+    const nextName = renameValue.trim()
+    if (!nextName || nextName === profileName) return
+    onRenameProfile(nextName)
+  }
+
   return (
     <aside className="profile-panel" data-mission={missionRunning ? 'on' : 'off'}>
       <h1>任务与人物</h1>
@@ -94,7 +111,38 @@ export function ProfilePanel(props: Props): ReactElement {
               <span>当前档案</span>
               <strong>{profileName || '未选择'}</strong>
               <small>{profiles.find((profile) => profile.name === profileName)?.photoCount ?? 0} 张参考照片</small>
+              {profileDetails?.modelName && <small>模型：{profileDetails.modelName}</small>}
             </div>
+            <div className="profile-actions" aria-label="人物档案操作">
+              <button disabled={!profileName || connected || actionBusy} onClick={onReplaceProfile}>更新照片</button>
+              <button
+                disabled={!profileName || connected || actionBusy}
+                onClick={() => {
+                  setRenameValue(profileName)
+                  setRenaming(true)
+                }}
+              >重命名</button>
+              <button className="danger" disabled={!profileName || connected || actionBusy} onClick={onDeleteProfile}>删除档案</button>
+            </div>
+            {renaming && (
+              <div className="profile-rename" role="group" aria-label="重命名人物档案">
+                <input
+                  aria-label="新档案名"
+                  value={renameValue}
+                  onChange={(event) => setRenameValue(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') submitRename()
+                    if (event.key === 'Escape') setRenaming(false)
+                  }}
+                  disabled={actionBusy}
+                  autoFocus
+                />
+                <button disabled={!renameValue.trim() || renameValue.trim() === profileName || actionBusy} onClick={submitRename}>
+                  确认重命名
+                </button>
+                <button disabled={actionBusy} onClick={() => setRenaming(false)}>取消</button>
+              </div>
+            )}
           </div>
         )}
         preflightPanel={(
@@ -112,18 +160,10 @@ export function ProfilePanel(props: Props): ReactElement {
                   <option value="fixed_demo">{missionTypeLabel('fixed_demo')}</option>
                 </select>
               </label>
-              <label className="obstacle-toggle" title="仅普通跟随模式参与避障；侧向/前向模式设计上不避障">
-                <input
-                  type="checkbox"
-                  checked={obstacleEnabled}
-                  onChange={(event) => onObstacleEnabled(event.target.checked)}
-                  disabled={missionRunning || actionBusy}
-                />
-                启用前向 ToF 避障
-              </label>
-              {obstacleEnabled && (
-                <small className="obstacle-hint">避障仅在普通跟随模式生效；侧向/前向跟随不避障。</small>
-              )}
+              <div className="safety-required" title="该安全保护由后端强制开启，不能在任务界面关闭">
+                <i aria-hidden="true">✓</i>
+                <span><strong>前向 ToF 安全保护</strong><small>所有模式强制启用 · 普通跟随支持自动绕行</small></span>
+              </div>
             </div>
             <PreflightChecklist preflight={preflight} connected={connected} />
           </div>

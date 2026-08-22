@@ -24,7 +24,12 @@ function createApi(overrides: Partial<PhantomFilmerApi> = {}): PhantomFilmerApi 
     getRuntimeCapabilities: vi.fn().mockResolvedValue({ apiVersion: '1', commands: ['mission.start'], missions: ['follow', 'fixed_demo'], eventReplay: true, rcLease: { required: true, ttlMs: 1000 }, safety: { minTakeoffBattery: 20, lowBatteryLand: 5, maxHeightCm: 220, maxRcSpeed: 35, minDescentHeightCm: 40, maxAscentHeightCm: 200, frontStopDistanceCm: 60, telemetryMaxAgeMs: 3000 }, missionReadiness: { available: true, missingAssets: [], profileRequired: true } }),
     getRuntimeSnapshot: vi.fn().mockImplementation(() => runtimeSnapshot()), getRuntimeEvents: vi.fn().mockResolvedValue({ apiVersion: '1', latestSequence: 0, resetRequired: false, events: [] }),
     startMission: vi.fn().mockResolvedValue({ ok: true, mission: 'follow' }), stopMission: vi.fn().mockResolvedValue({ ok: true }), emergencyStopMission: vi.fn().mockResolvedValue({ ok: true }), selectControlMode: vi.fn(), toggleMissionPause: vi.fn().mockResolvedValue({ ok: true }),
-    listProfiles: vi.fn().mockResolvedValue([{ name: '甲', photoCount: 3 }, { name: '乙', photoCount: 4 }]), pickProfilePhotos: vi.fn().mockResolvedValue(['/tmp/a.jpg', '/tmp/b.jpg']), enrollProfile: vi.fn().mockResolvedValue(null), openLogDir: vi.fn().mockResolvedValue(undefined), startPreview: vi.fn(), stopPreview: vi.fn(), onBackendState: vi.fn().mockReturnValue(() => undefined),
+    listProfiles: vi.fn().mockResolvedValue([{ name: '甲', photoCount: 3 }, { name: '乙', photoCount: 4 }]),
+    getProfile: vi.fn().mockImplementation(async (name: string) => ({ name, photoCount: name === '甲' ? 3 : 4, photos: [] })),
+    pickProfilePhotos: vi.fn().mockResolvedValue(['/tmp/a.jpg', '/tmp/b.jpg']), enrollProfile: vi.fn().mockResolvedValue(null),
+    renameProfile: vi.fn().mockImplementation(async (_name: string, newName: string) => ({ name: newName, photoCount: 3, photos: [] })),
+    deleteProfile: vi.fn().mockImplementation(async (name: string) => ({ name, deletedAt: new Date().toISOString(), recoverable: true })),
+    openLogDir: vi.fn().mockResolvedValue(undefined), startPreview: vi.fn(), stopPreview: vi.fn(), onBackendState: vi.fn().mockReturnValue(() => undefined),
     ...overrides
   }
 }
@@ -85,7 +90,8 @@ describe('desktop follow console', () => {
     switchTab('起飞准备')
     expect(screen.getByRole('tab', { name: '起飞准备' })).toHaveAttribute('aria-selected', 'true')
     expect(screen.getByRole('combobox', { name: '任务类型' })).toBeVisible()
-    expect(screen.getByRole('checkbox', { name: '启用前向 ToF 避障' })).toBeVisible()
+    expect(screen.getByText('前向 ToF 安全保护')).toBeVisible()
+    expect(screen.queryByRole('checkbox', { name: /ToF/ })).not.toBeInTheDocument()
     expect(screen.getByLabelText('起飞预检清单')).toBeVisible()
 
     switchTab('运行事件')
@@ -115,23 +121,23 @@ describe('desktop follow console', () => {
     await connectDrone()
     await startMissionFlow()
 
-    await waitFor(() => expect(window.phantomFilmer.startMission).toHaveBeenCalledWith({ mission: 'follow', profileName: '乙', initialControlMode: 'manual', obstacleEnabled: false }))
+    await waitFor(() => expect(window.phantomFilmer.startMission).toHaveBeenCalledWith({ mission: 'follow', profileName: '乙', initialControlMode: 'manual' }))
     expect(screen.getByRole('combobox', { name: '人物档案' })).toHaveValue('乙')
   })
 
-  it('forwards the obstacle toggle and mission type to the start command', async () => {
+  it('forces ToF safety and forwards only the mission type to the start command', async () => {
     mount()
     await screen.findByRole('option', { name: '甲' })
     fireEvent.change(screen.getByRole('combobox', { name: '人物档案' }), { target: { value: '甲' } })
     switchTab('起飞准备')
-    fireEvent.click(screen.getByRole('checkbox', { name: '启用前向 ToF 避障' }))
+    expect(screen.getByText('前向 ToF 安全保护')).toBeInTheDocument()
     fireEvent.change(screen.getByRole('combobox', { name: '任务类型' }), { target: { value: 'fixed_demo' } })
     switchTab('人物档案')
 
     await connectDrone()
     await startMissionFlow()
 
-    await waitFor(() => expect(window.phantomFilmer.startMission).toHaveBeenCalledWith({ mission: 'fixed_demo', profileName: '甲', initialControlMode: 'manual', obstacleEnabled: true }))
+    await waitFor(() => expect(window.phantomFilmer.startMission).toHaveBeenCalledWith({ mission: 'fixed_demo', profileName: '甲', initialControlMode: 'manual' }))
   })
 
   it('shows the preflight checklist with per-item status once connected', async () => {
@@ -185,6 +191,31 @@ describe('desktop follow console', () => {
     fireEvent.click(screen.getByRole('button', { name: '确认建档' }))
 
     expect(window.phantomFilmer.enrollProfile).not.toHaveBeenCalled()
+  })
+
+  it('updates photos and renames the selected profile while grounded', async () => {
+    mount()
+    await screen.findByRole('option', { name: '甲' })
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    fireEvent.click(screen.getByRole('button', { name: '更新照片' }))
+    await waitFor(() => expect(window.phantomFilmer.enrollProfile).toHaveBeenCalledWith('甲', ['/tmp/a.jpg', '/tmp/b.jpg'], true))
+
+    fireEvent.click(screen.getByRole('button', { name: '重命名' }))
+    fireEvent.change(screen.getByRole('textbox', { name: '新档案名' }), { target: { value: '甲-新版' } })
+    fireEvent.click(screen.getByRole('button', { name: '确认重命名' }))
+    await waitFor(() => expect(window.phantomFilmer.renameProfile).toHaveBeenCalledWith('甲', '甲-新版'))
+  })
+
+  it('requires confirmation and deletes the selected profile recoverably', async () => {
+    const listProfiles = vi.fn()
+      .mockResolvedValueOnce([{ name: '甲', photoCount: 3 }, { name: '乙', photoCount: 4 }])
+      .mockResolvedValueOnce([{ name: '乙', photoCount: 4 }])
+    mount({ listProfiles })
+    await screen.findByRole('option', { name: '甲' })
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    fireEvent.click(screen.getByRole('button', { name: '删除档案' }))
+    await waitFor(() => expect(window.phantomFilmer.deleteProfile).toHaveBeenCalledWith('甲'))
+    await waitFor(() => expect(screen.getByRole('combobox', { name: '人物档案' })).toHaveValue('乙'))
   })
 
   it('does not show or require ground preview before launch', async () => {

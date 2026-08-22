@@ -6,9 +6,11 @@ import hashlib
 import json
 import os
 import tempfile
+from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
+from uuid import uuid4
 
 import numpy as np
 
@@ -19,6 +21,7 @@ PROFILE_SCHEMA_VERSION = 1
 PREPROCESSING_VERSION = "yolo-person-crop-rgb-osnet-v1"
 EMBEDDING_FILENAME = "embedding.npz"
 MANIFEST_FILENAME = "manifest.json"
+TRASH_DIRECTORY = ".trash"
 
 
 def validate_profile_name(value: str) -> str:
@@ -72,12 +75,78 @@ def list_reid_profiles(
             {
                 "name": name,
                 "createdAt": manifest.get("created_at"),
+                "updatedAt": manifest.get("updated_at"),
                 "photoCount": manifest.get("photo_count"),
                 "embeddingDimension": manifest.get("embedding_dimension"),
                 "modelName": manifest.get("reid_model_name"),
             }
         )
     return profiles
+
+
+def get_reid_profile(
+    profile_name: str,
+    profile_root: Path = DEFAULT_PROFILE_ROOT,
+) -> dict[str, object]:
+    """Return one validated, privacy-safe profile manifest."""
+
+    name = validate_profile_name(profile_name)
+    directory = profile_directory(name, profile_root)
+    manifest = _read_valid_manifest(directory, expected_name=name)
+    return _public_profile(manifest)
+
+
+def rename_reid_profile(
+    profile_name: str,
+    new_name: str,
+    profile_root: Path = DEFAULT_PROFILE_ROOT,
+) -> dict[str, object]:
+    """Rename a complete profile and roll back if its manifest cannot be updated."""
+
+    old_name = validate_profile_name(profile_name)
+    replacement = validate_profile_name(new_name)
+    if old_name == replacement:
+        return get_reid_profile(old_name, profile_root)
+    old_directory = profile_directory(old_name, profile_root)
+    new_directory = profile_directory(replacement, profile_root)
+    manifest = _read_valid_manifest(old_directory, expected_name=old_name)
+    if new_directory.exists():
+        raise RuntimeError(f"人物档案已存在：{replacement}")
+
+    updated = deepcopy(manifest)
+    updated["profile_name"] = replacement
+    updated["updated_at"] = datetime.now(timezone.utc).isoformat()
+    try:
+        os.replace(old_directory, new_directory)
+        _atomic_write_json(new_directory / MANIFEST_FILENAME, updated)
+    except Exception:
+        if new_directory.exists() and not old_directory.exists():
+            os.replace(new_directory, old_directory)
+        raise
+    return _public_profile(updated)
+
+
+def delete_reid_profile(
+    profile_name: str,
+    profile_root: Path = DEFAULT_PROFILE_ROOT,
+) -> dict[str, object]:
+    """Recoverably delete a complete profile by moving it below the local trash."""
+
+    name = validate_profile_name(profile_name)
+    root = Path(profile_root).resolve()
+    directory = profile_directory(name, root)
+    manifest = _read_valid_manifest(directory, expected_name=name)
+    trash = root / TRASH_DIRECTORY
+    trash.mkdir(parents=True, exist_ok=True)
+    tombstone = f"{name}-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S')}-{uuid4().hex[:8]}"
+    destination = trash / tombstone
+    os.replace(directory, destination)
+    return {
+        "name": name,
+        "deletedAt": datetime.now(timezone.utc).isoformat(),
+        "recoverable": True,
+        "photoCount": manifest.get("photo_count"),
+    }
 
 
 def save_reid_profile(
@@ -176,6 +245,50 @@ def load_reid_profile(
     if manifest.get("embedding_dimension") != int(normalized.shape[0]):
         raise RuntimeError(f"人物档案特征维度不匹配：{name}")
     return normalized, manifest
+
+
+def _read_valid_manifest(directory: Path, *, expected_name: str) -> dict[str, object]:
+    manifest_path = directory / MANIFEST_FILENAME
+    embedding_path = directory / EMBEDDING_FILENAME
+    if not directory.is_dir() or not manifest_path.is_file() or not embedding_path.is_file():
+        raise RuntimeError(f"人物档案不存在或不完整：{expected_name}")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"人物档案清单损坏：{expected_name}") from exc
+    if not isinstance(manifest, dict):
+        raise RuntimeError(f"人物档案清单格式无效：{expected_name}")
+    if manifest.get("schema_version") != PROFILE_SCHEMA_VERSION:
+        raise RuntimeError(f"人物档案版本不兼容，请重新注册：{expected_name}")
+    if manifest.get("profile_name") != expected_name:
+        raise RuntimeError(f"人物档案名称不匹配：{expected_name}")
+    return manifest
+
+
+def _public_profile(manifest: dict[str, object]) -> dict[str, object]:
+    """Expose metadata only; source paths and raw embeddings never leave storage."""
+
+    photos = manifest.get("photos")
+    safe_photos: list[dict[str, object]] = []
+    if isinstance(photos, list):
+        for photo in photos:
+            if not isinstance(photo, dict):
+                continue
+            safe_photos.append(
+                {
+                    "index": photo.get("index"),
+                    "sha256": photo.get("sha256"),
+                }
+            )
+    return {
+        "name": manifest.get("profile_name"),
+        "createdAt": manifest.get("created_at"),
+        "updatedAt": manifest.get("updated_at"),
+        "photoCount": manifest.get("photo_count"),
+        "embeddingDimension": manifest.get("embedding_dimension"),
+        "modelName": manifest.get("reid_model_name"),
+        "photos": safe_photos,
+    }
 
 
 def _current_model_info(config: dict[str, object]) -> dict[str, str]:

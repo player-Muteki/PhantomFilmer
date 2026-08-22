@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from 'react'
-import type { BackendState, DroneStatus, RcCommand } from '../../preload/api'
+import type { BackendState, DroneStatus, ProfileDetails, ProfileSummary, RcCommand } from '../../preload/api'
 import { Icon } from './Icons'
 import { useRuntimeFeed } from './app/useRuntimeFeed'
 import { emptyCommand, missionKey, missionModeLabel, type MissionMode, type MissionType, type PartialRcCommand } from './app/types'
@@ -26,12 +26,12 @@ export default function App(): ReactElement {
   const [activeControl, setActiveControl] = useState<string | null>(null)
   const [videoUrl, setVideoUrl] = useState<string | null>(null)
   const [videoBroken, setVideoBroken] = useState(false)
-  const [profiles, setProfiles] = useState<Array<{ name: string; photoCount?: number | null }>>([])
+  const [profiles, setProfiles] = useState<ProfileSummary[]>([])
   const [profileName, setProfileName] = useState('')
+  const [profileDetails, setProfileDetails] = useState<ProfileDetails | null>(null)
   const [enrollmentName, setEnrollmentName] = useState('')
   const [pendingPhotos, setPendingPhotos] = useState<string[] | null>(null)
   const [missionType, setMissionType] = useState<MissionType>('follow')
-  const [obstacleEnabled, setObstacleEnabled] = useState(false)
   const [keyboardControl, setKeyboardControl] = useState(true)
   const [activeTab, setActiveTab] = useState<SetupTab>('profiles')
   const controlTimer = useRef<number | null>(null)
@@ -77,6 +77,20 @@ export default function App(): ReactElement {
       setNotice(errorMessage(error, '人物档案读取失败'))
     }
   }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    if (!backendReady || !profileName) {
+      setProfileDetails(null)
+      return
+    }
+    void window.phantomFilmer.getProfile(profileName).then((details) => {
+      if (!cancelled) setProfileDetails(details)
+    }).catch((error) => {
+      if (!cancelled) setNotice(errorMessage(error, '人物档案详情读取失败'))
+    })
+    return () => { cancelled = true }
+  }, [backendReady, profileName])
 
   useEffect(() => {
     let mounted = true
@@ -244,6 +258,55 @@ export default function App(): ReactElement {
     setPendingPhotos(null)
   }
 
+  const replaceProfilePhotos = async (): Promise<void> => {
+    if (!profileName || connected || actionBusy != null) return
+    setActionBusy('profile-update')
+    try {
+      const paths = await window.phantomFilmer.pickProfilePhotos()
+      if (!paths?.length) return
+      if (!window.confirm(`是否使用新选择的 ${paths.length} 张照片替换人物档案“${profileName}”的全部参考特征？`)) return
+      const profile = await window.phantomFilmer.enrollProfile(profileName, paths, true)
+      if (profile) {
+        await refreshProfiles()
+        setProfileDetails(await window.phantomFilmer.getProfile(profileName))
+        setNotice(`人物档案“${profileName}”的参考照片已更新。`)
+      }
+    } catch (error) {
+      setNotice(errorMessage(error, '人物档案更新失败'))
+    } finally { setActionBusy(null) }
+  }
+
+  const renameProfile = async (requestedName: string): Promise<void> => {
+    if (!profileName || connected || actionBusy != null) return
+    const nextName = requestedName.trim()
+    if (!nextName || nextName === profileName) return
+    setActionBusy('profile-rename')
+    try {
+      const profile = await window.phantomFilmer.renameProfile(profileName, nextName)
+      await refreshProfiles()
+      setProfileName(profile.name)
+      setProfileDetails(profile)
+      setNotice(`人物档案已重命名为“${profile.name}”。`)
+    } catch (error) {
+      setNotice(errorMessage(error, '人物档案重命名失败'))
+    } finally { setActionBusy(null) }
+  }
+
+  const deleteProfile = async (): Promise<void> => {
+    if (!profileName || connected || actionBusy != null) return
+    if (!window.confirm(`确认删除人物档案“${profileName}”？\n\n档案会移入本地回收目录，不会立即永久擦除。`)) return
+    const deletedName = profileName
+    setActionBusy('profile-delete')
+    try {
+      await window.phantomFilmer.deleteProfile(deletedName)
+      setProfileDetails(null)
+      await refreshProfiles()
+      setNotice(`人物档案“${deletedName}”已删除。`)
+    } catch (error) {
+      setNotice(errorMessage(error, '人物档案删除失败'))
+    } finally { setActionBusy(null) }
+  }
+
   const startMission = async (): Promise<void> => {
     if (armedAction !== 'start') {
       setArmedAction('start')
@@ -253,7 +316,7 @@ export default function App(): ReactElement {
     setActionBusy('start')
     setArmedAction(null)
     try {
-      await window.phantomFilmer.startMission({ mission: missionType, profileName: profileName.trim(), initialControlMode: 'manual', obstacleEnabled })
+      await window.phantomFilmer.startMission({ mission: missionType, profileName: profileName.trim(), initialControlMode: 'manual' })
       setNotice('正在起飞并上升至 150 cm；到达后请选择跟随模式。')
     } catch (error) { setNotice(errorMessage(error, '自动任务启动失败')) } finally { setActionBusy(null) }
   }
@@ -386,6 +449,7 @@ export default function App(): ReactElement {
     <section className="core-layout" aria-label="自动跟随控制台">
       <ProfilePanel
         profiles={profiles}
+        profileDetails={profileDetails}
         profileName={profileName}
         onProfileName={setProfileName}
         enrollmentName={enrollmentName}
@@ -394,14 +458,15 @@ export default function App(): ReactElement {
         onPickPhotos={() => void pickPhotos()}
         onConfirmEnroll={() => void confirmEnroll()}
         onCancelEnroll={cancelEnroll}
+        onReplaceProfile={() => void replaceProfilePhotos()}
+        onRenameProfile={(nextName) => void renameProfile(nextName)}
+        onDeleteProfile={() => void deleteProfile()}
         enrollBusy={actionBusy === 'enroll'}
         connected={connected}
         missionRunning={missionRunning}
         actionBusy={actionBusy != null}
         missionType={missionType}
         onMissionType={setMissionType}
-        obstacleEnabled={obstacleEnabled}
-        onObstacleEnabled={setObstacleEnabled}
         canStartMission={canStartMission}
         launchArmed={armedAction === 'start'}
         onLaunch={() => void startMission()}

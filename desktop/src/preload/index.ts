@@ -26,9 +26,12 @@ const api: PhantomFilmerApi = {
   selectControlMode: (mode) => invoke('mission:control-mode', mode),
   toggleMissionPause: () => invoke('mission:pause-toggle'),
   listProfiles: () => invoke('profiles:list'),
+  getProfile: (name) => invoke('profiles:get', name),
   pickProfilePhotos: () => invoke('profiles:pick-photos'),
   enrollProfile: (name, photoPaths, overwrite) =>
     invoke('profiles:enroll', { name, photoPaths, overwrite }),
+  renameProfile: (name, newName) => invoke('profiles:rename', { name, newName }),
+  deleteProfile: (name) => invoke('profiles:delete', name),
   openLogDir: () => invoke('shell:open-logs'),
   startPreview: (profileName) => invoke('preview:start', profileName),
   stopPreview: () => invoke('preview:stop'),

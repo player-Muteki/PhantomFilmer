@@ -115,15 +115,26 @@ export type MissionStartOptions = {
   mission: 'follow' | 'reid_follow' | 'fixed_demo'
   profileName: string
   initialControlMode: 'manual' | 'normal' | 'side' | 'front'
-  obstacleEnabled: boolean
 }
 
 export type ProfileSummary = {
   name: string
   createdAt?: string | null
+  updatedAt?: string | null
   photoCount?: number | null
   embeddingDimension?: number | null
   modelName?: string | null
+}
+
+export type ProfileDetails = ProfileSummary & {
+  photos: Array<{ index?: number | null; sha256?: string | null }>
+}
+
+export type DeletedProfile = {
+  name: string
+  deletedAt: string
+  recoverable: boolean
+  photoCount?: number | null
 }
 
 export type RuntimeEventsResponse = {
@@ -155,8 +166,11 @@ export type PhantomFilmerApi = {
   selectControlMode: (mode: MissionStartOptions['initialControlMode']) => Promise<{ ok: boolean; mode: string }>
   toggleMissionPause: () => Promise<{ ok: boolean }>
   listProfiles: () => Promise<ProfileSummary[]>
+  getProfile: (name: string) => Promise<ProfileDetails>
   pickProfilePhotos: () => Promise<string[] | null>
   enrollProfile: (name: string, photoPaths: string[], overwrite: boolean) => Promise<ProfileSummary | null>
+  renameProfile: (name: string, newName: string) => Promise<ProfileDetails>
+  deleteProfile: (name: string) => Promise<DeletedProfile>
   openLogDir: () => Promise<void>
   startPreview: (profileName: string) => Promise<GroundPreviewStatus & { ok: boolean }>
   stopPreview: () => Promise<GroundPreviewStatus & { ok: boolean }>

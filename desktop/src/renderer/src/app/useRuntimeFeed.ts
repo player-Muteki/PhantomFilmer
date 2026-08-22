@@ -22,6 +22,7 @@ const initialFeed: RuntimeFeed = {
 export function useRuntimeFeed(enabled: boolean): RuntimeFeed {
   const [feed, setFeed] = useState<RuntimeFeed>(initialFeed)
   const cursor = useRef(0)
+  const polling = useRef(false)
 
   useEffect(() => {
     if (!enabled) {
@@ -51,6 +52,8 @@ export function useRuntimeFeed(enabled: boolean): RuntimeFeed {
     }
 
     const poll = async (): Promise<void> => {
+      if (polling.current) return
+      polling.current = true
       try {
         const response = await window.phantomFilmer.getRuntimeEvents(cursor.current)
         if (cancelled) return
@@ -62,12 +65,16 @@ export function useRuntimeFeed(enabled: boolean): RuntimeFeed {
           snapshot = [...response.events].reverse().find((event) => event.snapshot)?.snapshot
         }
         cursor.current = response.latestSequence
-        setFeed((current) => ({
-          ...current,
-          snapshot: snapshot ?? current.snapshot,
-          events: [...current.events, ...response.events].slice(-50),
-          error: null
-        }))
+        setFeed((current) => {
+          const unique = new Map<number, RuntimeEvent>()
+          for (const event of [...current.events, ...response.events]) unique.set(event.sequence, event)
+          return {
+            ...current,
+            snapshot: snapshot ?? current.snapshot,
+            events: [...unique.values()].sort((a, b) => a.sequence - b.sequence).slice(-300),
+            error: null
+          }
+        })
       } catch (error) {
         if (!cancelled) {
           setFeed((current) => ({
@@ -75,13 +82,14 @@ export function useRuntimeFeed(enabled: boolean): RuntimeFeed {
             error: error instanceof Error ? error.message : '运行时事件同步失败'
           }))
         }
-      }
+      } finally { polling.current = false }
     }
 
     void initialize()
     const timer = window.setInterval(() => void poll(), 750)
     return () => {
       cancelled = true
+      polling.current = false
       window.clearInterval(timer)
     }
   }, [enabled])
