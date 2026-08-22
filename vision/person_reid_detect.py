@@ -738,7 +738,7 @@ class PersonReIDDetector:
                 images.append(crop[:, :, ::-1].copy())
         if missing:
             raise RuntimeError("目标人物参考图不存在或无法读取：" + ", ".join(missing))
-        return self._normalize_rows(self._feature_extractor.extract(images))
+        return self._feature_extractor.extract(images)
 
     def _prepare_candidates(
         self, frame: Any, detections: Iterable[DetectionResult]
@@ -770,7 +770,7 @@ class PersonReIDDetector:
         norm = float(np.linalg.norm(centroid))
         if norm <= 1e-12:
             raise RuntimeError("目标人物 ReID 特征中心无效。")
-        self._reference_features = normalized.astype(np.float32)
+        self._reference_features = normalized
         self._reference_centroid = (centroid / norm).astype(np.float32)
 
     def _switch_confirmation_pending(
