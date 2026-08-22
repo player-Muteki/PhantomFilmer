@@ -27,7 +27,6 @@ type Props = {
   canStartMission: boolean
   launchArmed: boolean
   onLaunch: () => void
-  missionReady: boolean
   missingAssets: string[]
   preflight: DroneStatus['preflight']
   events: RuntimeEvent[]
@@ -41,7 +40,7 @@ export function ProfilePanel(props: Props): ReactElement {
     pendingPhotos, onPickPhotos, onConfirmEnroll, onCancelEnroll, enrollBusy,
     connected, missionRunning, actionBusy,
     missionType, onMissionType, obstacleEnabled, onObstacleEnabled,
-    canStartMission, launchArmed, onLaunch, missionReady, missingAssets, preflight,
+    canStartMission, launchArmed, onLaunch, missingAssets, preflight,
     events, activeTab, onActiveTab
   } = props
   const enrolling = pendingPhotos != null

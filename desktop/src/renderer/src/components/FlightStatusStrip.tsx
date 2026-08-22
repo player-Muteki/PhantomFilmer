@@ -10,10 +10,11 @@ type Props = {
   connected: boolean
   alert?: string | null
   profile?: string | null
+  syncError?: string | null
 }
 
 /** Persistent situational-awareness strip above the video panel. */
-export function FlightStatusStrip({ flightState, controlHz, paused, batteryFresh, heightFresh, connected, alert, profile }: Props): ReactElement {
+export function FlightStatusStrip({ flightState, controlHz, paused, batteryFresh, heightFresh, connected, alert, profile, syncError }: Props): ReactElement {
   const view = flightStateView(flightState)
   const staleTelemetry = connected && (batteryFresh === false || heightFresh === false)
   return (
@@ -24,6 +25,7 @@ export function FlightStatusStrip({ flightState, controlHz, paused, batteryFresh
       </span>
       {paused && <span className="strip-badge paused">已暂停</span>}
       {staleTelemetry && <span className="strip-badge stale">遥测数据陈旧</span>}
+      {syncError && <span className="strip-badge stale" title={syncError}>事件流同步失败</span>}
       <span className="strip-metric" title="控制循环频率">
         控制频率 <strong>{connected && controlHz != null ? controlHz.toFixed(0) : '—'}</strong> Hz
       </span>

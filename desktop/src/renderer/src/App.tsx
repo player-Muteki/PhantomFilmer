@@ -405,7 +405,6 @@ export default function App(): ReactElement {
         canStartMission={canStartMission}
         launchArmed={armedAction === 'start'}
         onLaunch={() => void startMission()}
-        missionReady={missionReady}
         missingAssets={runtime.capabilities?.missionReadiness?.missingAssets ?? []}
         preflight={status.preflight}
         events={runtime.events}
@@ -422,6 +421,7 @@ export default function App(): ReactElement {
           connected={connected}
           alert={safetyAlert}
           profile={profileName || null}
+          syncError={runtime.error}
         />
         <ModeRow
           controlMode={runtime.snapshot?.controlMode}

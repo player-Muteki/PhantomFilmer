@@ -4,6 +4,7 @@ import { dirname, extname, join, resolve } from 'node:path'
 import { randomBytes } from 'node:crypto'
 import type { Readable } from 'node:stream'
 import { app } from 'electron'
+import { HEARTBEAT_TIMEOUT_MS, HeartbeatMonitor } from './heartbeat'
 import type {
   BackendState,
   DroneStatus,
@@ -50,9 +51,6 @@ type ActiveRcLease = {
 
 const START_TIMEOUT_MS = 15_000
 const STOP_TIMEOUT_MS = 12_000
-const HEARTBEAT_INTERVAL_MS = 5_000
-const HEARTBEAT_TIMEOUT_MS = 3_000
-const HEARTBEAT_FAILURE_LIMIT = 3
 
 export class SidecarManager {
   private process: ChildProcessByStdio<null, Readable, Readable> | null = null
@@ -62,10 +60,8 @@ export class SidecarManager {
   private rcLease: ActiveRcLease | null = null
   private state: BackendState
   private readonly logDir: string
-  private heartbeatTimer: NodeJS.Timeout | null = null
-  private heartbeatFailures = 0
-  private inFlightRequests = 0
-  /** Per-child exit expectation: a stale child from a failed restart must not be reported as an unexpected crash. */
+  private readonly heartbeat: HeartbeatMonitor
+  private inFlightRequests = 0  /** Per-child exit expectation: a stale child from a failed restart must not be reported as an unexpected crash. */
   private readonly expectedExits = new WeakSet<object>()
 
   constructor(private readonly options: SidecarManagerOptions) {
@@ -78,6 +74,11 @@ export class SidecarManager {
       airborne: false,
       restartAllowed: true
     }
+    this.heartbeat = new HeartbeatMonitor(
+      () => this.probeHealth(),
+      () => this.state.status !== 'ready' || this.inFlightRequests > 0,
+      () => this.declareHung()
+    )
   }
 
   getState(): BackendState {
@@ -94,7 +95,7 @@ export class SidecarManager {
       throw new Error('上次后端中断时真机仍在空中，已禁止自动重启。请先按紧急处置指引确认真机状态。')
     }
 
-    this.stopHeartbeat()
+    this.heartbeat.stop()
     this.baseUrl = null
     this.rcLease = null
     this.sessionToken = randomBytes(32).toString('base64url')
@@ -125,7 +126,7 @@ export class SidecarManager {
     child.once('exit', (code, signal) => {
       processLog.write(`\n[desktop] sidecar exited code=${String(code)} signal=${String(signal)}\n`)
       processLog.end()
-      this.stopHeartbeat()
+      this.heartbeat.stop()
       if (this.process === child) {
         this.process = null
         this.baseUrl = null
@@ -148,7 +149,7 @@ export class SidecarManager {
       this.baseUrl = `http://${ready.host}:${ready.port}`
       await this.request<{ apiVersion: '1'; ok: boolean }>('GET', '/api/v1/health')
       this.updateState({ status: 'ready', error: undefined, restartAllowed: true })
-      this.startHeartbeat()
+      this.heartbeat.start()
       return this.getState()
     } catch (error) {
       this.expectedExits.add(child)
@@ -342,7 +343,7 @@ export class SidecarManager {
     const child = this.process
     if (!child) return
     this.expectedExits.add(child)
-    this.stopHeartbeat()
+    this.heartbeat.stop()
     this.updateState({ status: 'stopping', restartAllowed: false })
     let shutdownError: unknown
     try {
@@ -375,7 +376,7 @@ export class SidecarManager {
   }
 
   forceTerminate(): void {
-    this.stopHeartbeat()
+    this.heartbeat.stop()
     if (this.process != null) this.expectedExits.add(this.process)
     this.process?.kill('SIGKILL')
     this.process = null
@@ -383,52 +384,27 @@ export class SidecarManager {
     this.rcLease = null
   }
 
-  private startHeartbeat(): void {
-    this.stopHeartbeat()
-    this.heartbeatFailures = 0
-    this.heartbeatTimer = setInterval(() => void this.probeHeartbeat(), HEARTBEAT_INTERVAL_MS)
-  }
-
-  private stopHeartbeat(): void {
-    if (this.heartbeatTimer != null) {
-      clearInterval(this.heartbeatTimer)
-      this.heartbeatTimer = null
-    }
-  }
-
-  /**
-   * Detect a sidecar that is still alive but no longer serving requests. A
-   * process that hangs (deadlock, blocked SDK call) never exits, so liveness
-   * of the PID is not enough. Failures are only counted while no other
-   * request is in flight: long commands legitimately hold the service for
-   * seconds and must not look like a hang.
-   */
-  private async probeHeartbeat(): Promise<void> {
-    if (this.state.status !== 'ready' || this.inFlightRequests > 0) return
+  private async probeHealth(): Promise<void> {
     const baseUrl = this.baseUrl
     const token = this.sessionToken
-    if (!baseUrl || !token) return
-    try {
-      const response = await fetch(`${baseUrl}/api/v1/health`, {
-        headers: { 'X-Phantom-Token': token },
-        signal: AbortSignal.timeout(HEARTBEAT_TIMEOUT_MS)
-      })
-      if (!response.ok) throw new Error(`HTTP ${response.status}`)
-      this.heartbeatFailures = 0
-    } catch {
-      this.heartbeatFailures += 1
-      if (this.heartbeatFailures < HEARTBEAT_FAILURE_LIMIT) return
-      this.stopHeartbeat()
-      const airborne = this.lastStatus.airborne === true
-      this.updateState({
-        status: 'offline',
-        airborne,
-        restartAllowed: !airborne,
-        error: airborne
-          ? '后端无响应（可能已挂起），最后一次遥测显示真机在空中。请勿重启后端，立即目视确认并准备使用实体应急措施。'
-          : '后端连续多次无响应，可能已挂起。可尝试重启后端。'
-      })
-    }
+    if (!baseUrl || !token) throw new Error('后端会话尚未建立。')
+    const response = await fetch(`${baseUrl}/api/v1/health`, {
+      headers: { 'X-Phantom-Token': token },
+      signal: AbortSignal.timeout(HEARTBEAT_TIMEOUT_MS)
+    })
+    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+  }
+
+  private declareHung(): void {
+    const airborne = this.lastStatus.airborne === true
+    this.updateState({
+      status: 'offline',
+      airborne,
+      restartAllowed: !airborne,
+      error: airborne
+        ? '后端无响应（可能已挂起），最后一次遥测显示真机在空中。请勿重启后端，立即目视确认并准备使用实体应急措施。'
+        : '后端连续多次无响应，可能已挂起。可尝试重启后端。'
+    })
   }
 
   private async commandStatusRequest(type: string): Promise<DroneStatus> {
