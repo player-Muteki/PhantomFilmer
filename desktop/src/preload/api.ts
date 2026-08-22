@@ -155,7 +155,9 @@ export type PhantomFilmerApi = {
   selectControlMode: (mode: MissionStartOptions['initialControlMode']) => Promise<{ ok: boolean; mode: string }>
   toggleMissionPause: () => Promise<{ ok: boolean }>
   listProfiles: () => Promise<ProfileSummary[]>
-  enrollProfile: (name: string, overwrite: boolean) => Promise<ProfileSummary | null>
+  pickProfilePhotos: () => Promise<string[] | null>
+  enrollProfile: (name: string, photoPaths: string[], overwrite: boolean) => Promise<ProfileSummary | null>
+  openLogDir: () => Promise<void>
   startPreview: (profileName: string) => Promise<GroundPreviewStatus & { ok: boolean }>
   stopPreview: () => Promise<GroundPreviewStatus & { ok: boolean }>
   onBackendState: (listener: (state: BackendState) => void) => () => void

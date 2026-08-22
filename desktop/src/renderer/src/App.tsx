@@ -2,24 +2,18 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } 
 import type { BackendState, DroneStatus, RcCommand } from '../../preload/api'
 import { Icon } from './Icons'
 import { useRuntimeFeed } from './app/useRuntimeFeed'
+import { emptyCommand, missionKey, missionModeLabel, type MissionMode, type MissionType, type PartialRcCommand } from './app/types'
+import { errorMessage, type ArmedAction, type ConnectionState } from './app/ui'
+import { FlightStatusStrip } from './components/FlightStatusStrip'
+import { ManualControls } from './components/ManualControls'
+import { ModeRow } from './components/ModeRow'
+import { ProfilePanel } from './components/ProfilePanel'
+import type { SetupTab } from './components/SetupTabs'
+import { TelemetryFooter } from './components/TelemetryFooter'
+import { VideoPanel } from './components/VideoPanel'
 
-type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'error'
-type ArmedAction = 'start' | 'stop' | 'emergency' | null
-type PartialRcCommand = Partial<RcCommand>
-type MissionMode = 'manual' | 'normal' | 'side' | 'front'
-type Control = [string, string, string, PartialRcCommand, 'up' | 'left' | 'center' | 'right' | 'down']
-
-const emptyCommand: RcCommand = { leftRight: 0, forwardBack: 0, upDown: 0, yaw: 0 }
-const missionKey: Record<MissionMode, string> = { manual: 'm', normal: '1', side: '2', front: '3' }
 const initialBackend: BackendState = { status: 'starting', version: '—', logDir: '—', airborne: false, restartAllowed: false }
-
-function errorMessage(error: unknown, fallback: string): string {
-  return error instanceof Error ? error.message : fallback
-}
-
-function missionModeLabel(mode: string): string {
-  return ({ manual: '手动接管', normal: '普通跟随', side: '侧向跟随', front: '前向跟随' } as Record<string, string>)[mode] ?? mode
-}
+const VIDEO_AUTO_RETRIES = 3
 
 export default function App(): ReactElement {
   const [backend, setBackend] = useState<BackendState>(initialBackend)
@@ -31,11 +25,19 @@ export default function App(): ReactElement {
   const [speed, setSpeed] = useState(20)
   const [activeControl, setActiveControl] = useState<string | null>(null)
   const [videoUrl, setVideoUrl] = useState<string | null>(null)
+  const [videoBroken, setVideoBroken] = useState(false)
   const [profiles, setProfiles] = useState<Array<{ name: string; photoCount?: number | null }>>([])
   const [profileName, setProfileName] = useState('')
   const [enrollmentName, setEnrollmentName] = useState('')
+  const [pendingPhotos, setPendingPhotos] = useState<string[] | null>(null)
+  const [missionType, setMissionType] = useState<MissionType>('follow')
+  const [obstacleEnabled, setObstacleEnabled] = useState(false)
+  const [keyboardControl, setKeyboardControl] = useState(true)
+  const [activeTab, setActiveTab] = useState<SetupTab>('profiles')
   const controlTimer = useRef<number | null>(null)
   const rcInFlight = useRef(false)
+  const videoRetries = useRef(0)
+  const videoRetryTimer = useRef<number | null>(null)
 
   const backendReady = backend.status === 'ready'
   const runtime = useRuntimeFeed(backendReady)
@@ -49,11 +51,22 @@ export default function App(): ReactElement {
   const manualControlEnabled = airborne && status.rcEnabled === true
   const controlsLocked = !backendReady || actionBusy != null
   const missionReady = runtime.capabilities?.missionReadiness?.available === true
-  const canStartMission = new Set(runtime.capabilities?.missions ?? []).has('follow')
+  const allowed = useMemo(
+    () => new Set(missionRunning ? (runtime.snapshot?.allowedActions ?? ['stop_mission', 'emergency_stop_mission', 'select_control_mode', 'toggle_mission_pause']) : (runtime.snapshot?.allowedActions ?? [])),
+    [missionRunning, runtime.snapshot?.allowedActions]
+  )
+  const canStartMission = new Set(runtime.capabilities?.missions ?? []).has(missionType)
     && missionReady
     && profileName.trim().length > 0
     && !missionRunning
-    && new Set(runtime.snapshot?.allowedActions ?? []).has('start_mission')
+    && allowed.has('start_mission')
+  const canSelectMode = missionRunning && allowed.has('select_control_mode')
+  const canTogglePause = missionRunning && allowed.has('toggle_mission_pause')
+  const stopEnabled = missionRunning && allowed.has('stop_mission') && !controlsLocked
+  const emergencyEnabled = (missionRunning && allowed.has('emergency_stop_mission')) || (airborne && !missionRunning)
+  const safetyAlert = connected && status.safetyReason ? status.safetyReason : null
+  const canReconnectVideo = videoReady && videoUrl == null && videoBroken
+  const safety = runtime.capabilities?.safety
 
   const refreshProfiles = useCallback(async (): Promise<void> => {
     try {
@@ -98,10 +111,7 @@ export default function App(): ReactElement {
     const refresh = async (): Promise<void> => {
       try {
         const next = await window.phantomFilmer.status()
-        if (!cancelled) {
-          setStatus(next)
-          if (next.safetyReason) setNotice(next.safetyReason)
-        }
+        if (!cancelled) setStatus(next)
       } catch (error) {
         if (!cancelled) setNotice(errorMessage(error, '真机遥测暂时不可用'))
       }
@@ -110,14 +120,57 @@ export default function App(): ReactElement {
     return () => { cancelled = true; window.clearInterval(timer) }
   }, [connected])
 
+  const retryVideo = useCallback(async (): Promise<void> => {
+    try {
+      const url = await window.phantomFilmer.getVideoUrl()
+      videoRetries.current = 0
+      setVideoBroken(false)
+      setVideoUrl(url)
+    } catch (error) {
+      setVideoBroken(true)
+      setNotice(errorMessage(error, '无法创建安全视频会话'))
+      scheduleVideoRetry()
+    }
+  }, [])
+
+  function scheduleVideoRetry(): void {
+    if (videoRetryTimer.current != null) return
+    if (videoRetries.current >= VIDEO_AUTO_RETRIES) return
+    videoRetries.current += 1
+    videoRetryTimer.current = window.setTimeout(() => {
+      videoRetryTimer.current = null
+      void retryVideo()
+    }, 1000 * videoRetries.current)
+  }
+
+  const handleVideoError = useCallback((): void => {
+    setVideoUrl(null)
+    setVideoBroken(true)
+    scheduleVideoRetry()
+  }, [retryVideo])
+
+  const retryVideoManually = useCallback((): void => {
+    videoRetries.current = 0
+    if (videoRetryTimer.current != null) {
+      window.clearTimeout(videoRetryTimer.current)
+      videoRetryTimer.current = null
+    }
+    void retryVideo()
+  }, [retryVideo])
+
   useEffect(() => {
-    if (!videoReady) { setVideoUrl(null); return }
-    let cancelled = false
-    void window.phantomFilmer.getVideoUrl().then((url) => { if (!cancelled) setVideoUrl(url) }).catch((error) => {
-      if (!cancelled) setNotice(errorMessage(error, '无法创建安全视频会话'))
-    })
-    return () => { cancelled = true }
-  }, [videoReady])
+    if (!videoReady) {
+      if (videoRetryTimer.current != null) {
+        window.clearTimeout(videoRetryTimer.current)
+        videoRetryTimer.current = null
+      }
+      videoRetries.current = 0
+      setVideoBroken(false)
+      setVideoUrl(null)
+      return
+    }
+    void retryVideo()
+  }, [videoReady, retryVideo])
 
   const connectDrone = async (): Promise<void> => {
     if (!backendReady) return
@@ -136,20 +189,59 @@ export default function App(): ReactElement {
     } finally { setActionBusy(null) }
   }
 
-  const enrollProfile = async (): Promise<void> => {
+  const disconnectDrone = async (): Promise<void> => {
+    if (!connected || missionRunning || airborne || actionBusy != null) return
+    setActionBusy('disconnect')
+    try {
+      await window.phantomFilmer.stop()
+      setConnection('disconnected')
+      setStatus({})
+      setNotice('已断开真机连接。')
+    } catch (error) {
+      setNotice(errorMessage(error, '断开真机失败'))
+    } finally { setActionBusy(null) }
+  }
+
+  const openLogs = async (): Promise<void> => {
+    try {
+      await window.phantomFilmer.openLogDir()
+    } catch (error) {
+      setNotice(errorMessage(error, '无法打开日志目录'))
+    }
+  }
+
+  const pickPhotos = async (): Promise<void> => {
     const name = enrollmentName.trim()
+    if (!name) return
+    setActionBusy('enroll-pick')
+    try {
+      const paths = await window.phantomFilmer.pickProfilePhotos()
+      if (paths && paths.length > 0) setPendingPhotos(paths)
+    } catch (error) {
+      setNotice(errorMessage(error, '选择参考照片失败'))
+    } finally { setActionBusy(null) }
+  }
+
+  const confirmEnroll = async (): Promise<void> => {
+    const name = enrollmentName.trim()
+    if (!name || pendingPhotos == null) return
     const overwrite = profiles.some((profile) => profile.name === name)
-    if (overwrite && !window.confirm(`人物档案“${name}”已存在。\n\n是否选择新的参考照片并覆盖原档案？`)) return
+    if (overwrite && !window.confirm(`人物档案“${name}”已存在。\n\n是否使用新选择的照片覆盖原档案？`)) return
     setActionBusy('enroll')
     try {
-      const profile = await window.phantomFilmer.enrollProfile(name, overwrite)
+      const profile = await window.phantomFilmer.enrollProfile(name, pendingPhotos, overwrite)
       if (profile) {
         setProfiles((current) => [...current.filter((item) => item.name !== profile.name), profile])
         setProfileName(profile.name)
         setEnrollmentName('')
+        setPendingPhotos(null)
         setNotice(`人物档案“${profile.name}”已创建并选中。`)
       }
     } catch (error) { setNotice(errorMessage(error, '人物建档失败')) } finally { setActionBusy(null) }
+  }
+
+  const cancelEnroll = (): void => {
+    setPendingPhotos(null)
   }
 
   const startMission = async (): Promise<void> => {
@@ -161,12 +253,12 @@ export default function App(): ReactElement {
     setActionBusy('start')
     setArmedAction(null)
     try {
-      await window.phantomFilmer.startMission({ mission: 'follow', profileName: profileName.trim(), initialControlMode: 'manual', obstacleEnabled: false })
+      await window.phantomFilmer.startMission({ mission: missionType, profileName: profileName.trim(), initialControlMode: 'manual', obstacleEnabled })
       setNotice('正在起飞并上升至 150 cm；到达后请选择跟随模式。')
     } catch (error) { setNotice(errorMessage(error, '自动任务启动失败')) } finally { setActionBusy(null) }
   }
 
-  const runMissionCommand = async (action: 'stop' | 'emergency' | MissionMode): Promise<void> => {
+  const runMissionCommand = useCallback(async (action: 'stop' | 'emergency' | MissionMode): Promise<void> => {
     if ((action === 'stop' || action === 'emergency') && armedAction !== action) {
       setArmedAction(action)
       setNotice(action === 'stop' ? '请再次点击确认停止并降落。' : '请再次点击确认急停。')
@@ -190,12 +282,21 @@ export default function App(): ReactElement {
       }
       setStatus(await window.phantomFilmer.status())
     } catch (error) { setNotice(errorMessage(error, '任务操作失败，请检查真机状态')) } finally { setActionBusy(null) }
-  }
+  }, [armedAction, missionRunning, runtime.snapshot?.controlMode])
+
+  const togglePause = useCallback(async (): Promise<void> => {
+    setActionBusy('mission-pause')
+    try {
+      await window.phantomFilmer.toggleMissionPause()
+      setStatus(await window.phantomFilmer.status())
+      setNotice('已发送暂停/继续指令。')
+    } catch (error) { setNotice(errorMessage(error, '暂停指令失败')) } finally { setActionBusy(null) }
+  }, [])
 
   const sendRc = useCallback(async (partial: PartialRcCommand): Promise<void> => {
     if (rcInFlight.current) return
     rcInFlight.current = true
-    try { await window.phantomFilmer.moveRc({ ...emptyCommand, ...partial }) } catch (error) { setNotice(errorMessage(error, '手动控制被安全系统拒绝')) } finally { rcInFlight.current = false }
+    try { await window.phantomFilmer.moveRc({ ...emptyCommand, ...partial } as RcCommand) } catch (error) { setNotice(errorMessage(error, '手动控制被安全系统拒绝')) } finally { rcInFlight.current = false }
   }, [])
 
   const stopControl = useCallback(async (): Promise<void> => {
@@ -219,25 +320,38 @@ export default function App(): ReactElement {
       KeyR: ['up', { upDown: speed }], KeyF: ['down', { upDown: -speed }], KeyJ: ['yaw-left', { yaw: -speed }], KeyL: ['yaw-right', { yaw: speed }]
     }
     const keyDown = (event: KeyboardEvent): void => {
+      const target = event.target as HTMLElement | null
+      if (target != null && ['INPUT', 'SELECT', 'TEXTAREA'].includes(target.tagName)) return
       const key = event.key.toLowerCase()
-      const missionKeyPressed = key === 'm' || (!manualControlEnabled && ['a', 's', 'f', '1', '2', '3', 'q', 'e'].includes(key))
+      const missionKeyPressed = key === 'm' || key === 'p' || (!manualControlEnabled && ['a', 's', 'f', '1', '2', '3', 'q', 'e'].includes(key))
       if (missionRunning && !event.repeat && missionKeyPressed) {
         event.preventDefault()
+        if (key === 'q') { void runMissionCommand('stop'); return }
+        if (key === 'e') { void runMissionCommand('emergency'); return }
+        if (key === 'p') { void togglePause(); return }
         void window.phantomFilmer.inputKey(key).then(async () => setStatus(await window.phantomFilmer.status())).catch((error) => setNotice(errorMessage(error, '飞行模式按键被后端拒绝')))
         return
       }
+      if (!keyboardControl) return
       if (event.code === 'Space') { event.preventDefault(); if (!event.repeat) void stopControl(); return }
       const entry = commands[event.code]
       if (!entry || event.repeat) return
       event.preventDefault()
       startControl(entry[0], entry[1])
     }
-    const keyUp = (event: KeyboardEvent): void => { if (commands[event.code]) { event.preventDefault(); void stopControl() } }
+    const keyUp = (event: KeyboardEvent): void => {
+      if (!keyboardControl) return
+      if (commands[event.code]) { event.preventDefault(); void stopControl() }
+    }
     window.addEventListener('keydown', keyDown)
     window.addEventListener('keyup', keyUp)
     window.addEventListener('blur', stopControl)
-    return () => { window.removeEventListener('keydown', keyDown); window.removeEventListener('keyup', keyUp); window.removeEventListener('blur', stopControl) }
-  }, [manualControlEnabled, missionRunning, speed, startControl, stopControl])
+    return () => {
+      window.removeEventListener('keydown', keyDown)
+      window.removeEventListener('keyup', keyUp)
+      window.removeEventListener('blur', stopControl)
+    }
+  }, [keyboardControl, manualControlEnabled, missionRunning, runMissionCommand, speed, startControl, stopControl, togglePause])
 
   const retryBackend = async (): Promise<void> => {
     setActionBusy('restart')
@@ -251,29 +365,125 @@ export default function App(): ReactElement {
     } catch (error) { setNotice(errorMessage(error, '后端重启失败')) } finally { setActionBusy(null) }
   }
 
-  const batteryLabel = useMemo(() => status.battery == null || !connected ? '—' : `${status.battery}%`, [connected, status.battery])
-  const heightLabel = connected ? `${status.heightCm ?? '—'} cm` : '—'
-  const tofLabel = !connected ? '—' : typeof status.frontTofCm === 'number' ? `${status.frontTofCm} cm` : status.frontTofState === 'out_of_range' ? '远' : '—'
-  const activeProfile = profileName || '未选择'
-
   return <main className="app-shell core-shell">
-    <header className="topbar core-topbar"><div className="brand" aria-label="PhantomFilmer 桌面飞控台"><span className="brand-mark" aria-hidden="true"><i /><i /><i /></span><div><strong>PhantomFilmer</strong><small>FOLLOWING CONSOLE</small></div></div><div className="system-summary"><StatusPill good={backendReady} label={backendReady ? '后端在线' : '后端离线'} /><StatusPill good={connected} label={connected ? '真机已连接' : '真机未连接'} /></div></header>
-    {backend.status === 'offline' && <section className={`diagnostic ${backend.airborne ? 'critical' : ''}`} role="alert"><div className="diagnostic-icon"><Icon name={backend.airborne ? 'emergency' : 'activity'} /></div><div><h1>{backend.airborne ? '后端中断 · 最后状态为空中' : '本地后端未运行'}</h1><p>{backend.error ?? '请检查后端后重试。'}</p></div><button className="button secondary" disabled={!backend.restartAllowed || actionBusy != null} onClick={() => void retryBackend()}>{backend.airborne ? '禁止自动重启' : '重启后端'}</button></section>}
+    <header className="topbar core-topbar">
+      <div className="brand" aria-label="PhantomFilmer 桌面飞控台">
+        <span className="brand-mark" aria-hidden="true"><i /><i /><i /></span>
+        <div><strong>PhantomFilmer</strong><small>FOLLOWING CONSOLE</small></div>
+      </div>
+      <div className="system-summary">
+        <StatusPill good={backendReady} label={backendReady ? '后端在线' : '后端离线'} />
+        <StatusPill good={connected} label={connected ? '真机已连接' : '真机未连接'} />
+        <button className="button secondary" onClick={() => void openLogs()} title={`日志目录：${backend.logDir}`}>日志</button>
+        <button className="button secondary" disabled={!connected || missionRunning || airborne || actionBusy != null} onClick={() => void disconnectDrone()}>断开真机</button>
+      </div>
+    </header>
+    {backend.status === 'offline' && <section className={`diagnostic ${backend.airborne ? 'critical' : ''}`} role="alert">
+      <div className="diagnostic-icon"><Icon name={backend.airborne ? 'emergency' : 'activity'} /></div>
+      <div><h1>{backend.airborne ? '后端中断 · 最后状态为空中' : '本地后端未运行'}</h1><p>{backend.error ?? '请检查后端后重试。'}</p></div>
+      <button className="button secondary" disabled={!backend.restartAllowed || actionBusy != null} onClick={() => void retryBackend()}>{backend.airborne ? '禁止自动重启' : '重启后端'}</button>
+    </section>}
     <section className="core-layout" aria-label="自动跟随控制台">
-      <aside className="profile-panel"><h1>任务与人物</h1><label className="profile-picker"><span>当前档案</span><select aria-label="人物档案" value={profileName} onChange={(event) => setProfileName(event.target.value)} disabled={missionRunning || actionBusy != null}><option value="">请选择人物档案</option>{profiles.map((profile) => <option key={profile.name} value={profile.name}>{profile.name}</option>)}</select></label><div className="profile-create"><input aria-label="新人物档案名" value={enrollmentName} onChange={(event) => setEnrollmentName(event.target.value)} placeholder="新档案名" disabled={connected || actionBusy != null} /><button disabled={!enrollmentName.trim() || connected || actionBusy != null} onClick={() => void enrollProfile()}>新建档案</button></div><div className="profile-summary"><span>当前档案</span><strong>{activeProfile}</strong><small>{profiles.find((profile) => profile.name === profileName)?.photoCount ?? 0} 张参考照片</small></div><button className={`launch-button ${armedAction === 'start' ? 'armed' : ''}`} disabled={!canStartMission || controlsLocked} onClick={() => void startMission()}>{armedAction === 'start' ? '确认起飞' : '起飞'}</button><div className={`readiness ${canStartMission ? 'ready' : ''}`}><i>{canStartMission ? '✓' : '—'}</i><span>{canStartMission ? '已满足起飞条件' : connected ? '请完成起飞检查并选择档案' : '请先连接无人机'}</span></div>{runtime.capabilities?.missionReadiness && !missionReady && <p className="runtime-error">缺少运行资产：{runtime.capabilities.missionReadiness.missingAssets.join('、')}</p>}</aside>
-      <section className="flight-panel"><header className="flight-header"><div><h1>飞行控制</h1><span>当前档案：<strong>{activeProfile}</strong></span></div></header><div className="mode-row" aria-label="自动任务空中控制">{(['normal', 'side', 'front', 'manual'] as const).map((mode) => <button key={mode} className={runtime.snapshot?.controlMode === mode ? 'active' : ''} disabled={!missionRunning || controlsLocked || missionPaused || (!awaitingModeSelection && mode !== 'manual' && runtime.snapshot?.controlMode === mode)} onClick={() => void runMissionCommand(mode)}>{mode === 'manual' && runtime.snapshot?.controlMode === 'manual' ? '退出手动并恢复自动' : missionModeLabel(mode)}</button>)}</div><section className={`video-panel core-video ${videoUrl ? 'streaming' : ''}`}>{videoUrl ? <img src={videoUrl} alt="无人机实时视频流" onError={() => { setVideoUrl(null); setNotice('视频会话中断，请检查真机连接') }} /> : <div className="video-empty"><div className="reticle" aria-hidden="true"><span /><span /><span /><span /><i /></div><h2>{connection === 'connecting' ? '正在建立链路' : backendReady ? '等待真机视频' : '后端离线'}</h2><p>连接无人机后即可显示实时视频与人物识别框。</p><button className="button primary" disabled={!backendReady || connection === 'connecting' || connected} onClick={() => void connectDrone()}><Icon name="link" />{connection === 'connecting' ? '连接中…' : connection === 'error' ? '重新连接真机' : '连接真机'}</button></div>}<div className="notice" role="status"><b>{actionBusy ? '处理中' : '状态'}</b><span>{notice}</span></div></section><footer className="flight-footer"><TelemetryMetric label="电量" value={batteryLabel} /><TelemetryMetric label="高度" value={heightLabel} /><TelemetryMetric label="前向 ToF" value={tofLabel} /><button className={`stop-button ${armedAction === 'stop' ? 'armed' : ''}`} disabled={!missionRunning || controlsLocked} onClick={() => void runMissionCommand('stop')}>{armedAction === 'stop' ? '确认停止并降落' : '停止并降落'}</button><button className={`emergency-button ${armedAction === 'emergency' ? 'armed' : ''}`} disabled={!airborne || controlsLocked} onClick={() => void runMissionCommand('emergency')}>{armedAction === 'emergency' ? '再次确认急停' : '急停'}</button></footer>{manualControlEnabled && <section className="manual-controls compact"><div className="manual-heading"><div><p className="eyebrow">MANUAL TAKEOVER</p><h2>手动控制</h2></div><div className="speed-select" aria-label="速度档位">{[15, 20, 30].map((value) => <button key={value} className={speed === value ? 'active' : ''} disabled={controlsLocked} onClick={() => setSpeed(value)}>{value}</button>)}</div></div><div className="pads"><ControlPad title="平面移动" active={activeControl} enabled={!controlsLocked} onStart={startControl} onStop={stopControl} controls={[['forward', 'W', '前进', { forwardBack: speed }, 'up'], ['left', 'A', '左移', { leftRight: -speed }, 'left'], ['hover-a', 'SPACE', '悬停', {}, 'center'], ['right', 'D', '右移', { leftRight: speed }, 'right'], ['back', 'S', '后退', { forwardBack: -speed }, 'down']]} /><ControlPad title="高度与偏航" active={activeControl} enabled={!controlsLocked} onStart={startControl} onStop={stopControl} controls={[['up', 'R', '上升', { upDown: speed }, 'up'], ['yaw-left', 'J', '左转', { yaw: -speed }, 'left'], ['hover-b', 'SPACE', '悬停', {}, 'center'], ['yaw-right', 'L', '右转', { yaw: speed }, 'right'], ['down', 'F', '下降', { upDown: -speed }, 'down']]} /></div></section>}</section>
+      <ProfilePanel
+        profiles={profiles}
+        profileName={profileName}
+        onProfileName={setProfileName}
+        enrollmentName={enrollmentName}
+        onEnrollmentName={setEnrollmentName}
+        pendingPhotos={pendingPhotos}
+        onPickPhotos={() => void pickPhotos()}
+        onConfirmEnroll={() => void confirmEnroll()}
+        onCancelEnroll={cancelEnroll}
+        enrollBusy={actionBusy === 'enroll'}
+        connected={connected}
+        missionRunning={missionRunning}
+        actionBusy={actionBusy != null}
+        missionType={missionType}
+        onMissionType={setMissionType}
+        obstacleEnabled={obstacleEnabled}
+        onObstacleEnabled={setObstacleEnabled}
+        canStartMission={canStartMission}
+        launchArmed={armedAction === 'start'}
+        onLaunch={() => void startMission()}
+        missionReady={missionReady}
+        missingAssets={runtime.capabilities?.missionReadiness?.missingAssets ?? []}
+        preflight={status.preflight}
+        events={runtime.events}
+        activeTab={activeTab}
+        onActiveTab={setActiveTab}
+      />
+      <section className="flight-panel">
+        <FlightStatusStrip
+          flightState={status.flightState ?? runtime.snapshot?.flightState}
+          controlHz={status.controlHz}
+          paused={missionPaused === true}
+          batteryFresh={status.batteryFresh}
+          heightFresh={status.heightFresh}
+          connected={connected}
+          alert={safetyAlert}
+          profile={profileName || null}
+        />
+        <ModeRow
+          controlMode={runtime.snapshot?.controlMode}
+          missionRunning={missionRunning}
+          paused={missionPaused === true}
+          awaitingModeSelection={awaitingModeSelection}
+          controlsLocked={controlsLocked}
+          canSelectMode={canSelectMode}
+          canTogglePause={canTogglePause}
+          onMode={(mode) => void runMissionCommand(mode)}
+          onPause={() => void togglePause()}
+        />
+        <VideoPanel
+          videoUrl={videoUrl}
+          connection={connection}
+          backendReady={backendReady}
+          connected={connected}
+          awaitingModeSelection={awaitingModeSelection}
+          canReconnectVideo={canReconnectVideo}
+          onConnect={() => void connectDrone()}
+          onRetryVideo={retryVideoManually}
+          onVideoError={handleVideoError}
+          overlay={manualControlEnabled ? (
+            <ManualControls
+              speed={speed}
+              onSpeed={setSpeed}
+              activeControl={activeControl}
+              keyboardEnabled={keyboardControl}
+              onKeyboardToggle={setKeyboardControl}
+              controlsLocked={controlsLocked}
+              onStart={startControl}
+              onStop={stopControl}
+            />
+          ) : airborne ? (
+            <div className="manual-hint-badge">手动接管后此处显示控制板（键 M）</div>
+          ) : null}
+        >
+          <div className="notice" role="status"><b>{actionBusy ? '处理中' : '状态'}</b><span>{notice}</span></div>
+        </VideoPanel>
+        <TelemetryFooter
+          connected={connected}
+          battery={status.battery ?? null}
+          batteryFresh={status.batteryFresh}
+          heightCm={status.heightCm ?? null}
+          heightFresh={status.heightFresh}
+          frontTofCm={status.frontTofCm ?? null}
+          frontTofState={status.frontTofState}
+          minTakeoffBattery={safety?.minTakeoffBattery}
+          lowBatteryLand={safety?.lowBatteryLand}
+          maxHeightCm={safety?.maxHeightCm}
+          stopEnabled={stopEnabled}
+          stopArmed={armedAction === 'stop'}
+          emergencyEnabled={emergencyEnabled && !controlsLocked}
+          emergencyArmed={armedAction === 'emergency'}
+          onStop={() => void runMissionCommand('stop')}
+          onEmergency={() => void runMissionCommand('emergency')}
+        />
+      </section>
     </section>
   </main>
 }
 
-function ControlPad({ title, controls, active, enabled, onStart, onStop }: { title: string; controls: Control[]; active: string | null; enabled: boolean; onStart: (name: string, command: PartialRcCommand) => void; onStop: () => Promise<void> }): ReactElement {
-  return <div className="control-pad"><span className="control-title">{title}</span><div className="pad-grid">{controls.map(([name, key, label, command, position]) => <button key={name} className={`control-key ${position} ${active === name ? 'active' : ''}`} disabled={!enabled} onPointerDown={(event) => { event.preventDefault(); if (name.startsWith('hover')) void onStop(); else onStart(name, command) }} onPointerUp={() => void onStop()} onPointerCancel={() => void onStop()}><kbd>{key}</kbd><span>{label}</span></button>)}</div></div>
-}
-
 function StatusPill({ good, label }: { good: boolean; label: string }): ReactElement {
   return <div className="status-pill"><i className={good ? 'good' : ''} /><span>{label}</span></div>
-}
-
-function TelemetryMetric({ label, value }: { label: string; value: string }): ReactElement {
-  return <div className="telemetry-metric"><span>{label}</span><strong>{value}</strong></div>
 }

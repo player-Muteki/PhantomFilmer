@@ -85,3 +85,75 @@ test('starts without ground preview and selects an automatic mode through every 
   await expect(window.getByText('任务已停止并降落。')).toBeVisible()
   await application.close()
 })
+
+test('pauses and resumes the mission from the mode row', async () => {
+  const application = await launchTestApp()
+  const window = await application.firstWindow()
+  await window.getByRole('button', { name: '连接真机' }).click()
+  await expect(window.getByText('真机已连接')).toBeVisible()
+  await window.getByRole('button', { name: '起飞' }).click()
+  await window.getByRole('button', { name: '确认起飞' }).click()
+  await expect(window.getByRole('button', { name: '暂停任务' })).toBeEnabled()
+
+  await window.getByRole('button', { name: '暂停任务' }).click()
+  await expect(window.getByText('已发送暂停/继续指令。')).toBeVisible()
+
+  await window.getByRole('button', { name: '停止并降落' }).click()
+  await window.getByRole('button', { name: '确认停止并降落' }).click()
+  await expect(window.getByText('任务已停止并降落。')).toBeVisible()
+  await application.close()
+})
+
+test('disconnects the drone from the top bar while grounded', async () => {
+  const application = await launchTestApp()
+  const window = await application.firstWindow()
+  await window.getByRole('button', { name: '连接真机' }).click()
+  await expect(window.getByText('真机已连接')).toBeVisible()
+
+  await window.getByRole('button', { name: '断开真机' }).click()
+  await expect(window.getByText('已断开真机连接。')).toBeVisible()
+  await expect(window.getByText('真机未连接')).toBeVisible()
+  await application.close()
+})
+
+test('fits on one screen without page scrollbars at minimum and default sizes', async () => {
+  const application = await launchTestApp()
+  const window = await application.firstWindow()
+  await expect(window.getByText('后端在线')).toBeVisible()
+
+  for (const bounds of [
+    { width: 1040, height: 760 },
+    { width: 1480, height: 980 }
+  ]) {
+    await application.evaluate((electron, size) => {
+      electron.BrowserWindow.getAllWindows()[0]?.setBounds({ width: size.width, height: size.height })
+    }, bounds)
+    await window.waitForTimeout(300)
+    const overflow = await window.evaluate(() => ({
+      x: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      y: document.documentElement.scrollHeight - document.documentElement.clientHeight
+    }))
+    expect(overflow.x).toBeLessThanOrEqual(0)
+    expect(overflow.y).toBeLessThanOrEqual(0)
+  }
+  await application.close()
+})
+
+test('shows the manual takeover HUD over the video after takeover', async () => {
+  const application = await launchTestApp()
+  const window = await application.firstWindow()
+  await window.getByRole('button', { name: '连接真机' }).click()
+  await expect(window.getByText('真机已连接')).toBeVisible()
+  await window.getByRole('button', { name: '起飞' }).click()
+  await window.getByRole('button', { name: '确认起飞' }).click()
+
+  await window.getByRole('button', { name: '手动接管' }).click()
+  const hud = window.getByRole('region', { name: '手动控制' })
+  await expect(hud).toBeVisible()
+  await expect(window.getByRole('button', { name: /前进/ })).toBeEnabled()
+
+  await window.getByRole('button', { name: '停止并降落' }).click()
+  await window.getByRole('button', { name: '确认停止并降落' }).click()
+  await expect(window.getByText('任务已停止并降落。')).toBeVisible()
+  await application.close()
+})

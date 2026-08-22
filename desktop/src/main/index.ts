@@ -1,5 +1,5 @@
 import { join } from 'node:path'
-import { app, BrowserWindow, dialog, ipcMain, session } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, session, shell } from 'electron'
 import { is } from '@electron-toolkit/utils'
 import type { MissionStartOptions, RcCommand } from '../preload/api'
 import { SidecarManager } from './sidecar'
@@ -128,19 +128,39 @@ function registerIpc(): void {
   ipcMain.handle('profiles:list', () => sidecar.listProfiles())
   ipcMain.handle('preview:start', (_event, profileName: string) => sidecar.startPreview(profileName))
   ipcMain.handle('preview:stop', () => sidecar.stopPreview())
-  ipcMain.handle('profiles:enroll', async (_event, payload: { name: string; overwrite: boolean }) => {
-    const { name, overwrite } = payload ?? {}
-    if (typeof name !== 'string' || !name.trim() || typeof overwrite !== 'boolean') {
-      throw new Error('人物档案参数无效。')
-    }
+  ipcMain.handle('shell:open-logs', async () => {
+    const result = await shell.openPath(sidecar.getLogDir())
+    if (result !== '') throw new Error(`无法打开日志目录：${result}`)
+  })
+  ipcMain.handle('profiles:pick-photos', async () => {
     const selected = await dialog.showOpenDialog({
       title: '选择人物参考照片',
       properties: ['openFile', 'multiSelections'],
       filters: [{ name: '图片', extensions: ['jpg', 'jpeg', 'png', 'webp', 'tif', 'tiff'] }]
     })
     if (selected.canceled || selected.filePaths.length === 0) return null
-    return sidecar.enrollProfile(name.trim(), selected.filePaths, overwrite)
+    return selected.filePaths
   })
+  ipcMain.handle(
+    'profiles:enroll',
+    async (
+      _event,
+      payload: { name: string; photoPaths: string[]; overwrite: boolean }
+    ) => {
+      const { name, photoPaths, overwrite } = payload ?? {}
+      if (
+        typeof name !== 'string' ||
+        !name.trim() ||
+        typeof overwrite !== 'boolean' ||
+        !Array.isArray(photoPaths) ||
+        photoPaths.length === 0 ||
+        photoPaths.some((path) => typeof path !== 'string' || !path)
+      ) {
+        throw new Error('人物档案参数无效。')
+      }
+      return sidecar.enrollProfile(name.trim(), photoPaths, overwrite)
+    }
+  )
   ipcMain.handle('drone:move-rc', (_event, command: RcCommand) => {
     const channels = ['leftRight', 'forwardBack', 'upDown', 'yaw'] as const
     if (
