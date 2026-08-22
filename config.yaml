@@ -33,9 +33,9 @@ camera_height: 480
 vision:
   # 多张参考图用英文逗号分隔，路径相对于项目根目录。
   reference_images: "data/reid_target/front.jpg,data/reid_target/side.jpg"
-  # 实时免起飞测试使用已注册并与 yolov8n 权重匹配的人物档案。
+  # 实时免起飞测试使用已注册并与 yolo26n 权重匹配的人物档案。
   reference_profile: "person-a-current-outfit"
-  person_detector_model: "weights/yolov8n.pt"
+  person_detector_model: "weights/yolo26n.pt"
   person_detection_confidence: 0.45
   reid_model_name: "osnet_x0_25"
   reid_model_path: "weights/osnet_x0_25_msmt17.pth"

@@ -49,6 +49,8 @@ export default function App(): ReactElement {
   const manualControlEnabled = airborne && status.rcEnabled === true
   const controlsLocked = !backendReady || actionBusy != null
   const missionReady = runtime.capabilities?.missionReadiness?.available === true
+  const selectedProfile = profiles.find((profile) => profile.name === profileName)
+  const profileCompatible = selectedProfile?.compatible !== false
   const allowed = useMemo(
     () => new Set(missionRunning ? (runtime.snapshot?.allowedActions ?? ['stop_mission', 'emergency_stop_mission', 'select_control_mode', 'toggle_mission_pause']) : (runtime.snapshot?.allowedActions ?? [])),
     [missionRunning, runtime.snapshot?.allowedActions]
@@ -56,6 +58,7 @@ export default function App(): ReactElement {
   const canStartMission = new Set(runtime.capabilities?.missions ?? []).has('follow')
     && missionReady
     && profileName.trim().length > 0
+    && profileCompatible
     && !missionRunning
     && allowed.has('start_mission')
   const canSelectMode = missionRunning && allowed.has('select_control_mode')
@@ -298,6 +301,11 @@ export default function App(): ReactElement {
   }
 
   const startMission = async (): Promise<void> => {
+    if (!profileCompatible) {
+      setArmedAction(null)
+      setNotice('当前人物档案需重新建档后才能启动任务。')
+      return
+    }
     if (armedAction !== 'start') {
       setArmedAction('start')
       setNotice('请在 4 秒内再次点击“确认起飞”。')
@@ -472,6 +480,7 @@ export default function App(): ReactElement {
         missionRunning={missionRunning}
         actionBusy={actionBusy != null}
         canStartMission={canStartMission}
+        profileCompatible={profileCompatible}
         launchArmed={armedAction === 'start'}
         onLaunch={() => void startMission()}
         missingAssets={runtime.capabilities?.missionReadiness?.missingAssets ?? []}

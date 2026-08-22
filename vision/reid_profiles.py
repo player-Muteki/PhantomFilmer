@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import tempfile
@@ -13,6 +12,8 @@ from typing import Any, Sequence
 from uuid import uuid4
 
 import numpy as np
+
+from vision.model_assets import configured_model_path, sha256_file
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -48,6 +49,8 @@ def profile_directory(
 
 def list_reid_profiles(
     profile_root: Path = DEFAULT_PROFILE_ROOT,
+    *,
+    config: dict[str, object] | None = None,
 ) -> list[dict[str, object]]:
     """List readable local manifests without loading model weights or embeddings."""
 
@@ -71,42 +74,37 @@ def list_reid_profiles(
             continue
         if name != directory.name:
             continue
-        profiles.append(
-            {
-                "name": name,
-                "createdAt": manifest.get("created_at"),
-                "updatedAt": manifest.get("updated_at"),
-                "photoCount": manifest.get("photo_count"),
-                "embeddingDimension": manifest.get("embedding_dimension"),
-                "modelName": manifest.get("reid_model_name"),
-            }
-        )
+        profiles.append(_public_profile(manifest, config=config, include_photos=False))
     return profiles
 
 
 def get_reid_profile(
     profile_name: str,
     profile_root: Path = DEFAULT_PROFILE_ROOT,
+    *,
+    config: dict[str, object] | None = None,
 ) -> dict[str, object]:
     """Return one validated, privacy-safe profile manifest."""
 
     name = validate_profile_name(profile_name)
     directory = profile_directory(name, profile_root)
     manifest = _read_valid_manifest(directory, expected_name=name)
-    return _public_profile(manifest)
+    return _public_profile(manifest, config=config)
 
 
 def rename_reid_profile(
     profile_name: str,
     new_name: str,
     profile_root: Path = DEFAULT_PROFILE_ROOT,
+    *,
+    config: dict[str, object] | None = None,
 ) -> dict[str, object]:
     """Rename a complete profile and roll back if its manifest cannot be updated."""
 
     old_name = validate_profile_name(profile_name)
     replacement = validate_profile_name(new_name)
     if old_name == replacement:
-        return get_reid_profile(old_name, profile_root)
+        return get_reid_profile(old_name, profile_root, config=config)
     old_directory = profile_directory(old_name, profile_root)
     new_directory = profile_directory(replacement, profile_root)
     manifest = _read_valid_manifest(old_directory, expected_name=old_name)
@@ -123,7 +121,7 @@ def rename_reid_profile(
         if new_directory.exists() and not old_directory.exists():
             os.replace(new_directory, old_directory)
         raise
-    return _public_profile(updated)
+    return _public_profile(updated, config=config)
 
 
 def delete_reid_profile(
@@ -173,7 +171,7 @@ def save_reid_profile(
     photos = [
         {
             "index": index,
-            "sha256": _sha256_file(Path(path)),
+            "sha256": sha256_file(Path(path)),
         }
         for index, path in enumerate(reference_images, start=1)
     ]
@@ -188,7 +186,7 @@ def save_reid_profile(
         "created_at": datetime.now(timezone.utc).isoformat(),
         "preprocessing_version": PREPROCESSING_VERSION,
         "embedding_file": EMBEDDING_FILENAME,
-        "embedding_sha256": _sha256_file(embedding_path),
+        "embedding_sha256": sha256_file(embedding_path),
         "embedding_dimension": int(normalized.shape[0]),
         "photo_count": len(photos),
         "photos": photos,
@@ -233,7 +231,7 @@ def load_reid_profile(
     ):
         if manifest.get(key) != current_model_info[key]:
             raise RuntimeError(f"人物档案与当前模型不兼容，请重新注册：{name}")
-    if manifest.get("embedding_sha256") != _sha256_file(embedding_path):
+    if manifest.get("embedding_sha256") != sha256_file(embedding_path):
         raise RuntimeError(f"人物档案特征文件校验失败：{name}")
 
     try:
@@ -265,7 +263,37 @@ def _read_valid_manifest(directory: Path, *, expected_name: str) -> dict[str, ob
     return manifest
 
 
-def _public_profile(manifest: dict[str, object]) -> dict[str, object]:
+def profile_compatibility(
+    manifest: dict[str, object],
+    config: dict[str, object],
+) -> tuple[bool, bool, str | None]:
+    """Return whether a profile can be used by the current model pipeline."""
+
+    if manifest.get("schema_version") != PROFILE_SCHEMA_VERSION:
+        return False, True, "profile_schema_changed"
+    if manifest.get("preprocessing_version") != PREPROCESSING_VERSION:
+        return False, True, "preprocessing_changed"
+    try:
+        current = _current_model_info(config)
+    except RuntimeError:
+        return False, False, "model_assets_unavailable"
+    if manifest.get("person_detector_model_sha256") != current[
+        "person_detector_model_sha256"
+    ]:
+        return False, True, "person_detector_model_changed"
+    if manifest.get("reid_model_name") != current["reid_model_name"]:
+        return False, True, "reid_model_changed"
+    if manifest.get("reid_model_sha256") != current["reid_model_sha256"]:
+        return False, True, "reid_model_changed"
+    return True, False, None
+
+
+def _public_profile(
+    manifest: dict[str, object],
+    *,
+    config: dict[str, object] | None = None,
+    include_photos: bool = True,
+) -> dict[str, object]:
     """Expose metadata only; source paths and raw embeddings never leave storage."""
 
     photos = manifest.get("photos")
@@ -280,26 +308,33 @@ def _public_profile(manifest: dict[str, object]) -> dict[str, object]:
                     "sha256": photo.get("sha256"),
                 }
             )
-    return {
+    result: dict[str, object] = {
         "name": manifest.get("profile_name"),
         "createdAt": manifest.get("created_at"),
         "updatedAt": manifest.get("updated_at"),
         "photoCount": manifest.get("photo_count"),
         "embeddingDimension": manifest.get("embedding_dimension"),
         "modelName": manifest.get("reid_model_name"),
-        "photos": safe_photos,
     }
+    if include_photos:
+        result["photos"] = safe_photos
+    if config is not None:
+        compatible, requires_reenrollment, reason = profile_compatibility(manifest, config)
+        result.update(
+            {
+                "compatible": compatible,
+                "requiresReenrollment": requires_reenrollment,
+                "incompatibilityReason": reason,
+            }
+        )
+    return result
 
 
 def _current_model_info(config: dict[str, object]) -> dict[str, str]:
     vision = config.get("vision", {})
     cfg = vision if isinstance(vision, dict) else config
-    reid_model_path = _resolve_project_path(
-        str(cfg.get("reid_model_path", "weights/osnet_x0_25_msmt17.pth"))
-    )
-    detector_model_path = _resolve_project_path(
-        str(cfg.get("person_detector_model", "weights/yolo11n.pt"))
-    )
+    reid_model_path = configured_model_path(config, "reid_model_path")
+    detector_model_path = configured_model_path(config, "person_detector_model")
     for label, path in (
         ("ReID", reid_model_path),
         ("YOLO", detector_model_path),
@@ -308,8 +343,8 @@ def _current_model_info(config: dict[str, object]) -> dict[str, str]:
             raise RuntimeError(f"{label} 权重不存在：{path}")
     return {
         "reid_model_name": str(cfg.get("reid_model_name", "osnet_x0_25")),
-        "reid_model_sha256": _sha256_file(reid_model_path),
-        "person_detector_model_sha256": _sha256_file(detector_model_path),
+        "reid_model_sha256": sha256_file(reid_model_path),
+        "person_detector_model_sha256": sha256_file(detector_model_path),
     }
 
 
@@ -325,22 +360,6 @@ def _validated_embedding(value: Any) -> np.ndarray:
     if norm <= 1e-12:
         raise RuntimeError("人物档案特征是零向量。")
     return (values / norm).astype(np.float32)
-
-
-def _resolve_project_path(value: str) -> Path:
-    path = Path(value).expanduser()
-    return path if path.is_absolute() else PROJECT_ROOT / path
-
-
-def _sha256_file(path: Path) -> str:
-    digest = hashlib.sha256()
-    try:
-        with path.open("rb") as file:
-            for chunk in iter(lambda: file.read(1024 * 1024), b""):
-                digest.update(chunk)
-    except OSError as exc:
-        raise RuntimeError(f"无法读取文件进行校验：{path}") from exc
-    return digest.hexdigest()
 
 
 def _atomic_save_embedding(path: Path, embedding: np.ndarray) -> None:

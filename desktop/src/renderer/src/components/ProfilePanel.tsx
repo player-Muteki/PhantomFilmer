@@ -23,6 +23,7 @@ type Props = {
   missionRunning: boolean
   actionBusy: boolean
   canStartMission: boolean
+  profileCompatible: boolean
   launchArmed: boolean
   onLaunch: () => void
   missingAssets: string[]
@@ -38,10 +39,12 @@ export function ProfilePanel(props: Props): ReactElement {
     pendingPhotos, onPickPhotos, onConfirmEnroll, onCancelEnroll, enrollBusy,
     onReplaceProfile, onRenameProfile, onDeleteProfile,
     connected, missionRunning, actionBusy,
-    canStartMission, launchArmed, onLaunch, missingAssets, preflight,
+    canStartMission, profileCompatible, launchArmed, onLaunch, missingAssets, preflight,
     events, activeTab, onActiveTab
   } = props
   const enrolling = pendingPhotos != null
+  const selectedProfile = profiles.find((profile) => profile.name === profileName)
+  const requiresReenrollment = selectedProfile?.requiresReenrollment === true
   const [renaming, setRenaming] = useState(false)
   const [renameValue, setRenameValue] = useState(profileName)
 
@@ -107,6 +110,7 @@ export function ProfilePanel(props: Props): ReactElement {
               <small title={profileDetails?.modelName ? `模型：${profileDetails.modelName}` : undefined}>
                 {profiles.find((profile) => profile.name === profileName)?.photoCount ?? 0} 张{profileDetails?.modelName ? ` · ${profileDetails.modelName}` : ''}
               </small>
+              {requiresReenrollment && <small className="runtime-error">需重新建档</small>}
             </div>
             <div className="profile-actions" aria-label="人物档案操作">
               <button disabled={!profileName || connected || actionBusy} onClick={onReplaceProfile}>更新照片</button>
@@ -155,7 +159,7 @@ export function ProfilePanel(props: Props): ReactElement {
       />
       <div className={`readiness ${canStartMission ? 'ready' : ''}`}>
         <i>{canStartMission ? '✓' : '—'}</i>
-        <span>{canStartMission ? '已满足起飞条件' : connected ? '请完成起飞检查并选择档案' : '请先连接无人机'}</span>
+        <span>{canStartMission ? '已满足起飞条件' : !profileCompatible ? '当前档案需重新建档' : connected ? '请完成起飞检查并选择档案' : '请先连接无人机'}</span>
       </div>
       {missingAssets.length > 0 && (
         <p className="runtime-error">缺少运行资产：{missingAssets.join('、')}</p>

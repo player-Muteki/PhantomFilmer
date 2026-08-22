@@ -19,7 +19,7 @@ from vision.reid_profiles import (
 
 
 def build_config(tmp_path: Path) -> dict[str, object]:
-    yolo = tmp_path / "yolo11n.pt"
+    yolo = tmp_path / "yolo26n.pt"
     osnet = tmp_path / "osnet.pth"
     yolo.write_bytes(b"yolo-v1")
     osnet.write_bytes(b"osnet-v1")
@@ -66,6 +66,23 @@ def test_profile_rejects_changed_model_weight(tmp_path: Path) -> None:
 
     with pytest.raises(RuntimeError, match="模型不兼容"):
         load_reid_profile("person-a", config, profile_root=profile_root)
+
+
+def test_profile_listing_reports_changed_detector_as_reenrollment_required(
+    tmp_path: Path,
+) -> None:
+    config = build_config(tmp_path)
+    photo = tmp_path / "front.jpg"
+    photo.write_bytes(b"photo")
+    profile_root = tmp_path / "profiles"
+    save_reid_profile("person-a", [1.0, 0.0], config, [photo], profile_root=profile_root)
+
+    Path(config["vision"]["person_detector_model"]).write_bytes(b"yolo-v2")
+
+    profile = list_reid_profiles(profile_root, config=config)[0]
+    assert profile["compatible"] is False
+    assert profile["requiresReenrollment"] is True
+    assert profile["incompatibilityReason"] == "person_detector_model_changed"
 
 
 def test_profile_rejects_tampered_embedding(tmp_path: Path) -> None:

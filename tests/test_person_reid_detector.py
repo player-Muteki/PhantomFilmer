@@ -134,13 +134,13 @@ class PersonReIDDetectorTestCase(unittest.TestCase):
         fake_ultralytics = SimpleNamespace(YOLO=FakeYOLO)
         with TemporaryDirectory() as temporary:
             root = Path(temporary)
-            model = root / "weights" / "yolov8n.pt"
+            model = root / "weights" / "yolo26n.pt"
             model.parent.mkdir()
             model.touch()
             with patch("vision.person_reid_detect.PROJECT_ROOT", root), patch.dict(
                 sys.modules, {"ultralytics": fake_ultralytics}
             ):
-                detector = UltralyticsPersonDetector("weights/yolov8n.pt", 0.5, "cpu")
+                detector = UltralyticsPersonDetector("weights/yolo26n.pt", 0.5, "cpu")
             self.assertEqual(detector.model.model_path, str(model))
 
     def test_yolo_scene_detection_separates_people_and_visual_objects(self):
@@ -327,13 +327,14 @@ class PersonReIDDetectorTestCase(unittest.TestCase):
             {
                 "vision": {
                     "reference_images": "front.jpg, side.jpg",
+                    "person_detector_model": "weights/yolo26n.pt",
                     "reid_similarity_threshold": 0.72,
                     "reid_ambiguity_margin": 0.08,
                 }
             }
         )
         self.assertEqual(detector.reference_image_paths, ["front.jpg", "side.jpg"])
-        self.assertEqual(detector.detector_model_path, "weights/yolo11n.pt")
+        self.assertEqual(Path(detector.detector_model_path).name, "yolo26n.pt")
         self.assertEqual(detector.similarity_threshold, 0.72)
         self.assertEqual(detector.ambiguity_margin, 0.08)
 
@@ -343,7 +344,12 @@ class PersonReIDDetectorTestCase(unittest.TestCase):
             return_value=(np.array([1.0, 0.0], dtype=np.float32), {"profile_name": "person-a"}),
         ) as load_profile:
             detector = PersonReIDDetector.from_config(
-                {"vision": {"reference_profile": "person-a"}}
+                {
+                    "vision": {
+                        "reference_profile": "person-a",
+                        "person_detector_model": "weights/yolo26n.pt",
+                    }
+                }
             )
 
         load_profile.assert_called_once()

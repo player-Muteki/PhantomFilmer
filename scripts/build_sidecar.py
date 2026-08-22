@@ -5,6 +5,12 @@ import subprocess
 import sys
 from http.client import HTTPConnection
 from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from vision.model_assets import PERSON_DETECTOR_ASSET
 from queue import Empty, Queue
 from tempfile import TemporaryDirectory
 from threading import Thread
@@ -131,10 +137,18 @@ def _smoke_test_models(executable: Path) -> None:
                 continue
             if isinstance(record, dict):
                 records.append(record)
-        if not any(record.get("event") == "model-runtime-ready" for record in records):
+        ready_record = next(
+            (record for record in records if record.get("event") == "model-runtime-ready"),
+            None,
+        )
+        if ready_record is None:
             raise RuntimeError(
                 "模型冒烟测试未报告成功：" + (result.stdout.strip() or "无标准输出")
             )
+        if ready_record.get("personDetector") != PERSON_DETECTOR_ASSET.relative_path:
+            raise RuntimeError("模型冒烟测试未加载指定的 YOLO26n 权重。")
+        if ready_record.get("personDetectorSha256") != PERSON_DETECTOR_ASSET.sha256:
+            raise RuntimeError("模型冒烟测试的 YOLO26n 权重校验值不匹配。")
 
 
 def main() -> int:

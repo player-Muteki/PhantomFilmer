@@ -36,7 +36,7 @@ state = {
     "preview_profile": None,
     "sequence": 0,
     "events": [],
-    "profiles": [{"name": "operator-a", "photoCount": 3, "modelName": "osnet_x0_25"}],
+    "profiles": [{"name": "operator-a", "photoCount": 3, "modelName": "osnet_x0_25", "compatible": True, "requiresReenrollment": False}],
 }
 
 

@@ -79,6 +79,20 @@ describe('desktop follow console', () => {
     expect(screen.queryByRole('button', { name: '运行诊断' })).not.toBeInTheDocument()
   })
 
+  it('blocks launch and shows remediation for an incompatible profile', async () => {
+    mount({
+      listProfiles: vi.fn().mockResolvedValue([
+        { name: '旧档案', photoCount: 3, compatible: false, requiresReenrollment: true }
+      ]),
+      getProfile: vi.fn().mockResolvedValue({
+        name: '旧档案', photoCount: 3, compatible: false,
+        requiresReenrollment: true, photos: []
+      })
+    })
+    await screen.findByText('需重新建档')
+    expect(screen.getByRole('button', { name: '起飞' })).toBeDisabled()
+  })
+
   it('uses one compact command bar above the video and one safety bar below it', async () => {
     mount()
     await screen.findByRole('heading', { name: '任务与人物' })

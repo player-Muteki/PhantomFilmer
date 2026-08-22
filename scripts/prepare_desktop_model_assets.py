@@ -2,54 +2,25 @@
 
 from __future__ import annotations
 
-import hashlib
 import shutil
 import subprocess
-from dataclasses import dataclass
+import sys
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from urllib.request import Request, urlopen
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from vision.model_assets import DESKTOP_MODEL_ASSETS, ModelAsset, sha256_file
+
 JOINTBDOE_COMMIT = "362f999e22bd50a4e73aca882b58c13f8a96a13c"
 JOINTBDOE_REPOSITORY = "https://github.com/hnuzhy/JointBDOE.git"
 
 
-@dataclass(frozen=True)
-class ModelAsset:
-    """One immutable release-model download."""
-
-    relative_path: str
-    sha256: str
-    url: str | None = None
-    google_drive_id: str | None = None
-
-
-MODEL_ASSETS = (
-    ModelAsset(
-        relative_path="weights/yolov8n.pt",
-        url="https://github.com/ultralytics/assets/releases/download/v8.1.0/yolov8n.pt",
-        sha256="31e20dde3def09e2cf938c7be6fe23d9150bbbe503982af13345706515f2ef95",
-    ),
-    ModelAsset(
-        relative_path="weights/osnet_x0_25_msmt17.pth",
-        google_drive_id="1Kkx2zW89jq_NETu4u42CFZTMVD5Hwm6e",
-        sha256="cf55163d78fc44c62c82f85ab62d39f10438679b5abe8c698ae08cfa84aa6e18",
-    ),
-    ModelAsset(
-        relative_path="weights/jointbdoe_s.pt",
-        url="https://huggingface.co/HoyerChou/JointBDOE/resolve/main/coco_s_1024_e500_t010_w005_best.pt",
-        sha256="bc6d63ee0f685a888e5ff94a84d8244ce23a817223010e100459137bacae3e27",
-    ),
-)
-
-
 def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    return sha256_file(path)
 
 
 def _download(asset: ModelAsset, destination: Path) -> None:
@@ -161,7 +132,7 @@ def _prepare_jointbdoe_source() -> None:
 
 def main() -> int:
     """Prepare every ignored asset required by a self-contained desktop build."""
-    for asset in MODEL_ASSETS:
+    for asset in DESKTOP_MODEL_ASSETS:
         _prepare_model(asset)
     _prepare_jointbdoe_source()
     return 0

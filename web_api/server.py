@@ -65,6 +65,12 @@ from vision.reid_profiles import (
     rename_reid_profile,
     save_reid_profile,
 )
+from vision.model_assets import (
+    PERSON_DETECTOR_ASSET,
+    desktop_asset_issues,
+    sha256_file,
+    verify_desktop_asset,
+)
 
 from .tello_adapter import RealTelloAdapter
 
@@ -252,23 +258,7 @@ class DroneWebService(MissionManager):
         missing_assets: list[str] = []
         if not self._custom_mission_session_factory:
             try:
-                config = self._runtime_config
-                vision = config.get("vision", {})
-                cfg = vision if isinstance(vision, dict) else {}
-                project_root = Path(__file__).resolve().parents[1]
-                for key in (
-                    "person_detector_model",
-                    "reid_model_path",
-                    "jointbdoe_model_path",
-                ):
-                    value = str(cfg.get(key, "")).strip()
-                    if not value:
-                        missing_assets.append(key)
-                        continue
-                    path = Path(value).expanduser()
-                    resolved = path if path.is_absolute() else project_root / path
-                    if not resolved.is_file():
-                        missing_assets.append(key)
+                missing_assets = desktop_asset_issues(self._runtime_config)
             except Exception as exc:
                 missing_assets.append(f"config:{exc}")
         return {
@@ -315,12 +305,16 @@ class DroneWebService(MissionManager):
         }
 
     def list_profiles(self) -> list[dict[str, object]]:
-        return list_reid_profiles(self.data_dir / "reid_profiles")
+        return list_reid_profiles(
+            self.data_dir / "reid_profiles", config=self._runtime_config
+        )
 
     def get_profile(self, name: object) -> dict[str, object]:
         if not isinstance(name, str):
             raise RuntimeError("人物档案名格式无效。")
-        return get_reid_profile(name, self.data_dir / "reid_profiles")
+        return get_reid_profile(
+            name, self.data_dir / "reid_profiles", config=self._runtime_config
+        )
 
     def rename_profile(self, name: object, new_name: object) -> dict[str, object]:
         self._require_profile_management_available()
@@ -330,6 +324,7 @@ class DroneWebService(MissionManager):
             name,
             new_name,
             self.data_dir / "reid_profiles",
+            config=self._runtime_config,
         )
         self.events.publish(
             "profile.renamed",
@@ -409,6 +404,9 @@ class DroneWebService(MissionManager):
             "photoCount": manifest["photo_count"],
             "embeddingDimension": manifest["embedding_dimension"],
             "modelName": manifest["reid_model_name"],
+            "compatible": True,
+            "requiresReenrollment": False,
+            "incompatibilityReason": None,
         }
 
     @property
@@ -2207,7 +2205,7 @@ def _verify_model_runtime() -> dict[str, str]:
     if not isinstance(vision, dict):
         raise RuntimeError("config.yaml 的 vision 必须是映射")
 
-    detector_path = str(vision.get("person_detector_model", "")).strip()
+    detector_path = str(verify_desktop_asset(PERSON_DETECTOR_ASSET))
     reid_model_path = str(vision.get("reid_model_path", "")).strip()
     if not detector_path or not reid_model_path:
         raise RuntimeError("ReID 模型路径配置不完整")
@@ -2226,7 +2224,8 @@ def _verify_model_runtime() -> dict[str, str]:
     orientation.prepare()
     return {
         "event": "model-runtime-ready",
-        "personDetector": detector_path,
+        "personDetector": PERSON_DETECTOR_ASSET.relative_path,
+        "personDetectorSha256": sha256_file(Path(detector_path)),
         "reidModel": reid_model_path,
         "jointbdoeModel": str(vision.get("jointbdoe_model_path", "")),
     }

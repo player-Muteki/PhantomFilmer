@@ -88,7 +88,7 @@ python3 -m venv .venv
 
 ## 识别链路
 
-系统只保留人物 ReID：YOLOv8n 检测画面中的行人，Torchreid/OSNet 提取外观特征，
+系统只保留人物 ReID：YOLO26n 检测画面中的行人，Torchreid/OSNet 提取外观特征，
 再与本地参考照片或具名档案进行余弦相似度匹配。`create_detector()` 始终创建
 `PersonReIDDetector`，不存在运行时识别策略开关。
 
@@ -108,19 +108,19 @@ bash scripts/setup_reid_env.sh python3
 模型权重、人物照片和数据集不会提交到 Git。所需材料和校验方式见 [docs/06-配置测试与源码索引.md 第 4 节](docs/06-配置测试与源码索引.md#4-依赖与本地数据)，ReID 模型加载与档案校验见 [docs/03-视觉感知与目标跟随.md](docs/03-视觉感知与目标跟随.md)。配置示例见 `config.reid.offline-snippet.yaml`。典型本地文件包括：
 
 ```text
-weights/yolov8n.pt
+weights/yolo26n.pt
 weights/osnet_x0_25_msmt17.pth
 data/reid_target/front.jpg
 data/reid_target/side.jpg
 ```
 
-项目当前使用 COCO 预训练 YOLOv8n。程序在飞行现场设置 `YOLO_OFFLINE=1`，
+项目当前使用 COCO 预训练 YOLO26n。程序在飞行现场设置 `YOLO_OFFLINE=1`，
 因此首次运行前需在可联网环境下载官方权重：
 
 ```bash
 mkdir -p weights
-curl -L https://github.com/ultralytics/assets/releases/download/v8.1.0/yolov8n.pt \
-  -o weights/yolov8n.pt
+curl -fL https://github.com/ultralytics/assets/releases/download/v8.4.0/yolo26n.pt \
+  -o weights/yolo26n.pt
 ```
 
 桌面构建脚本会自动下载并校验该权重。更换检测模型后，已有 ReID 档案会因权重哈希

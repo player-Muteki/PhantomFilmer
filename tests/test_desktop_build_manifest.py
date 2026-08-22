@@ -2,6 +2,12 @@
 
 from pathlib import Path
 
+from vision.model_assets import (
+    JOINTBDOE_MODEL_ASSET,
+    PERSON_DETECTOR_ASSET,
+    REID_MODEL_ASSET,
+)
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -48,15 +54,17 @@ def test_sidecar_bundle_includes_vision_models_and_runtimes() -> None:
     assert 'collect_submodules("scipy._external.array_api_compat")' in spec
     assert '"seaborn"' in spec
     assert '"--verify-models"' in builder
-    assert (
-        "31e20dde3def09e2cf938c7be6fe23d9150bbbe503982af13345706515f2ef95"
-        in asset_preparer
+    assert "DESKTOP_MODEL_ASSETS" in asset_preparer
+    assert "PERSON_DETECTOR_ASSET" in (
+        PROJECT_ROOT / "vision/model_assets.py"
+    ).read_text(encoding="utf-8")
+    assert PERSON_DETECTOR_ASSET.relative_path == "weights/yolo26n.pt"
+    assert PERSON_DETECTOR_ASSET.sha256 == (
+        "9b09cc8bf347f0fc8a5f7657480587f25db09b34bf33b0652110fb03a8ad4fef"
     )
-    assert (
+    assert REID_MODEL_ASSET.sha256 == (
         "cf55163d78fc44c62c82f85ab62d39f10438679b5abe8c698ae08cfa84aa6e18"
-        in asset_preparer
     )
-    assert (
+    assert JOINTBDOE_MODEL_ASSET.sha256 == (
         "bc6d63ee0f685a888e5ff94a84d8244ce23a817223010e100459137bacae3e27"
-        in asset_preparer
     )

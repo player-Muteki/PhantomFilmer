@@ -14,6 +14,7 @@ import numpy as np
 
 from vision.debug_overlay import BoxAnnotation, draw_box_annotations
 from vision.detector_protocol import DetectionResult
+from vision.model_assets import configured_model_path, resolve_model_path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_VISUAL_OBJECT_CLASSES = (
@@ -59,6 +60,8 @@ class UltralyticsPersonDetector:
         # is imported and macOS can wait about a minute for that lookup to time
         # out.  setdefault keeps an explicit caller override available.
         os.environ.setdefault("YOLO_OFFLINE", "1")
+        if not str(model_path).strip():
+            raise RuntimeError("未配置 vision.person_detector_model。")
         try:
             from ultralytics import YOLO
         except ModuleNotFoundError as exc:
@@ -66,7 +69,7 @@ class UltralyticsPersonDetector:
                 "缺少 ReID 行人检测依赖：请安装 requirements-reid.txt。"
             ) from exc
         configured_path = Path(model_path).expanduser()
-        packaged_path = _resolve_project_path(model_path)
+        packaged_path = resolve_model_path(model_path, project_root=PROJECT_ROOT)
         # Source runs and PyInstaller runs both keep configured assets below
         # their respective project roots. Resolve an existing relative asset
         # before handing it to Ultralytics so a packaged sidecar never falls
@@ -186,7 +189,7 @@ class PersonReIDDetector:
     def __init__(
         self,
         reference_image_paths: Sequence[str],
-        detector_model_path: str = "weights/yolo11n.pt",
+        detector_model_path: str | None = None,
         reid_model_name: str = "osnet_x0_25",
         reid_model_path: str = "",
         device: str = "cpu",
@@ -205,7 +208,7 @@ class PersonReIDDetector:
         reference_features: Optional[Any] = None,
     ) -> None:
         self.reference_image_paths = [str(path) for path in reference_image_paths if str(path).strip()]
-        self.detector_model_path = detector_model_path
+        self.detector_model_path = str(detector_model_path or "")
         self.reid_model_name = reid_model_name
         self.reid_model_path = reid_model_path
         self.device = str(device).strip() or "cpu"
@@ -263,11 +266,15 @@ class PersonReIDDetector:
             from vision.jointbdoe_orientation import JointBDOEOrientationEstimator
 
             orientation_estimator = JointBDOEOrientationEstimator.from_config(config)
+        configured_detector_path = str(cfg.get("person_detector_model", "")).strip()
+        detector_model_path = (
+            configured_model_path(config, "person_detector_model")
+            if configured_detector_path
+            else ""
+        )
         return cls(
             reference_image_paths=reference_images,
-            detector_model_path=str(
-                cfg.get("person_detector_model", "weights/yolo11n.pt")
-            ),
+            detector_model_path=str(detector_model_path),
             reid_model_name=str(cfg.get("reid_model_name", "osnet_x0_25")),
             reid_model_path=str(cfg.get("reid_model_path", "")),
             device=str(cfg.get("reid_device", "cpu")),

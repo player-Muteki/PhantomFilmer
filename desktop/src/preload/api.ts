@@ -124,6 +124,9 @@ export type ProfileSummary = {
   photoCount?: number | null
   embeddingDimension?: number | null
   modelName?: string | null
+  compatible?: boolean
+  requiresReenrollment?: boolean
+  incompatibilityReason?: string | null
 }
 
 export type ProfileDetails = ProfileSummary & {
