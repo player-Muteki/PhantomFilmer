@@ -199,6 +199,19 @@ class DroneWebServiceTests(unittest.TestCase):
         self.assertEqual(command.initial_control_mode, ControlMode.SIDE)
         self.assertTrue(command.obstacle_enabled)
 
+    def test_removed_fixed_demo_mission_is_not_accepted_or_advertised(self) -> None:
+        with self.assertRaisesRegex(ValueError, "mission 类型无效"):
+            command_from_payload(
+                {"type": "mission.start", "mission": "fixed_demo"}
+            )
+
+        service = DroneWebService(adapter_factory=RealAdapterStub)
+        self.addCleanup(service.shutdown)
+        self.assertEqual(
+            service.capabilities()["missions"],
+            ["manual", "follow", "reid_follow"],
+        )
+
     def test_desktop_mission_cannot_disable_required_front_tof_safety(self) -> None:
         service = DroneWebService(adapter_factory=RealAdapterStub)
         self.addCleanup(service.shutdown)
