@@ -17,7 +17,8 @@ import numpy as np
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PROFILE_ROOT = PROJECT_ROOT / "data" / "reid_profiles"
-PROFILE_SCHEMA_VERSION = 1
+PROFILE_SCHEMA_VERSION = 2
+SUPPORTED_PROFILE_SCHEMA_VERSIONS = {1, PROFILE_SCHEMA_VERSION}
 PREPROCESSING_VERSION = "yolo-person-crop-rgb-osnet-v1"
 EMBEDDING_FILENAME = "embedding.npz"
 MANIFEST_FILENAME = "manifest.json"
@@ -63,7 +64,10 @@ def list_reid_profiles(
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             continue
-        if not isinstance(manifest, dict) or manifest.get("schema_version") != PROFILE_SCHEMA_VERSION:
+        if (
+            not isinstance(manifest, dict)
+            or manifest.get("schema_version") not in SUPPORTED_PROFILE_SCHEMA_VERSIONS
+        ):
             continue
         try:
             name = validate_profile_name(str(manifest.get("profile_name", "")))
@@ -151,14 +155,14 @@ def delete_reid_profile(
 
 def save_reid_profile(
     profile_name: str,
-    embedding: Any,
+    embeddings: Any,
     config: dict[str, object],
     reference_images: Sequence[Path],
     *,
     overwrite: bool = False,
     profile_root: Path = DEFAULT_PROFILE_ROOT,
 ) -> dict[str, object]:
-    """Atomically save a normalized embedding and compatibility manifest."""
+    """Atomically save normalized per-photo templates and their centroid."""
     name = validate_profile_name(profile_name)
     directory = profile_directory(name, profile_root)
     manifest_path = directory / MANIFEST_FILENAME
@@ -168,7 +172,8 @@ def save_reid_profile(
             f"人物档案已存在：{name}。如需替换，请显式使用覆盖选项。"
         )
 
-    normalized = _validated_embedding(embedding)
+    templates = _validated_embeddings(embeddings)
+    centroid = _normalized_centroid(templates)
     model_info = _current_model_info(config)
     photos = [
         {
@@ -179,9 +184,11 @@ def save_reid_profile(
     ]
     if not photos:
         raise RuntimeError("保存人物档案时至少需要一张参考照片。")
+    if templates.shape[0] != len(photos):
+        raise RuntimeError("人物档案模板数量必须与参考照片数量一致。")
 
     directory.mkdir(parents=True, exist_ok=True)
-    _atomic_save_embedding(embedding_path, normalized)
+    _atomic_save_embedding(embedding_path, templates, centroid)
     manifest: dict[str, object] = {
         "schema_version": PROFILE_SCHEMA_VERSION,
         "profile_name": name,
@@ -189,7 +196,8 @@ def save_reid_profile(
         "preprocessing_version": PREPROCESSING_VERSION,
         "embedding_file": EMBEDDING_FILENAME,
         "embedding_sha256": _sha256_file(embedding_path),
-        "embedding_dimension": int(normalized.shape[0]),
+        "embedding_dimension": int(templates.shape[1]),
+        "template_count": int(templates.shape[0]),
         "photo_count": len(photos),
         "photos": photos,
         **model_info,
@@ -218,7 +226,8 @@ def load_reid_profile(
         raise RuntimeError(f"人物档案清单损坏：{name}") from exc
     if not isinstance(manifest, dict):
         raise RuntimeError(f"人物档案清单格式无效：{name}")
-    if manifest.get("schema_version") != PROFILE_SCHEMA_VERSION:
+    schema_version = manifest.get("schema_version")
+    if schema_version not in SUPPORTED_PROFILE_SCHEMA_VERSIONS:
         raise RuntimeError(f"人物档案版本不兼容，请重新注册：{name}")
     if manifest.get("profile_name") != name:
         raise RuntimeError(f"人物档案名称不匹配：{name}")
@@ -238,12 +247,19 @@ def load_reid_profile(
 
     try:
         with np.load(embedding_path, allow_pickle=False) as values:
-            embedding = np.asarray(values["embedding"], dtype=np.float32)
+            if "templates" in values:
+                embeddings = np.asarray(values["templates"], dtype=np.float32)
+            else:
+                embeddings = np.asarray(values["embedding"], dtype=np.float32)
     except (OSError, ValueError, KeyError) as exc:
         raise RuntimeError(f"人物档案特征文件损坏：{name}") from exc
-    normalized = _validated_embedding(embedding)
-    if manifest.get("embedding_dimension") != int(normalized.shape[0]):
+    normalized = _validated_embeddings(embeddings)
+    if manifest.get("embedding_dimension") != int(normalized.shape[1]):
         raise RuntimeError(f"人物档案特征维度不匹配：{name}")
+    if schema_version == PROFILE_SCHEMA_VERSION and manifest.get(
+        "template_count"
+    ) != int(normalized.shape[0]):
+        raise RuntimeError(f"人物档案模板数量不匹配：{name}")
     return normalized, manifest
 
 
@@ -258,7 +274,7 @@ def _read_valid_manifest(directory: Path, *, expected_name: str) -> dict[str, ob
         raise RuntimeError(f"人物档案清单损坏：{expected_name}") from exc
     if not isinstance(manifest, dict):
         raise RuntimeError(f"人物档案清单格式无效：{expected_name}")
-    if manifest.get("schema_version") != PROFILE_SCHEMA_VERSION:
+    if manifest.get("schema_version") not in SUPPORTED_PROFILE_SCHEMA_VERSIONS:
         raise RuntimeError(f"人物档案版本不兼容，请重新注册：{expected_name}")
     if manifest.get("profile_name") != expected_name:
         raise RuntimeError(f"人物档案名称不匹配：{expected_name}")
@@ -313,18 +329,26 @@ def _current_model_info(config: dict[str, object]) -> dict[str, str]:
     }
 
 
-def _validated_embedding(value: Any) -> np.ndarray:
+def _validated_embeddings(value: Any) -> np.ndarray:
     values = np.asarray(value, dtype=np.float32)
-    if values.ndim == 2 and values.shape[0] == 1:
-        values = values[0]
-    if values.ndim != 1 or values.size == 0:
-        raise RuntimeError("人物档案特征必须是一维非空向量。")
+    if values.ndim == 1:
+        values = values.reshape(1, -1)
+    if values.ndim != 2 or values.shape[0] == 0 or values.shape[1] == 0:
+        raise RuntimeError("人物档案特征必须是二维非空模板矩阵。")
     if not np.all(np.isfinite(values)):
         raise RuntimeError("人物档案特征包含无效数值。")
-    norm = float(np.linalg.norm(values))
-    if norm <= 1e-12:
+    norms = np.linalg.norm(values, axis=1, keepdims=True)
+    if np.any(norms <= 1e-12):
         raise RuntimeError("人物档案特征是零向量。")
-    return (values / norm).astype(np.float32)
+    return (values / norms).astype(np.float32)
+
+
+def _normalized_centroid(templates: np.ndarray) -> np.ndarray:
+    centroid = templates.mean(axis=0)
+    norm = float(np.linalg.norm(centroid))
+    if norm <= 1e-12:
+        raise RuntimeError("人物档案特征中心无效。")
+    return (centroid / norm).astype(np.float32)
 
 
 def _resolve_project_path(value: str) -> Path:
@@ -343,14 +367,18 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _atomic_save_embedding(path: Path, embedding: np.ndarray) -> None:
+def _atomic_save_embedding(
+    path: Path, templates: np.ndarray, centroid: np.ndarray
+) -> None:
     descriptor, raw_temp_path = tempfile.mkstemp(
         prefix=".embedding-", suffix=".npz", dir=path.parent
     )
     temp_path = Path(raw_temp_path)
     try:
         with os.fdopen(descriptor, "wb") as file:
-            np.savez_compressed(file, embedding=embedding)
+            # ``embedding`` preserves a readable centroid for older tooling;
+            # schema-v2 runtimes use the independent ``templates`` matrix.
+            np.savez_compressed(file, templates=templates, embedding=centroid)
         os.replace(temp_path, path)
     finally:
         if temp_path.exists():

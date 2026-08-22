@@ -42,6 +42,12 @@ vision:
   reid_device: "cpu"
   reid_similarity_threshold: 0.65
   reid_ambiguity_margin: 0.05
+  # 多张注册照分别保留模板；候选综合分中最佳视角占70%，模板中心占30%。
+  reid_template_best_weight: 0.70
+  # 已锁定后，跳到画面中不连续的人物前必须连续确认，确认期间悬停。
+  reid_switch_confirm_frames: 5
+  reid_switch_iou_threshold: 0.15
+  reid_switch_center_distance_ratio: 0.15
   # 真机初测保持为 0：未确认身份时立即视为丢失并悬停。
   reid_temporary_lost_frames: 0
   # JointBDOE 输出人体相对摄像机的朝向角；普通自动模式仅显示，s 侧向模式用于飞控。

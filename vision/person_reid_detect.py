@@ -194,6 +194,10 @@ class PersonReIDDetector:
         similarity_threshold: float = 0.65,
         ambiguity_margin: float = 0.05,
         temporary_lost_frames: int = 0,
+        template_best_weight: float = 0.70,
+        switch_confirm_frames: int = 5,
+        switch_iou_threshold: float = 0.15,
+        switch_center_distance_ratio: float = 0.15,
         target_area_ratio_min: float = 0.03,
         target_area_ratio_max: float = 0.08,
         visual_object_detection_enabled: bool = False,
@@ -213,6 +217,16 @@ class PersonReIDDetector:
         self.similarity_threshold = _clamp_float(similarity_threshold, -1.0, 1.0, 0.65)
         self.ambiguity_margin = _clamp_float(ambiguity_margin, 0.0, 2.0, 0.05)
         self.temporary_lost_frames = max(0, int(temporary_lost_frames))
+        self.template_best_weight = _clamp_float(
+            template_best_weight, 0.0, 1.0, 0.70
+        )
+        self.switch_confirm_frames = max(1, int(switch_confirm_frames))
+        self.switch_iou_threshold = _clamp_float(
+            switch_iou_threshold, 0.0, 1.0, 0.15
+        )
+        self.switch_center_distance_ratio = _clamp_float(
+            switch_center_distance_ratio, 0.0, 1.0, 0.15
+        )
         self.target_area_ratio_min = _clamp_float(target_area_ratio_min, 0.0, 1.0, 0.03)
         self.target_area_ratio_max = _clamp_float(target_area_ratio_max, 0.0, 1.0, 0.08)
         if self.target_area_ratio_max <= self.target_area_ratio_min:
@@ -232,11 +246,15 @@ class PersonReIDDetector:
         self._feature_extractor = feature_extractor
         self._orientation_estimator = orientation_estimator
         self._orientation_prepared = False
-        self._reference_feature: Optional[np.ndarray] = None
+        self._reference_features: Optional[np.ndarray] = None
+        self._reference_centroid: Optional[np.ndarray] = None
         self._lost_count = 0
         self._last_valid_result: Optional[DetectionResult] = None
+        self._accepted_bbox: Optional[Tuple[int, int, int, int]] = None
+        self._pending_switch_bbox: Optional[Tuple[int, int, int, int]] = None
+        self._pending_switch_frames = 0
         if reference_features is not None:
-            self._reference_feature = self._average_normalized(reference_features)
+            self._set_reference_features(reference_features)
 
     @classmethod
     def from_config(cls, config: Dict[str, object]) -> "PersonReIDDetector":
@@ -284,6 +302,18 @@ class PersonReIDDetector:
             similarity_threshold=_safe_float(cfg.get("reid_similarity_threshold"), 0.65),
             ambiguity_margin=_safe_float(cfg.get("reid_ambiguity_margin"), 0.05),
             temporary_lost_frames=_safe_int(cfg.get("reid_temporary_lost_frames"), 0),
+            template_best_weight=_safe_float(
+                cfg.get("reid_template_best_weight"), 0.70
+            ),
+            switch_confirm_frames=_safe_int(
+                cfg.get("reid_switch_confirm_frames"), 5
+            ),
+            switch_iou_threshold=_safe_float(
+                cfg.get("reid_switch_iou_threshold"), 0.15
+            ),
+            switch_center_distance_ratio=_safe_float(
+                cfg.get("reid_switch_center_distance_ratio"), 0.15
+            ),
             target_area_ratio_min=_safe_float(config.get("target_area_ratio_min"), 0.03),
             target_area_ratio_max=_safe_float(config.get("target_area_ratio_max"), 0.08),
             orientation_estimator=orientation_estimator,
@@ -299,18 +329,31 @@ class PersonReIDDetector:
         detections = scene["people"]
         candidates = self._prepare_candidates(frame, detections)
         if not candidates:
+            self._clear_pending_switch()
             return self._handle_not_found()
 
         rgb_crops = [candidate[1][:, :, ::-1].copy() for candidate in candidates]
         features = self._normalize_rows(self._feature_extractor.extract(rgb_crops))
         if features.shape[0] != len(candidates):
             raise RuntimeError("ReID 特征数量与行人候选数量不一致。")
-        similarities = features @ self._reference_feature
+        if self._reference_features is None or self._reference_centroid is None:
+            raise RuntimeError("人物参考特征尚未准备。")
+        template_similarities = features @ self._reference_features.T
+        best_view_similarities = template_similarities.max(axis=1)
+        best_template_indices = template_similarities.argmax(axis=1)
+        centroid_similarities = features @ self._reference_centroid
+        similarities = (
+            self.template_best_weight * best_view_similarities
+            + (1.0 - self.template_best_weight) * centroid_similarities
+        )
         frame_area = max(1, int(frame.shape[0]) * int(frame.shape[1]))
         candidate_diagnostics = [
             {
                 "bbox": candidate[0],
                 "similarity": float(similarity),
+                "best_view_similarity": float(best_view_similarity),
+                "centroid_similarity": float(centroid_similarity),
+                "best_template_index": int(best_template_index),
                 "area_ratio": float(candidate[0][2] * candidate[0][3]) / frame_area,
                 "distance_state": self._distance_state(
                     float(candidate[0][2] * candidate[0][3]) / frame_area
@@ -318,13 +361,28 @@ class PersonReIDDetector:
                 "role": "unclassified",
                 "display_label": "人物",
             }
-            for candidate, similarity in zip(candidates, similarities)
+            for (
+                candidate,
+                similarity,
+                best_view_similarity,
+                centroid_similarity,
+                best_template_index,
+            ) in zip(
+                candidates,
+                similarities,
+                best_view_similarities,
+                centroid_similarities,
+                best_template_indices,
+            )
         ]
         order = np.argsort(similarities)[::-1]
         best_index = int(order[0])
         best_similarity = float(similarities[best_index])
-        second_similarity = float(similarities[int(order[1])]) if len(order) > 1 else -1.0
+        second_similarity = (
+            float(similarities[int(order[1])]) if len(order) > 1 else -1.0
+        )
         if best_similarity < self.similarity_threshold:
+            self._clear_pending_switch()
             self._set_candidate_roles(candidate_diagnostics, "non_target")
             return self._handle_not_found(
                 best_similarity=best_similarity,
@@ -332,6 +390,7 @@ class PersonReIDDetector:
                 candidate_diagnostics=candidate_diagnostics,
             )
         if len(order) > 1 and best_similarity - second_similarity < self.ambiguity_margin:
+            self._clear_pending_switch()
             self._set_candidate_roles(candidate_diagnostics, "ambiguous")
             return self._handle_not_found(
                 best_similarity=best_similarity,
@@ -340,8 +399,22 @@ class PersonReIDDetector:
                 candidate_diagnostics=candidate_diagnostics,
             )
 
-        self._set_candidate_roles(candidate_diagnostics, "non_target", best_index)
         x, y, width, height = candidates[best_index][0]
+        selected_bbox = (x, y, width, height)
+        if self._switch_confirmation_pending(
+            selected_bbox,
+            frame_width=int(frame.shape[1]),
+            frame_height=int(frame.shape[0]),
+        ):
+            self._set_candidate_roles(candidate_diagnostics, "ambiguous")
+            return self._handle_not_found(
+                best_similarity=best_similarity,
+                second_similarity=second_similarity if len(order) > 1 else None,
+                ambiguous=True,
+                candidate_diagnostics=candidate_diagnostics,
+            )
+
+        self._set_candidate_roles(candidate_diagnostics, "non_target", best_index)
         center = (x + width // 2, y + height // 2)
         result: DetectionResult = {
             "found": True,
@@ -353,6 +426,10 @@ class PersonReIDDetector:
             "area_ratio": float(width * height) / frame_area,
             "bbox": (x, y, width, height),
             "similarity": best_similarity,
+            "best_view_similarity": float(best_view_similarities[best_index]),
+            "centroid_similarity": float(centroid_similarities[best_index]),
+            "best_template_index": int(best_template_indices[best_index]),
+            "template_count": int(self._reference_features.shape[0]),
             "second_similarity": second_similarity if len(order) > 1 else None,
             "ambiguous": False,
             "candidate_count": len(candidates),
@@ -366,6 +443,7 @@ class PersonReIDDetector:
                 result.update(orientation)
         self._lost_count = 0
         self._last_valid_result = dict(result)
+        self._accepted_bbox = selected_bbox
         return result
 
     def prepare(self) -> None:
@@ -374,10 +452,17 @@ class PersonReIDDetector:
 
     @property
     def reference_feature(self) -> np.ndarray:
-        """Return a copy of the prepared normalized reference embedding."""
-        if self._reference_feature is None:
+        """Return the normalized centroid for legacy enrollment callers."""
+        if self._reference_centroid is None:
             raise RuntimeError("人物参考特征尚未准备。")
-        return self._reference_feature.copy()
+        return self._reference_centroid.copy()
+
+    @property
+    def reference_features(self) -> np.ndarray:
+        """Return every independently normalized enrollment template."""
+        if self._reference_features is None:
+            raise RuntimeError("人物参考特征尚未准备。")
+        return self._reference_features.copy()
 
     def draw_debug(self, frame: Any, result: DetectionResult) -> Any:
         if not _valid_frame(frame):
@@ -533,6 +618,8 @@ class PersonReIDDetector:
         self._last_visual_objects = []
         self._lost_count = 0
         self._last_valid_result = None
+        self._accepted_bbox = None
+        self._clear_pending_switch()
         if self._orientation_estimator is not None and hasattr(
             self._orientation_estimator, "reset"
         ):
@@ -590,10 +677,10 @@ class PersonReIDDetector:
             )
             print(f"ReID 准备 2/3 完成：{perf_counter() - step_started:.2f} 秒")
             initialized_component = True
-        if self._reference_feature is None:
+        if self._reference_features is None:
             step_started = perf_counter()
             print("ReID 准备 3/3：正在从参考照片计算人物特征...")
-            self._reference_feature = self._load_reference_feature()
+            self._set_reference_features(self._load_reference_features())
             print(f"ReID 准备 3/3 完成：{perf_counter() - step_started:.2f} 秒")
             initialized_component = True
         elif initialized_component:
@@ -609,7 +696,7 @@ class PersonReIDDetector:
         if initialized_component:
             print(f"ReID 模型准备完成：共 {perf_counter() - prepare_started:.2f} 秒")
 
-    def _load_reference_feature(self) -> np.ndarray:
+    def _load_reference_features(self) -> np.ndarray:
         if not self.reference_image_paths:
             raise RuntimeError(
                 "未配置目标人物参考图。请在 vision.reference_images 中填写至少一张照片。"
@@ -644,7 +731,7 @@ class PersonReIDDetector:
                 images.append(crop[:, :, ::-1].copy())
         if missing:
             raise RuntimeError("目标人物参考图不存在或无法读取：" + ", ".join(missing))
-        return self._average_normalized(self._feature_extractor.extract(images))
+        return self._normalize_rows(self._feature_extractor.extract(images))
 
     def _prepare_candidates(
         self, frame: Any, detections: Iterable[DetectionResult]
@@ -666,6 +753,98 @@ class PersonReIDDetector:
                 continue
             candidates.append(((x1, y1, x2 - x1, y2 - y1), crop))
         return candidates
+
+    def _set_reference_features(self, features: Any) -> None:
+        """Keep normalized view templates and their normalized centroid."""
+        normalized = self._normalize_rows(features)
+        if normalized.shape[0] == 0:
+            raise RuntimeError("没有可用的目标人物 ReID 特征。")
+        centroid = normalized.mean(axis=0)
+        norm = float(np.linalg.norm(centroid))
+        if norm <= 1e-12:
+            raise RuntimeError("目标人物 ReID 特征中心无效。")
+        self._reference_features = normalized.astype(np.float32)
+        self._reference_centroid = (centroid / norm).astype(np.float32)
+
+    def _switch_confirmation_pending(
+        self,
+        selected_bbox: Tuple[int, int, int, int],
+        *,
+        frame_width: int,
+        frame_height: int,
+    ) -> bool:
+        """Require consecutive evidence before jumping to a distant person."""
+        if self._accepted_bbox is None or self._spatially_continuous(
+            self._accepted_bbox,
+            selected_bbox,
+            frame_width=frame_width,
+            frame_height=frame_height,
+        ):
+            self._clear_pending_switch()
+            return False
+
+        if self._pending_switch_bbox is not None and self._spatially_continuous(
+            self._pending_switch_bbox,
+            selected_bbox,
+            frame_width=frame_width,
+            frame_height=frame_height,
+        ):
+            self._pending_switch_frames += 1
+        else:
+            self._pending_switch_bbox = selected_bbox
+            self._pending_switch_frames = 1
+
+        if self._pending_switch_frames < self.switch_confirm_frames:
+            return True
+        self._clear_pending_switch()
+        return False
+
+    def _spatially_continuous(
+        self,
+        previous: Tuple[int, int, int, int],
+        current: Tuple[int, int, int, int],
+        *,
+        frame_width: int,
+        frame_height: int,
+    ) -> bool:
+        if self._bbox_iou(previous, current) >= self.switch_iou_threshold:
+            return True
+        previous_center = (
+            previous[0] + previous[2] / 2.0,
+            previous[1] + previous[3] / 2.0,
+        )
+        current_center = (
+            current[0] + current[2] / 2.0,
+            current[1] + current[3] / 2.0,
+        )
+        distance = math.hypot(
+            current_center[0] - previous_center[0],
+            current_center[1] - previous_center[1],
+        )
+        frame_diagonal = max(1.0, math.hypot(frame_width, frame_height))
+        return distance / frame_diagonal <= self.switch_center_distance_ratio
+
+    @staticmethod
+    def _bbox_iou(
+        first: Tuple[int, int, int, int], second: Tuple[int, int, int, int]
+    ) -> float:
+        first_x2 = first[0] + first[2]
+        first_y2 = first[1] + first[3]
+        second_x2 = second[0] + second[2]
+        second_y2 = second[1] + second[3]
+        intersection_width = max(
+            0, min(first_x2, second_x2) - max(first[0], second[0])
+        )
+        intersection_height = max(
+            0, min(first_y2, second_y2) - max(first[1], second[1])
+        )
+        intersection = intersection_width * intersection_height
+        union = first[2] * first[3] + second[2] * second[3] - intersection
+        return float(intersection) / union if union > 0 else 0.0
+
+    def _clear_pending_switch(self) -> None:
+        self._pending_switch_bbox = None
+        self._pending_switch_frames = 0
 
     def _handle_not_found(
         self,
@@ -721,17 +900,6 @@ class PersonReIDDetector:
             "visual_objects": [],
             "similarity_threshold": similarity_threshold,
         }
-
-    @classmethod
-    def _average_normalized(cls, features: Any) -> np.ndarray:
-        normalized = cls._normalize_rows(features)
-        if normalized.shape[0] == 0:
-            raise RuntimeError("没有可用的目标人物 ReID 特征。")
-        average = normalized.mean(axis=0)
-        norm = float(np.linalg.norm(average))
-        if norm <= 1e-12:
-            raise RuntimeError("目标人物 ReID 特征无效。")
-        return (average / norm).astype(np.float32)
 
     @staticmethod
     def _normalize_rows(features: Any) -> np.ndarray:

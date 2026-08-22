@@ -99,11 +99,14 @@ class FakeSceneYOLO:
 
 
 def build_detector(detections, features, **kwargs):
+    reference_features = kwargs.pop(
+        "reference_features", np.array([[1.0, 0.0]], dtype=np.float32)
+    )
     return PersonReIDDetector(
         reference_image_paths=[],
         person_detector=FakePersonDetector(detections),
         feature_extractor=FakeFeatureExtractor(features),
-        reference_features=np.array([[1.0, 0.0]], dtype=np.float32),
+        reference_features=reference_features,
         similarity_threshold=kwargs.pop("similarity_threshold", 0.65),
         ambiguity_margin=kwargs.pop("ambiguity_margin", 0.05),
         **kwargs,
@@ -177,6 +180,66 @@ class PersonReIDDetectorTestCase(unittest.TestCase):
         self.assertEqual(result["candidate_count"], 2)
         self.assertEqual(result["candidates"][0]["display_label"], "非目标人物")
         self.assertEqual(result["candidates"][1]["display_label"], "目标人物")
+
+    def test_multi_template_score_combines_best_view_and_centroid(self):
+        detector = build_detector(
+            [{"bbox_xyxy": (5, 10, 35, 90)}],
+            [[1.0, 0.0]],
+            reference_features=[[1.0, 0.0], [0.0, 1.0]],
+            template_best_weight=0.70,
+        )
+
+        result = detector.detect(self.frame)
+
+        expected = 0.70 + 0.30 / np.sqrt(2.0)
+        self.assertTrue(result["found"])
+        self.assertAlmostEqual(result["similarity"], expected, places=6)
+        self.assertAlmostEqual(result["best_view_similarity"], 1.0)
+        self.assertAlmostEqual(
+            result["centroid_similarity"], 1.0 / np.sqrt(2.0), places=6
+        )
+        self.assertEqual(result["best_template_index"], 0)
+        self.assertEqual(result["template_count"], 2)
+        self.assertEqual(detector.reference_features.shape, (2, 2))
+
+    def test_distant_identity_jump_requires_consecutive_confirmation(self):
+        person_detector = FakePersonDetector([{"bbox_xyxy": (5, 10, 35, 90)}])
+        detector = PersonReIDDetector(
+            reference_image_paths=[],
+            person_detector=person_detector,
+            feature_extractor=FakeFeatureExtractor([[1.0, 0.0]]),
+            reference_features=[[1.0, 0.0]],
+            switch_confirm_frames=3,
+        )
+        self.assertTrue(detector.detect(self.frame)["found"])
+
+        person_detector.detections = [{"bbox_xyxy": (80, 10, 115, 90)}]
+        first = detector.detect(self.frame)
+        second = detector.detect(self.frame)
+        confirmed = detector.detect(self.frame)
+
+        self.assertFalse(first["found"])
+        self.assertTrue(first["ambiguous"])
+        self.assertFalse(second["found"])
+        self.assertTrue(confirmed["found"])
+        self.assertEqual(confirmed["bbox"], (80, 10, 35, 80))
+
+    def test_spatially_continuous_target_does_not_wait_for_switch_confirmation(self):
+        person_detector = FakePersonDetector([{"bbox_xyxy": (5, 10, 35, 90)}])
+        detector = PersonReIDDetector(
+            reference_image_paths=[],
+            person_detector=person_detector,
+            feature_extractor=FakeFeatureExtractor([[1.0, 0.0]]),
+            reference_features=[[1.0, 0.0]],
+            switch_confirm_frames=5,
+        )
+        self.assertTrue(detector.detect(self.frame)["found"])
+
+        person_detector.detections = [{"bbox_xyxy": (8, 10, 38, 90)}]
+        moved = detector.detect(self.frame)
+
+        self.assertTrue(moved["found"])
+        self.assertFalse(moved["ambiguous"])
 
     def test_jointbdoe_runs_only_after_reid_accepts_target(self):
         orientation = FakeOrientationEstimator()

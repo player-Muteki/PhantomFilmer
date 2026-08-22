@@ -1,5 +1,6 @@
 """Tests for persistent local ReID profiles."""
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -49,10 +50,66 @@ def test_profile_round_trip_is_normalized_and_pickle_free(tmp_path: Path) -> Non
         "person-a-current-outfit", config, profile_root=profile_root
     )
 
-    assert np.allclose(embedding, np.array([0.6, 0.8], dtype=np.float32))
+    assert embedding.shape == (1, 2)
+    assert np.allclose(embedding[0], np.array([0.6, 0.8], dtype=np.float32))
     assert manifest == loaded_manifest
     assert loaded_manifest["photo_count"] == 1
     assert loaded_manifest["embedding_dimension"] == 2
+    assert loaded_manifest["template_count"] == 1
+
+
+def test_profile_preserves_each_reference_template(tmp_path: Path) -> None:
+    config = build_config(tmp_path)
+    photos = [tmp_path / "front.jpg", tmp_path / "side.jpg"]
+    for photo in photos:
+        photo.write_bytes(photo.name.encode("utf-8"))
+    profile_root = tmp_path / "profiles"
+
+    manifest = save_reid_profile(
+        "person-a",
+        np.array([[3.0, 4.0], [0.0, 2.0]], dtype=np.float32),
+        config,
+        photos,
+        profile_root=profile_root,
+    )
+    templates, _ = load_reid_profile(
+        "person-a", config, profile_root=profile_root
+    )
+
+    assert templates.shape == (2, 2)
+    assert np.allclose(templates, [[0.6, 0.8], [0.0, 1.0]])
+    assert manifest["template_count"] == 2
+    assert manifest["photo_count"] == 2
+
+
+def test_legacy_single_embedding_profile_loads_as_one_template(tmp_path: Path) -> None:
+    config = build_config(tmp_path)
+    photo = tmp_path / "front.jpg"
+    photo.write_bytes(b"photo")
+    profile_root = tmp_path / "profiles"
+    save_reid_profile(
+        "person-a", [3.0, 4.0], config, [photo], profile_root=profile_root
+    )
+    profile_dir = profile_root / "person-a"
+    embedding_path = profile_dir / "embedding.npz"
+    with embedding_path.open("wb") as file:
+        np.savez_compressed(file, embedding=np.array([0.6, 0.8], dtype=np.float32))
+    manifest_path = profile_dir / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["schema_version"] = 1
+    manifest.pop("template_count", None)
+    manifest["embedding_sha256"] = hashlib.sha256(
+        embedding_path.read_bytes()
+    ).hexdigest()
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    templates, loaded_manifest = load_reid_profile(
+        "person-a", config, profile_root=profile_root
+    )
+
+    assert templates.shape == (1, 2)
+    assert np.allclose(templates[0], [0.6, 0.8])
+    assert loaded_manifest["schema_version"] == 1
 
 
 def test_profile_rejects_changed_model_weight(tmp_path: Path) -> None:
@@ -99,7 +156,7 @@ def test_profile_requires_explicit_overwrite(tmp_path: Path) -> None:
         profile_root=profile_root,
     )
     embedding, _manifest = load_reid_profile("person-a", config, profile_root=profile_root)
-    assert np.allclose(embedding, [0.0, 1.0])
+    assert np.allclose(embedding, [[0.0, 1.0]])
 
 
 def test_profile_name_rejects_path_traversal() -> None:
@@ -168,7 +225,7 @@ def test_profile_can_be_inspected_renamed_and_recoverably_deleted(tmp_path: Path
     assert renamed["name"] == "person-b"
     assert not (profile_root / "person-a").exists()
     embedding, _manifest = load_reid_profile("person-b", config, profile_root=profile_root)
-    assert np.allclose(embedding, [1.0, 0.0])
+    assert np.allclose(embedding, [[1.0, 0.0]])
 
     deleted = delete_reid_profile("person-b", profile_root)
     assert deleted["recoverable"] is True
