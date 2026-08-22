@@ -43,7 +43,12 @@ for runtime_entry in ("models", "utils", "Arial.ttf"):
     source_path = jointbdoe_source / runtime_entry
     if not source_path.exists():
         raise FileNotFoundError(f"缺少 JointBDOE 推理源码：{source_path}")
-    datas.append((str(source_path), str(jointbdoe_relative / runtime_entry)))
+    # PyInstaller 的 datas 目标始终是目录：目录源拷入同名子目录，
+    # 文件源必须以父目录为目标，否则会生成 Arial.ttf/Arial.ttf。
+    if source_path.is_dir():
+        datas.append((str(source_path), str(jointbdoe_relative / runtime_entry)))
+    else:
+        datas.append((str(source_path), str(jointbdoe_relative)))
 
 binaries = []
 hiddenimports = [

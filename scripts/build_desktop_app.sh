@@ -48,9 +48,9 @@ require_command "$PYTHON_BIN"
 "$PYTHON_BIN" - <<'PY'
 import sys
 
-if sys.version_info[:2] != (3, 12):
+if sys.version_info[:2] < (3, 12):
     raise SystemExit(
-        f"需要 Python 3.12，当前为 {sys.version.split()[0]}。"
+        f"需要 Python >= 3.12，当前为 {sys.version.split()[0]}。"
     )
 PY
 
@@ -72,8 +72,8 @@ fi
 "$BUILD_PYTHON" - <<'PY'
 import sys
 
-if sys.version_info[:2] != (3, 12):
-    raise SystemExit("现有构建虚拟环境不是 Python 3.12；请删除 .venv-desktop-build 后重试。")
+if sys.version_info[:2] < (3, 12):
+    raise SystemExit("现有构建虚拟环境不是 Python >= 3.12；请删除 .venv-desktop-build 后重试。")
 PY
 
 mkdir -p "$CACHE_ROOT/matplotlib" "$CACHE_ROOT/ultralytics"
@@ -85,7 +85,10 @@ export YOLO_OFFLINE=1
 "$BUILD_PYTHON" -m pip install -r requirements-desktop-build.txt
 # Torchreid's legacy build backend needs the already installed bootstrap
 # packages. This is still isolated inside VENV_DIR, never the system Python.
-"$BUILD_PYTHON" -m pip install --no-build-isolation --no-deps -r requirements-desktop-torchreid.txt
+# Skip when already installed (allows offline installs from a local clone).
+if ! "$BUILD_PYTHON" -c "import torchreid" >/dev/null 2>&1; then
+  "$BUILD_PYTHON" -m pip install --no-build-isolation --no-deps -r requirements-desktop-torchreid.txt
+fi
 
 "$BUILD_PYTHON" scripts/prepare_desktop_model_assets.py
 "$BUILD_PYTHON" scripts/build_sidecar.py
