@@ -4,9 +4,8 @@ import { Icon } from './Icons'
 import { useRuntimeFeed } from './app/useRuntimeFeed'
 import { emptyCommand, missionKey, missionModeLabel, type MissionMode, type MissionType, type PartialRcCommand } from './app/types'
 import { errorMessage, type ArmedAction, type ConnectionState } from './app/ui'
-import { FlightStatusStrip } from './components/FlightStatusStrip'
+import { FlightCommandBar } from './components/FlightCommandBar'
 import { ManualControls } from './components/ManualControls'
-import { ModeRow } from './components/ModeRow'
 import { ProfilePanel } from './components/ProfilePanel'
 import type { SetupTab } from './components/SetupTabs'
 import { TelemetryFooter } from './components/TelemetryFooter'
@@ -214,14 +213,6 @@ export default function App(): ReactElement {
     } catch (error) {
       setNotice(errorMessage(error, '断开真机失败'))
     } finally { setActionBusy(null) }
-  }
-
-  const openLogs = async (): Promise<void> => {
-    try {
-      await window.phantomFilmer.openLogDir()
-    } catch (error) {
-      setNotice(errorMessage(error, '无法打开日志目录'))
-    }
   }
 
   const pickPhotos = async (): Promise<void> => {
@@ -434,12 +425,28 @@ export default function App(): ReactElement {
         <span className="brand-mark" aria-hidden="true"><i /><i /><i /></span>
         <div><strong>PhantomFilmer</strong><small>FOLLOWING CONSOLE</small></div>
       </div>
-      <div className="system-summary">
-        <StatusPill good={backendReady} label={backendReady ? '后端在线' : '后端离线'} />
-        <StatusPill good={connected} label={connected ? '真机已连接' : '真机未连接'} />
-        <button className="button secondary" onClick={() => void openLogs()} title={`日志目录：${backend.logDir}`}>日志</button>
-        <button className="button secondary" disabled={!connected || missionRunning || airborne || actionBusy != null} onClick={() => void disconnectDrone()}>断开真机</button>
-      </div>
+      <FlightCommandBar
+        flightState={status.flightState ?? runtime.snapshot?.flightState}
+        controlHz={status.controlHz}
+        paused={missionPaused === true}
+        batteryFresh={status.batteryFresh}
+        heightFresh={status.heightFresh}
+        backendReady={backendReady}
+        connected={connected}
+        alert={safetyAlert}
+        profile={profileName || null}
+        syncError={runtime.error}
+        controlMode={runtime.snapshot?.controlMode}
+        missionRunning={missionRunning}
+        awaitingModeSelection={awaitingModeSelection}
+        controlsLocked={controlsLocked}
+        canSelectMode={canSelectMode}
+        canTogglePause={canTogglePause}
+        disconnectDisabled={!connected || missionRunning || airborne || actionBusy != null}
+        onMode={(mode) => void runMissionCommand(mode)}
+        onPause={() => void togglePause()}
+        onDisconnect={() => void disconnectDrone()}
+      />
     </header>
     {backend.status === 'offline' && <section className={`diagnostic ${backend.airborne ? 'critical' : ''}`} role="alert">
       <div className="diagnostic-icon"><Icon name={backend.airborne ? 'emergency' : 'activity'} /></div>
@@ -477,28 +484,6 @@ export default function App(): ReactElement {
         onActiveTab={setActiveTab}
       />
       <section className="flight-panel">
-        <FlightStatusStrip
-          flightState={status.flightState ?? runtime.snapshot?.flightState}
-          controlHz={status.controlHz}
-          paused={missionPaused === true}
-          batteryFresh={status.batteryFresh}
-          heightFresh={status.heightFresh}
-          connected={connected}
-          alert={safetyAlert}
-          profile={profileName || null}
-          syncError={runtime.error}
-        />
-        <ModeRow
-          controlMode={runtime.snapshot?.controlMode}
-          missionRunning={missionRunning}
-          paused={missionPaused === true}
-          awaitingModeSelection={awaitingModeSelection}
-          controlsLocked={controlsLocked}
-          canSelectMode={canSelectMode}
-          canTogglePause={canTogglePause}
-          onMode={(mode) => void runMissionCommand(mode)}
-          onPause={() => void togglePause()}
-        />
         <VideoPanel
           videoUrl={videoUrl}
           connection={connection}
@@ -523,9 +508,7 @@ export default function App(): ReactElement {
           ) : airborne ? (
             <div className="manual-hint-badge">手动接管后此处显示控制板（键 M）</div>
           ) : null}
-        >
-          <div className="notice" role="status"><b>{actionBusy ? '处理中' : '状态'}</b><span>{notice}</span></div>
-        </VideoPanel>
+        />
         <TelemetryFooter
           connected={connected}
           battery={status.battery ?? null}
@@ -541,14 +524,12 @@ export default function App(): ReactElement {
           stopArmed={armedAction === 'stop'}
           emergencyEnabled={emergencyEnabled && !controlsLocked}
           emergencyArmed={armedAction === 'emergency'}
+          notice={notice}
+          busy={actionBusy != null}
           onStop={() => void runMissionCommand('stop')}
           onEmergency={() => void runMissionCommand('emergency')}
         />
       </section>
     </section>
   </main>
-}
-
-function StatusPill({ good, label }: { good: boolean; label: string }): ReactElement {
-  return <div className="status-pill"><i className={good ? 'good' : ''} /><span>{label}</span></div>
 }

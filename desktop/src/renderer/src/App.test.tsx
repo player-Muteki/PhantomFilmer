@@ -75,8 +75,19 @@ describe('desktop follow console', () => {
     mount()
     expect(await screen.findByRole('heading', { name: '任务与人物' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '起飞' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '日志' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '日志' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '运行诊断' })).not.toBeInTheDocument()
+  })
+
+  it('uses one compact command bar above the video and one safety bar below it', async () => {
+    mount()
+    await screen.findByRole('heading', { name: '任务与人物' })
+    expect(document.querySelectorAll('.topbar > .flight-command-bar')).toHaveLength(1)
+    expect(document.querySelectorAll('.flight-panel > .flight-footer')).toHaveLength(1)
+    expect(document.querySelector('.flight-strip')).not.toBeInTheDocument()
+    expect(document.querySelector('.mode-row')).not.toBeInTheDocument()
+    const footer = screen.getByLabelText('遥测与飞行安全控制')
+    expect(within(footer).getByRole('status')).toHaveTextContent('本地后端已就绪，请连接真机')
   })
 
   it('keeps all three setup tabs mounted and reveals content on switch', async () => {

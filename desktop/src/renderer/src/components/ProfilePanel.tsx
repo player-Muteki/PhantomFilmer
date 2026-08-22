@@ -108,10 +108,10 @@ export function ProfilePanel(props: Props): ReactElement {
               </div>
             )}
             <div className="profile-summary">
-              <span>当前档案</span>
-              <strong>{profileName || '未选择'}</strong>
-              <small>{profiles.find((profile) => profile.name === profileName)?.photoCount ?? 0} 张参考照片</small>
-              {profileDetails?.modelName && <small>模型：{profileDetails.modelName}</small>}
+              <div><span>当前档案</span><strong title={profileName}>{profileName || '未选择'}</strong></div>
+              <small title={profileDetails?.modelName ? `模型：${profileDetails.modelName}` : undefined}>
+                {profiles.find((profile) => profile.name === profileName)?.photoCount ?? 0} 张{profileDetails?.modelName ? ` · ${profileDetails.modelName}` : ''}
+              </small>
             </div>
             <div className="profile-actions" aria-label="人物档案操作">
               <button disabled={!profileName || connected || actionBusy} onClick={onReplaceProfile}>更新照片</button>

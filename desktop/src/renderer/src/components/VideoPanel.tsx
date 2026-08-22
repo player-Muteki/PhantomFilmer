@@ -13,11 +13,10 @@ type Props = {
   onRetryVideo: () => void
   onVideoError: () => void
   overlay?: ReactElement | null
-  children?: ReactElement
 }
 
 export function VideoPanel({
-  videoUrl, connection, backendReady, connected, awaitingModeSelection, canReconnectVideo, onConnect, onRetryVideo, onVideoError, overlay, children
+  videoUrl, connection, backendReady, connected, awaitingModeSelection, canReconnectVideo, onConnect, onRetryVideo, onVideoError, overlay
 }: Props): ReactElement {
   const viewportRef = useRef<HTMLDivElement>(null)
   const [aspectRatio, setAspectRatio] = useState(4 / 3)
@@ -84,7 +83,6 @@ export function VideoPanel({
         </div>
       )}
       {overlay}
-      {children}
     </section>
     </div>
   )

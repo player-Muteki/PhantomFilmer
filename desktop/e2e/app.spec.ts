@@ -157,6 +157,35 @@ test('fits on one screen without page scrollbars at minimum and default sizes', 
     }))
     expect(overflow.x).toBeLessThanOrEqual(0)
     expect(overflow.y).toBeLessThanOrEqual(0)
+
+    const layout = await window.evaluate(() => {
+      const panel = document.querySelector<HTMLElement>('.flight-panel')
+      const commandBar = document.querySelector<HTMLElement>('.topbar')
+      const footer = document.querySelector<HTMLElement>('.flight-panel > .flight-footer')
+      const viewport = document.querySelector<HTMLElement>('.video-viewport')
+      const commandBounds = commandBar?.getBoundingClientRect()
+      const clippedTopControls = commandBounds == null ? -1 : [...document.querySelectorAll<HTMLElement>('.topbar button')]
+        .filter((button) => {
+          const control = button.getBoundingClientRect()
+          return control.left < commandBounds.left || control.right > commandBounds.right
+        }).length
+      return {
+        commandBars: document.querySelectorAll('.topbar > .flight-command-bar').length,
+        footers: document.querySelectorAll('.flight-panel > .flight-footer').length,
+        commandHeight: commandBar?.getBoundingClientRect().height ?? 0,
+        footerHeight: footer?.getBoundingClientRect().height ?? 0,
+        videoShare: panel && viewport ? viewport.getBoundingClientRect().height / panel.getBoundingClientRect().height : 0,
+        noticeOverVideo: document.querySelector('.video-panel .footer-notice') != null,
+        clippedTopControls
+      }
+    })
+    expect(layout.commandBars).toBe(1)
+    expect(layout.footers).toBe(1)
+    expect(layout.commandHeight).toBeLessThanOrEqual(40)
+    expect(layout.footerHeight).toBeLessThanOrEqual(42)
+    expect(layout.videoShare).toBeGreaterThan(0.75)
+    expect(layout.noticeOverVideo).toBe(false)
+    expect(layout.clippedTopControls).toBe(0)
   }
   await application.close()
 })
