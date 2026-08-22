@@ -243,7 +243,7 @@ class Handler(BaseHTTPRequestHandler):
                 {
                     "apiVersion": "1",
                     "commands": ["device.connect", "flight.takeoff", "flight.land", "preview.start", "preview.stop", "mission.start", "mission.stop", "mission.emergency_stop", "mission.control_mode.select", "mission.pause.toggle"],
-                    "missions": ["manual", "follow", "reid_follow", "fixed_demo"],
+                    "missions": ["manual", "follow", "reid_follow"],
                     "eventReplay": True,
                     "rcLease": {"required": True, "ttlMs": 1000},
                     "preview": {"requiredForAutomaticMission": False, "stableFrames": 0, "maxAgeMs": 0},

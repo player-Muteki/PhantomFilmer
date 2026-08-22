@@ -1,7 +1,5 @@
 import { useEffect, useState, type ReactElement } from 'react'
 import type { DroneStatus, ProfileDetails, ProfileSummary, RuntimeEvent } from '../../../preload/api'
-import type { MissionType } from '../app/types'
-import { missionTypeLabel } from '../app/types'
 import { EventTimeline } from './EventTimeline'
 import { PreflightChecklist } from './PreflightChecklist'
 import { SetupTabs, type SetupTab } from './SetupTabs'
@@ -24,8 +22,6 @@ type Props = {
   connected: boolean
   missionRunning: boolean
   actionBusy: boolean
-  missionType: MissionType
-  onMissionType: (type: MissionType) => void
   canStartMission: boolean
   launchArmed: boolean
   onLaunch: () => void
@@ -42,7 +38,6 @@ export function ProfilePanel(props: Props): ReactElement {
     pendingPhotos, onPickPhotos, onConfirmEnroll, onCancelEnroll, enrollBusy,
     onReplaceProfile, onRenameProfile, onDeleteProfile,
     connected, missionRunning, actionBusy,
-    missionType, onMissionType,
     canStartMission, launchArmed, onLaunch, missingAssets, preflight,
     events, activeTab, onActiveTab
   } = props
@@ -148,18 +143,6 @@ export function ProfilePanel(props: Props): ReactElement {
         preflightPanel={(
           <div className="tab-section">
             <div className="launch-settings">
-              <label className="mission-type">
-                <span>任务类型</span>
-                <select
-                  aria-label="任务类型"
-                  value={missionType}
-                  onChange={(event) => onMissionType(event.target.value as MissionType)}
-                  disabled={missionRunning || actionBusy}
-                >
-                  <option value="follow">{missionTypeLabel('follow')}</option>
-                  <option value="fixed_demo">{missionTypeLabel('fixed_demo')}</option>
-                </select>
-              </label>
               <div className="safety-required" title="该安全保护由后端强制开启，不能在任务界面关闭">
                 <i aria-hidden="true">✓</i>
                 <span><strong>前向 ToF 安全保护</strong><small>所有模式强制启用 · 普通跟随支持自动绕行</small></span>

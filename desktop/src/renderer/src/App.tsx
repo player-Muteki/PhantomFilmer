@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } 
 import type { BackendState, DroneStatus, ProfileDetails, ProfileSummary, RcCommand } from '../../preload/api'
 import { Icon } from './Icons'
 import { useRuntimeFeed } from './app/useRuntimeFeed'
-import { emptyCommand, missionKey, missionModeLabel, type MissionMode, type MissionType, type PartialRcCommand } from './app/types'
+import { emptyCommand, missionKey, missionModeLabel, type MissionMode, type PartialRcCommand } from './app/types'
 import { errorMessage, type ArmedAction, type ConnectionState } from './app/ui'
 import { FlightCommandBar } from './components/FlightCommandBar'
 import { ManualControls } from './components/ManualControls'
@@ -30,7 +30,6 @@ export default function App(): ReactElement {
   const [profileDetails, setProfileDetails] = useState<ProfileDetails | null>(null)
   const [enrollmentName, setEnrollmentName] = useState('')
   const [pendingPhotos, setPendingPhotos] = useState<string[] | null>(null)
-  const [missionType, setMissionType] = useState<MissionType>('follow')
   const [keyboardControl, setKeyboardControl] = useState(true)
   const [activeTab, setActiveTab] = useState<SetupTab>('profiles')
   const controlTimer = useRef<number | null>(null)
@@ -54,7 +53,7 @@ export default function App(): ReactElement {
     () => new Set(missionRunning ? (runtime.snapshot?.allowedActions ?? ['stop_mission', 'emergency_stop_mission', 'select_control_mode', 'toggle_mission_pause']) : (runtime.snapshot?.allowedActions ?? [])),
     [missionRunning, runtime.snapshot?.allowedActions]
   )
-  const canStartMission = new Set(runtime.capabilities?.missions ?? []).has(missionType)
+  const canStartMission = new Set(runtime.capabilities?.missions ?? []).has('follow')
     && missionReady
     && profileName.trim().length > 0
     && !missionRunning
@@ -307,7 +306,7 @@ export default function App(): ReactElement {
     setActionBusy('start')
     setArmedAction(null)
     try {
-      await window.phantomFilmer.startMission({ mission: missionType, profileName: profileName.trim(), initialControlMode: 'manual' })
+      await window.phantomFilmer.startMission({ mission: 'follow', profileName: profileName.trim(), initialControlMode: 'manual' })
       setNotice('正在起飞并上升至 150 cm；到达后请选择跟随模式。')
     } catch (error) { setNotice(errorMessage(error, '自动任务启动失败')) } finally { setActionBusy(null) }
   }
@@ -472,8 +471,6 @@ export default function App(): ReactElement {
         connected={connected}
         missionRunning={missionRunning}
         actionBusy={actionBusy != null}
-        missionType={missionType}
-        onMissionType={setMissionType}
         canStartMission={canStartMission}
         launchArmed={armedAction === 'start'}
         onLaunch={() => void startMission()}

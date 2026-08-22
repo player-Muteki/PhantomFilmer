@@ -15,7 +15,7 @@ class ControlReadyHandler:
         if not controller.config.enabled and not getattr(
             session, "side_follow_available", False
         ) and not getattr(session, "front_follow_available", False):
-            return KernelPhase.PRE_FOLLOW
+            return KernelPhase.FOLLOW
 
         controller.make_available()
         selection = session._wait_for_control_selection()
@@ -26,5 +26,5 @@ class ControlReadyHandler:
         if selection == "front":
             return KernelPhase.FOLLOW
         if selection == "auto":
-            return KernelPhase.PRE_FOLLOW
+            return KernelPhase.FOLLOW
         return None

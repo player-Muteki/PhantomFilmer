@@ -15,7 +15,6 @@ from app.builder import (
 )
 from app.config import load_config, load_runtime_config, read_control_interval
 from control.features import build_features
-from control.fixed_demo import FixedDemoManeuver
 from control.follow_control import FollowController
 from control.kernel.arbitration import ArbitrationEngine
 from control.kernel.features import ArbitrationContext
@@ -438,66 +437,6 @@ def run_reid_demo(
         return 1
     except KeyboardInterrupt:
         print("已手动中断 ReID 演示。")
-        return 0
-    finally:
-        drone.stop()
-
-
-def run_fixed_demo(
-    use_fake: bool = False,
-    obstacle_enabled: Optional[bool] = None,
-) -> int:
-    """Run the fixed low-speed route, then hand control to normal following."""
-    config = load_runtime_config(obstacle_enabled)
-    safety = SafetyManager.from_dict(config)
-    drone = create_drone_adapter(use_fake, config=config)
-    detector = create_detector(config)
-    controller = FollowController.from_config(safety_manager=safety, config=config)
-    _, _, motion_arbiter = build_obstacle_modules(config, safety)
-
-    try:
-        print("正在连接模拟无人机..." if use_fake else "正在连接 RoboMaster TT / Tello...")
-        drone.connect()
-        battery = drone.get_battery()
-        print(f"当前电量：{battery}%")
-        if not safety.can_takeoff(battery):
-            print("电量低于安全起飞阈值，禁止起飞。")
-            return 1
-
-        print("固定演示需要起飞。请确认航线净空、已安装保护罩、人员远离。")
-        print("航线：左移 3 秒 → 前进 2 秒 → 右移 3 秒 → 跟随。")
-        if use_fake:
-            answer = input("输入 YES 确认模拟起飞，其他输入取消：").strip()
-            if answer != "YES":
-                print("已取消固定演示：未收到用户确认。")
-                return 0
-
-        session = MissionFactory(
-            drone=drone,
-            safety_manager=safety,
-            detector=detector,
-            follow_controller=controller,
-            config=config,
-            motion_arbiter=motion_arbiter,
-        ).create_follow_session(
-            mission=MissionKind.FIXED_DEMO,
-            mode_label="FIXED-DEMO FAKE" if use_fake else "FIXED-DEMO REAL",
-            window_name="PhantomFilmer Fixed Demo",
-            state_label="FOLLOW",
-            allow_pause=False,
-            pre_follow_maneuver=FixedDemoManeuver(
-                control_interval=read_control_interval(config)
-            ),
-        )
-        session.run()
-        return 0
-    except RuntimeError as exc:
-        print(str(exc))
-        if not use_fake:
-            print("请先连接 RoboMaster TT / Tello 的 Wi-Fi。")
-        return 1
-    except KeyboardInterrupt:
-        print("已手动中断，准备降落并退出。")
         return 0
     finally:
         drone.stop()

@@ -28,7 +28,6 @@ from app.modes import (
     run_camera,
     run_console,
     run_connection_test,
-    run_fixed_demo,
     run_follow,
     run_follow_dry_run,
     run_follow_test,
@@ -51,7 +50,6 @@ def parse_args() -> argparse.Namespace:
             "safety-test",
             "follow-test",
             "follow-dry-run",
-            "fixed-demo",
             "basic-flight-test",
             "camera",
             "follow",
@@ -60,7 +58,7 @@ def parse_args() -> argparse.Namespace:
             "console",
         ),
         default="demo",
-        help="运行模式：fixed-demo 执行固定航线后进入目标跟随；其余模式保持原有用途。",
+        help="运行模式：选择对应的飞行、跟随、测试或控制台入口。",
     )
     parser.add_argument(
         "--fake",
@@ -136,11 +134,6 @@ def main() -> int:
         return run_follow_test()
     if args.mode == "follow-dry-run":
         return run_follow_dry_run(
-            use_fake=args.fake,
-            obstacle_enabled=obstacle_enabled,
-        )
-    if args.mode == "fixed-demo":
-        return run_fixed_demo(
             use_fake=args.fake,
             obstacle_enabled=obstacle_enabled,
         )

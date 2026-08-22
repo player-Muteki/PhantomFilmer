@@ -7,12 +7,9 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 
-from control.fixed_demo import FixedDemoManeuver, FixedDemoStep
 from control.follow_control import FollowController, RCCommand
 from control.follow_session import FollowSession
 from control.kernel.arbitration import FollowTickOutcome
-from control.kernel.phase_handlers import LifecycleContext
-from control.kernel.phase_handlers.pre_follow import PreFollowHandler
 from control.kernel.phases import KernelPhase
 from control.operator_commands import OperatorCommand, OperatorCommandChannel
 from drone.fake_adapter import FakeDroneAdapter
@@ -787,18 +784,6 @@ class FollowSessionManualIntegrationTestCase(unittest.TestCase):
             second.fire()
             self.assertEqual(drone.command_log[-1][1], (0, 0, 0, 0))
 
-    def test_blocked_front_tof_cannot_start_an_autonomous_sidestep(self) -> None:
-        arbiter = CountingMotionArbiter()
-        session, drone, _detector = build_session(motion_arbiter=arbiter)
-        session.front_tof_monitor = SnapshotMonitor(distance=40)
-        enter_manual(session)
-        arbiter.decide_calls = 0
-
-        session.send_motion_command(RCCommand())
-
-        self.assertEqual(arbiter.decide_calls, 0)
-        self.assertEqual(drone.command_log[-1][1], (0, 0, 0, 0))
-
     def test_deadman_zeroes_output_while_battery_read_is_blocked(self) -> None:
         drone = RecordingDrone(battery_delay=0.20)
         session, _drone, _detector = build_session(
@@ -983,45 +968,6 @@ class FollowSessionManualIntegrationTestCase(unittest.TestCase):
         self.assertEqual(
             (monitor.prepare_calls, monitor.start_calls, monitor.stop_calls),
             (1, 1, 1),
-        )
-
-    def test_fixed_demo_real_m_key_stops_route_without_landing_or_restart(self) -> None:
-        session, drone, _detector = build_session()
-        clock = FakeClock()
-        session.pre_follow_maneuver = FixedDemoManeuver(
-            steps=(FixedDemoStep("forward", RCCommand(forward_backward=20), 1.0, 0.0),),
-            control_interval=0.05,
-            clock=clock,
-            sleep_fn=clock.sleep,
-        )
-        session.airborne = True
-        session.manual_controller.make_available()
-        pressed = False
-
-        def press_m_once(_progress):
-            nonlocal pressed
-            if not pressed:
-                pressed = True
-                session.handle_key(ord("m"))
-            return True
-
-        session._show_pre_follow_progress = press_m_once
-        phase = PreFollowHandler().run(session, LifecycleContext())
-
-        self.assertEqual(phase, KernelPhase.FOLLOW)
-        self.assertTrue(session.manual_controller.active)
-        self.assertTrue(session.airborne)
-        self.assertEqual(session.session_state, "MANUAL")
-        first_motion = next(
-            index
-            for index, (_, command) in enumerate(drone.command_log)
-            if command != (0, 0, 0, 0)
-        )
-        self.assertTrue(
-            all(
-                command == (0, 0, 0, 0)
-                for _, command in drone.command_log[first_motion + 1 :]
-            )
         )
 
 

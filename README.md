@@ -55,7 +55,6 @@ python3 -m venv .venv
 | `reid-demo` | 现场录入人物，人工授权起飞后识别并跟随 | 是（不代表真实识别与动力学） |
 | `follow-dry-run` | 只计算理论控制量和避障结果，不起飞、不发送 RC | 是 |
 | `follow-test` | 测试 FollowController 方向逻辑 | 否 |
-| `fixed-demo` | 固定航线（左移 3s -> 前进 2s -> 右移 3s）后自动跟随，同样经过避障仲裁 | 是 |
 | `console` | 自然语言控制台，支持本地规则和 LLM 回退 | 是 |
 | `basic-flight-test` | 用户确认后起飞、悬停 5s、降落 | 否 |
 | `safety-test` | 测试电量、限速、高度和目标丢失逻辑 | 否 |
@@ -83,9 +82,6 @@ python3 -m venv .venv
 前向 ToF 有效距离 `<= 60 cm` 或读数无效/过期只会禁止前进，不会启动自动右移；
 后退、横移、升降和偏航仍按各自的高度安全限制执行。ToF 超量程表示前方远距离，
 允许前进。启用这项保护后，顶部 ToF 是起飞前的必检硬件，即使本次关闭自动避障也一样。
-
-`fixed-demo` 在初始选择按 `m` 会跳过固定航线，按 `a` 才运行航线；航线中途按
-`m` 会立即清零、停止航线并交给手动控制，不会因航线中止而降落。
 
 手动选择依赖 OpenCV 摄像头窗口；若 `display_console_camera: false`，系统没有键盘
 输入源，会安全停止并降落。
@@ -252,7 +248,7 @@ ReID 只进行外观匹配，不识别真实姓名；俯视、遮挡、换衣、
 
 当前完整中文流程、优先级、参数和异常保护见 [docs/04-搜索避障与运动仲裁.md](docs/04-搜索避障与运动仲裁.md)。
 
-`follow`、`follow-dry-run`、`console` 和 `fixed-demo` 启动时会询问本次是否开启避障，默认值来自 `config.yaml` 的 `obstacle.enabled`。避障只读取 RoboMaster TT 顶部扩展前向 ToF：有效距离小于等于 `front_tof_blocked_distance_cm`（当前 60 cm）时输出 `BLOCKED`，大于阈值或超量程时不增加风险。摄像头只用于目标识别与跟随，不参与障碍判断。ReID 首次确认目标后，跟随和后续丢失恢复才经过 `MotionArbiter`；起飞爬升与首次搜索明确绕过前向 ToF 避障。所有最终命令仍经过 `SafetyManager`。
+`follow`、`follow-dry-run`、`console` 和 `reid-demo` 启动时会询问本次是否开启避障，默认值来自 `config.yaml` 的 `obstacle.enabled`。避障只读取 RoboMaster TT 顶部扩展前向 ToF：有效距离小于等于 `front_tof_blocked_distance_cm`（当前 60 cm）时输出 `BLOCKED`，大于阈值或超量程时不增加风险。摄像头只用于目标识别与跟随，不参与障碍判断。ReID 首次确认目标后，跟随和后续丢失恢复才经过 `MotionArbiter`；起飞爬升与首次搜索明确绕过前向 ToF 避障。所有最终命令仍经过 `SafetyManager`。
 
 手动模式不经过 `MotionArbiter`：它直接读取同一个后台 ToF 快照，只把危险的正向
 速度压成 0，绝不会因此生成右移 1 m 或偏航绕障命令。
@@ -296,7 +292,7 @@ ReID 只进行外观匹配，不识别真实姓名；俯视、遮挡、换衣、
 
 自然语言控制台先使用本地规则，无法确定时可调用 OpenAI 兼容接口做白名单动作分类。所有结果只会映射为 `GET_STATUS`、`START_FOLLOW`、`STOP_TASK`、`EMERGENCY_STOP`、`EXIT` 或 `UNKNOWN`。
 
-控制台只能通过 `ConsoleTools` 调用任务级工具，连接、状态、任务启动/停止和急停统一进入 `MissionManager` 强类型命令总线；底层输出仍必须经过 `SafetyManager`。普通跟随、ReID、固定航线和 Console 任务统一由 `MissionFactory` 构造 `FollowSession`。跟随任务在后台线程运行，停止、急停和退出命令会清零输出并等待降落清理完成。
+控制台只能通过 `ConsoleTools` 调用任务级工具，连接、状态、任务启动/停止和急停统一进入 `MissionManager` 强类型命令总线；底层输出仍必须经过 `SafetyManager`。普通跟随、ReID 和 Console 任务统一由 `MissionFactory` 构造 `FollowSession`。跟随任务在后台线程运行，停止、急停和退出命令会清零输出并等待降落清理完成。
 
 启用 LLM 分类需在配置中设置 `llm_enabled: true`，并提供环境变量 `LLM_API_KEY`；未设置密钥时自动退回本地规则。
 
@@ -319,8 +315,8 @@ ReID 只进行外观匹配，不识别真实姓名；俯视、遮挡、换衣、
 态势条（飞行状态中文标签、暂停/遥测陈旧/安全告警）、模式行（普通/侧向/前向/手动/暂停）、
 铺满的视频区（按原始比例放大、上下轻微裁切）、遥测与停止/急停。手动接管后控制板以
 半透明 HUD 叠加在视频底部，可在 HUD 内关闭键盘控制。自动任务直接运行
-`FollowSession/KernelSession`、目标搜索与前向 ToF 避障（避障开关与任务类型在“起飞准备”
-tab 配置）；视频流显示人物框和状态，两步建档（选照片→确认）后即可起飞。
+`FollowSession/KernelSession`、目标搜索与前向 ToF 避障（安全保护状态在“起飞准备”
+tab 确认）；视频流显示人物框和状态，两步建档（选照片→确认）后即可起飞。
 
 GUI 与 CLI 共用 `MissionManager` 命令/事件模型和 `MissionFactory` 装配路径，但仍是两个
 独立进程，不共享正在运行的会话或控制状态，也不能同时控制同一架无人机。Electron main

@@ -1,6 +1,6 @@
 """Lifecycle phase handlers for the kernel.
 
-Each handler owns one pre-FOLLOW phase and returns the next phase to enter, or
+Each handler owns one lifecycle phase and returns the next phase to enter, or
 None to abort the lifecycle (kernel then does fail-safe cleanup and returns the
 current session state). Handlers orchestrate the session's lifecycle
 sub-routines, which keep their bodies in FollowSession so the existing tests
@@ -15,7 +15,6 @@ from control.kernel.phase_handlers.control_ready import ControlReadyHandler
 from control.kernel.phase_handlers.follow import FollowHandler
 from control.kernel.phase_handlers.ground_lock import GroundLockHandler
 from control.kernel.phase_handlers.height_verify import HeightVerifyHandler
-from control.kernel.phase_handlers.pre_follow import PreFollowHandler
 from control.kernel.phase_handlers.stabilize import StabilizeHandler
 from control.kernel.phase_handlers.takeoff import TakeoffHandler
 from control.kernel.phases import KernelPhase
@@ -37,7 +36,6 @@ def build_phase_handlers() -> Dict[KernelPhase, Any]:
         KernelPhase.HEIGHT_VERIFY: HeightVerifyHandler(),
         KernelPhase.CLIMB: ClimbHandler(),
         KernelPhase.CONTROL_READY: ControlReadyHandler(),
-        KernelPhase.PRE_FOLLOW: PreFollowHandler(),
         KernelPhase.FOLLOW: FollowHandler(),
     }
 

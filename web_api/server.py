@@ -40,7 +40,7 @@ from app.runtime.commands import (
     command_from_payload,
 )
 from app.builder import build_obstacle_modules
-from app.config import load_runtime_config, read_control_interval
+from app.config import load_runtime_config
 from app.runtime.mission_factory import MissionFactory
 from app.runtime.mission_manager import MissionManager
 from app.runtime.event_recorder import RuntimeEventRecorder
@@ -52,7 +52,6 @@ from app.runtime.models import (
     RuntimeSnapshot,
 )
 from app.runtime.rc_lease import RcLeaseManager
-from control.fixed_demo import FixedDemoManeuver
 from control.follow_control import FollowController
 from control.operator_commands import OperatorCommand, OperatorCommandChannel
 from drone.safety import SafetyManager
@@ -290,7 +289,7 @@ class DroneWebService(MissionManager):
                 "preview.start",
                 "preview.stop",
             ],
-            "missions": ["manual", "follow", "reid_follow", "fixed_demo"],
+            "missions": ["manual", "follow", "reid_follow"],
             "eventReplay": True,
             "rcLease": {"required": True, "ttlMs": 1000},
             "safety": {
@@ -879,7 +878,6 @@ class DroneWebService(MissionManager):
         if command.mission not in {
             MissionKind.FOLLOW,
             MissionKind.REID_FOLLOW,
-            MissionKind.FIXED_DEMO,
         }:
             raise RuntimeError(f"桌面端暂不支持任务：{command.mission.value}")
         if command.obstacle_enabled is False:
@@ -1530,11 +1528,6 @@ class DroneWebService(MissionManager):
             config=config,
         )
         _, _, motion_arbiter = build_obstacle_modules(config, safety)
-        maneuver = (
-            FixedDemoManeuver(control_interval=read_control_interval(config))
-            if command.mission is MissionKind.FIXED_DEMO
-            else None
-        )
         return MissionFactory(
             drone=adapter,
             safety_manager=safety,
@@ -1552,7 +1545,6 @@ class DroneWebService(MissionManager):
                 "REID" if command.mission is MissionKind.REID_FOLLOW else "FOLLOW"
             ),
             allow_pause=True,
-            pre_follow_maneuver=maneuver,
             initial_target_lock_frames=0,
             enable_target_search=True,
         )

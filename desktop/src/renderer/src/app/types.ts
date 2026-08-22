@@ -1,7 +1,6 @@
 import type { RcCommand } from '../../../preload/api'
 
 export type MissionMode = 'manual' | 'normal' | 'side' | 'front'
-export type MissionType = 'follow' | 'fixed_demo'
 export type PartialRcCommand = Partial<RcCommand>
 export type Control = [string, string, string, PartialRcCommand, 'up' | 'left' | 'center' | 'right' | 'down']
 
@@ -12,8 +11,4 @@ export const missionKey: Record<MissionMode, string> = { manual: 'm', normal: '1
 
 export function missionModeLabel(mode: string): string {
   return ({ manual: '手动接管', normal: '普通跟随', side: '侧向跟随', front: '前向跟随' } as Record<string, string>)[mode] ?? mode
-}
-
-export function missionTypeLabel(type: MissionType): string {
-  return type === 'follow' ? '人物跟拍' : '固定航线演示'
 }

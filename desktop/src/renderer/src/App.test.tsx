@@ -21,7 +21,7 @@ function createApi(overrides: Partial<PhantomFilmerApi> = {}): PhantomFilmerApi 
     takeoff: vi.fn(), land: vi.fn(), hover: vi.fn().mockResolvedValue(groundStatus), moveRc: vi.fn().mockResolvedValue({ ok: true, flightState: '手动飞行' }),
     inputKey: vi.fn().mockResolvedValue({ ok: true, operatorSequence: 1, key: 'm' }), stop: vi.fn().mockResolvedValue({ ok: true }), emergencyLand: vi.fn().mockResolvedValue({ ok: true }),
     getVideoUrl: vi.fn().mockResolvedValue('http://127.0.0.1:1234/video?token=once'), getBackendState: vi.fn().mockResolvedValue(readyBackend), restartBackend: vi.fn().mockResolvedValue(readyBackend),
-    getRuntimeCapabilities: vi.fn().mockResolvedValue({ apiVersion: '1', commands: ['mission.start'], missions: ['follow', 'fixed_demo'], eventReplay: true, rcLease: { required: true, ttlMs: 1000 }, safety: { minTakeoffBattery: 20, lowBatteryLand: 5, maxHeightCm: 220, maxRcSpeed: 35, minDescentHeightCm: 40, maxAscentHeightCm: 200, frontStopDistanceCm: 60, telemetryMaxAgeMs: 3000 }, missionReadiness: { available: true, missingAssets: [], profileRequired: true } }),
+    getRuntimeCapabilities: vi.fn().mockResolvedValue({ apiVersion: '1', commands: ['mission.start'], missions: ['follow'], eventReplay: true, rcLease: { required: true, ttlMs: 1000 }, safety: { minTakeoffBattery: 20, lowBatteryLand: 5, maxHeightCm: 220, maxRcSpeed: 35, minDescentHeightCm: 40, maxAscentHeightCm: 200, frontStopDistanceCm: 60, telemetryMaxAgeMs: 3000 }, missionReadiness: { available: true, missingAssets: [], profileRequired: true } }),
     getRuntimeSnapshot: vi.fn().mockImplementation(() => runtimeSnapshot()), getRuntimeEvents: vi.fn().mockResolvedValue({ apiVersion: '1', latestSequence: 0, resetRequired: false, events: [] }),
     startMission: vi.fn().mockResolvedValue({ ok: true, mission: 'follow' }), stopMission: vi.fn().mockResolvedValue({ ok: true }), emergencyStopMission: vi.fn().mockResolvedValue({ ok: true }), selectControlMode: vi.fn(), toggleMissionPause: vi.fn().mockResolvedValue({ ok: true }),
     listProfiles: vi.fn().mockResolvedValue([{ name: '甲', photoCount: 3 }, { name: '乙', photoCount: 4 }]),
@@ -100,7 +100,7 @@ describe('desktop follow console', () => {
 
     switchTab('起飞准备')
     expect(screen.getByRole('tab', { name: '起飞准备' })).toHaveAttribute('aria-selected', 'true')
-    expect(screen.getByRole('combobox', { name: '任务类型' })).toBeVisible()
+    expect(document.querySelector('.mission-type')).not.toBeInTheDocument()
     expect(screen.getByText('前向 ToF 安全保护')).toBeVisible()
     expect(screen.queryByRole('checkbox', { name: /ToF/ })).not.toBeInTheDocument()
     expect(screen.getByLabelText('起飞预检清单')).toBeVisible()
@@ -134,21 +134,6 @@ describe('desktop follow console', () => {
 
     await waitFor(() => expect(window.phantomFilmer.startMission).toHaveBeenCalledWith({ mission: 'follow', profileName: '乙', initialControlMode: 'manual' }))
     expect(screen.getByRole('combobox', { name: '人物档案' })).toHaveValue('乙')
-  })
-
-  it('forces ToF safety and forwards only the mission type to the start command', async () => {
-    mount()
-    await screen.findByRole('option', { name: '甲' })
-    fireEvent.change(screen.getByRole('combobox', { name: '人物档案' }), { target: { value: '甲' } })
-    switchTab('起飞准备')
-    expect(screen.getByText('前向 ToF 安全保护')).toBeInTheDocument()
-    fireEvent.change(screen.getByRole('combobox', { name: '任务类型' }), { target: { value: 'fixed_demo' } })
-    switchTab('人物档案')
-
-    await connectDrone()
-    await startMissionFlow()
-
-    await waitFor(() => expect(window.phantomFilmer.startMission).toHaveBeenCalledWith({ mission: 'fixed_demo', profileName: '甲', initialControlMode: 'manual' }))
   })
 
   it('shows the preflight checklist with per-item status once connected', async () => {

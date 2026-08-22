@@ -151,8 +151,6 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .profile-rename button { min-height: 32px; padding: 0 8px; border: 1px solid var(--line); background: #fff; color: #29475c; font-size: 11px; }
 .profile-rename button:first-of-type { border-color: var(--teal); background: var(--teal); color: #fff; }
 .launch-settings { display: grid; gap: 6px; padding: 7px; border: 1px solid var(--line); background: #f7fafc; }
-.mission-type { display: grid; gap: 6px; color: var(--muted); font-size: 11px; }
-.mission-type select { min-height: 32px; padding: 0 8px; border: 1px solid var(--line); background: #fff; font-size: 12px; }
 .safety-required { display: flex; align-items: center; gap: 7px; padding: 6px; border: 1px solid #bcd8c8; background: var(--green-soft); }
 .safety-required > i { width: 20px; height: 20px; display: grid; place-items: center; border-radius: 50%; background: var(--teal); color: #fff; font-style: normal; font-size: 11px; }
 .safety-required span { display: grid; gap: 2px; font-size: 12px; }

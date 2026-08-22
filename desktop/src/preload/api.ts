@@ -64,7 +64,7 @@ export type BackendState = {
 export type RuntimeSnapshot = {
   sequence: number
   phase: 'disconnected' | 'connecting' | 'preflight' | 'taking_off' | 'airborne' | 'landing' | 'stopping' | 'error'
-  mission: 'idle' | 'manual' | 'follow' | 'reid_follow' | 'fixed_demo' | 'dry_run'
+  mission: 'idle' | 'manual' | 'follow' | 'reid_follow' | 'dry_run'
   controlMode: 'none' | 'manual' | 'normal' | 'side' | 'front'
   connected: boolean
   airborne: boolean
@@ -112,7 +112,7 @@ export type RuntimeCapabilities = {
 }
 
 export type MissionStartOptions = {
-  mission: 'follow' | 'reid_follow' | 'fixed_demo'
+  mission: 'follow' | 'reid_follow'
   profileName: string
   initialControlMode: 'manual' | 'normal' | 'side' | 'front'
 }

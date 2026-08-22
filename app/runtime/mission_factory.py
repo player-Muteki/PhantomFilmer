@@ -6,7 +6,6 @@ from threading import Event
 from typing import Optional
 
 from app.runtime.models import MissionKind
-from control.fixed_demo import FixedDemoManeuver
 from control.follow_control import FollowController
 from control.follow_session import FollowSession
 from control.motion_arbiter import MotionArbiter
@@ -55,18 +54,14 @@ class MissionFactory:
         state_label: str = "FOLLOW",
         allow_pause: bool = False,
         stop_event: Optional[Event] = None,
-        pre_follow_maneuver: Optional[FixedDemoManeuver] = None,
         initial_target_lock_frames: int = 0,
         enable_target_search: Optional[bool] = None,
     ) -> FollowSession:
         if mission not in {
             MissionKind.FOLLOW,
             MissionKind.REID_FOLLOW,
-            MissionKind.FIXED_DEMO,
         }:
             raise ValueError(f"unsupported FollowSession mission: {mission.value}")
-        if mission is MissionKind.FIXED_DEMO and pre_follow_maneuver is None:
-            raise ValueError("fixed_demo mission requires pre_follow_maneuver")
         return FollowSession(
             drone=self.drone,
             safety_manager=self.safety_manager,
@@ -78,7 +73,6 @@ class MissionFactory:
             state_label=state_label,
             allow_pause=allow_pause,
             stop_event=stop_event,
-            pre_follow_maneuver=pre_follow_maneuver,
             obstacle_detector=self.obstacle_detector,
             obstacle_planner=self.obstacle_planner,
             motion_arbiter=self.motion_arbiter,

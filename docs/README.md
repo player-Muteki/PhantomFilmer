@@ -26,11 +26,11 @@
 
 ## 2. 外部功能地图
 
-CLI 入口 `main.py::main` 根据 `--mode` 分发到 `app/modes.py::run_*`。13 种模式分为几类：
+CLI 入口 `main.py::main` 根据 `--mode` 分发到 `app/modes.py::run_*`。12 种模式分为几类：
 
 - **描述 / 诊断**：`demo`（默认，只 describe 系统）、`status`、`connection-test`
 - **摄像头**：`camera`（地面 ReID 预览）
-- **飞行**：`follow`、`fixed-demo`、`basic-flight-test`（真机确认后起飞悬停 5 s）、`reid-demo`
+- **飞行**：`follow`、`basic-flight-test`（真机确认后起飞悬停 5 s）、`reid-demo`
 - **只算不飞**：`follow-dry-run`（复用生产仲裁、不起飞不发 RC）
 - **纯测试**：`follow-test`、`safety-test`（不起飞）
 - **交互控制台**：`console`（本地规则 + LLM 回退）

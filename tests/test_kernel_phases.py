@@ -10,7 +10,6 @@ from control.kernel.phase_handlers.control_ready import ControlReadyHandler
 from control.kernel.phase_handlers.follow import FollowHandler
 from control.kernel.phase_handlers.ground_lock import GroundLockHandler
 from control.kernel.phase_handlers.height_verify import HeightVerifyHandler
-from control.kernel.phase_handlers.pre_follow import PreFollowHandler
 from control.kernel.phase_handlers.stabilize import StabilizeHandler
 from control.kernel.phase_handlers.takeoff import TakeoffHandler
 from control.kernel.phases import KernelPhase
@@ -61,7 +60,6 @@ class BaseSession:
         self.drone = RecordingDrone()
         self.airborne = False
         self.emergency_stop = False
-        self.pre_follow_maneuver = None
         self.mode_label = "TEST"
         self.allow_pause = False
         self.emergency_stop = False
@@ -115,18 +113,6 @@ class BaseSession:
         if self.control_selection == "manual":
             self.manual_controller.active = True
         return self.control_selection
-
-    def send_motion_command(self, command) -> None:
-        pass
-
-    def _pre_follow_should_abort(self) -> bool:
-        return self.stop_event.is_set()
-
-    def _show_pre_follow_progress(self, progress):
-        return True
-
-    def _fixed_demo_is_avoiding(self) -> bool:
-        return False
 
 
 class GroundLockHandlerTestCase(unittest.TestCase):
@@ -194,10 +180,7 @@ class PostTakeoffHandlersTestCase(unittest.TestCase):
         session = BaseSession()
         self.assertEqual(StabilizeHandler().run(session, ctx), KernelPhase.CLIMB)
         self.assertEqual(ClimbHandler().run(session, ctx), KernelPhase.CONTROL_READY)
-        self.assertEqual(
-            ControlReadyHandler().run(session, ctx), KernelPhase.PRE_FOLLOW
-        )
-        self.assertEqual(PreFollowHandler().run(session, ctx), KernelPhase.FOLLOW)
+        self.assertEqual(ControlReadyHandler().run(session, ctx), KernelPhase.FOLLOW)
 
     def test_height_verify_can_be_explicitly_reenabled(self) -> None:
         ctx = LifecycleContext()
@@ -228,10 +211,10 @@ class ControlReadyHandlerTestCase(unittest.TestCase):
 
         phase = ControlReadyHandler().run(session, LifecycleContext())
 
-        self.assertEqual(phase, KernelPhase.PRE_FOLLOW)
+        self.assertEqual(phase, KernelPhase.FOLLOW)
         self.assertEqual(session.control_selection_calls, 0)
 
-    def test_manual_selection_enters_follow_without_pre_follow_route(self) -> None:
+    def test_manual_selection_enters_follow(self) -> None:
         session = BaseSession()
         session.manual_controller = ManualControllerStub(enabled=True)
         session.control_selection = "manual"
@@ -242,17 +225,17 @@ class ControlReadyHandlerTestCase(unittest.TestCase):
         self.assertTrue(session.manual_controller.available)
         self.assertTrue(session.manual_controller.active)
 
-    def test_auto_selection_runs_pre_follow_route(self) -> None:
+    def test_auto_selection_enters_follow(self) -> None:
         session = BaseSession()
         session.manual_controller = ManualControllerStub(enabled=True)
         session.control_selection = "auto"
 
         phase = ControlReadyHandler().run(session, LifecycleContext())
 
-        self.assertEqual(phase, KernelPhase.PRE_FOLLOW)
+        self.assertEqual(phase, KernelPhase.FOLLOW)
         self.assertTrue(session.manual_controller.available)
 
-    def test_side_selection_enters_follow_without_pre_follow_route(self) -> None:
+    def test_side_selection_enters_follow(self) -> None:
         session = BaseSession()
         session.manual_controller = ManualControllerStub(enabled=True)
         session.control_selection = "side"
@@ -262,7 +245,7 @@ class ControlReadyHandlerTestCase(unittest.TestCase):
         self.assertEqual(phase, KernelPhase.FOLLOW)
         self.assertTrue(session.manual_controller.available)
 
-    def test_front_selection_enters_follow_without_pre_follow_route(self) -> None:
+    def test_front_selection_enters_follow(self) -> None:
         session = BaseSession()
         session.manual_controller = ManualControllerStub(enabled=True)
         session.control_selection = "front"
@@ -287,70 +270,6 @@ class ControlReadyHandlerTestCase(unittest.TestCase):
         self.assertIsNone(ClimbHandler().run(session, ctx))
         self.assertEqual(session.safe_zero_calls, 1)
         self.assertEqual(session.safe_land_calls, 1)
-
-
-class PreFollowHandlerTestCase(unittest.TestCase):
-    class AbortableManeuver:
-        def __init__(self, completed: bool) -> None:
-            self.completed = completed
-            self.ran = False
-
-        def run(self, send_command, should_abort, on_progress, is_avoiding):
-            self.ran = True
-            return self.completed
-
-    def test_aborted_maneuver_stops_lifecycle(self) -> None:
-        ctx = LifecycleContext()
-        session = BaseSession()
-        maneuver = self.AbortableManeuver(False)
-        session.pre_follow_maneuver = maneuver
-        self.assertIsNone(PreFollowHandler().run(session, ctx))
-        self.assertTrue(maneuver.ran)
-        self.assertEqual(session.session_state, "STOPPED")
-
-    def test_completed_maneuver_advances_and_resets(self) -> None:
-        ctx = LifecycleContext()
-        session = BaseSession()
-        maneuver = self.AbortableManeuver(True)
-        session.pre_follow_maneuver = maneuver
-        self.assertEqual(PreFollowHandler().run(session, ctx), KernelPhase.FOLLOW)
-        self.assertEqual(session.reset_calls, 1)
-        self.assertEqual(session.manual_controller.make_available_calls, 1)
-
-    def test_manual_takeover_during_maneuver_enters_follow_without_landing(self) -> None:
-        ctx = LifecycleContext()
-        session = BaseSession()
-        session.manual_controller = ManualControllerStub(enabled=True)
-        session.manual_controller.make_available()
-        session.manual_controller.active = True
-        maneuver = self.AbortableManeuver(False)
-        session.pre_follow_maneuver = maneuver
-
-        self.assertEqual(PreFollowHandler().run(session, ctx), KernelPhase.FOLLOW)
-        self.assertEqual(session.session_state, "MANUAL")
-        self.assertEqual(session.safe_zero_calls, 1)
-
-    def test_success_result_cannot_override_same_tick_manual_takeover(self) -> None:
-        ctx = LifecycleContext()
-        session = BaseSession()
-        session.manual_controller = ManualControllerStub(enabled=True)
-        session.manual_controller.make_available()
-
-        class LastTickTakeover:
-            def run(inner_self, **_kwargs):
-                session.manual_controller.active = True
-                return True
-
-        session.pre_follow_maneuver = LastTickTakeover()
-
-        self.assertEqual(PreFollowHandler().run(session, ctx), KernelPhase.FOLLOW)
-        self.assertEqual(session.session_state, "MANUAL")
-        self.assertEqual(session.reset_calls, 0)
-        self.assertEqual(session.safe_zero_calls, 1)
-
-    def test_no_maneuver_advances_directly(self) -> None:
-        ctx = LifecycleContext()
-        self.assertEqual(PreFollowHandler().run(BaseSession(), ctx), KernelPhase.FOLLOW)
 
 
 class FollowHandlerTestCase(unittest.TestCase):
@@ -383,7 +302,6 @@ class BuildHandlersTestCase(unittest.TestCase):
                 KernelPhase.HEIGHT_VERIFY,
                 KernelPhase.CLIMB,
                 KernelPhase.CONTROL_READY,
-                KernelPhase.PRE_FOLLOW,
                 KernelPhase.FOLLOW,
             },
         )

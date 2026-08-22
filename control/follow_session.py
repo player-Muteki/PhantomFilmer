@@ -9,7 +9,6 @@ from time import monotonic, sleep
 from typing import Any, Callable, Dict, Optional, Tuple
 
 from control.features import build_features
-from control.fixed_demo import FixedDemoManeuver, FixedDemoProgress
 from control.follow_control import FollowController, RCCommand
 from control.kernel.arbitration import ArbitrationEngine, FollowTickOutcome
 from control.kernel.features import ArbitrationContext
@@ -84,7 +83,6 @@ class FollowSession:
         state_label: str = "FOLLOW",
         allow_pause: bool = False,
         stop_event: Optional[Event] = None,
-        pre_follow_maneuver: Optional[FixedDemoManeuver] = None,
         obstacle_detector: Optional[DistanceOnlyObstacleDetector] = None,
         obstacle_planner: Optional[ObstacleAvoidancePlanner] = None,
         motion_arbiter: Optional[MotionArbiter] = None,
@@ -100,7 +98,6 @@ class FollowSession:
         self.safety_manager = safety_manager
         self.detector = detector
         self.follow_controller = follow_controller
-        self.pre_follow_maneuver = pre_follow_maneuver
         # 生产路径统一使用 motion_arbiter 作为唯一避障管线（包含检测器、规划器和
         # 日志）。单独传入 obstacle_detector/obstacle_planner 只用于直接装配
         # （如测试）时的回退路径；两者同时传入时 arbiter 优先。
@@ -793,57 +790,6 @@ class FollowSession:
                 self.session_state = "STOPPED"
         return False
 
-    def _pre_follow_should_abort(self) -> bool:
-        """Stop a predefined maneuver for stop, emergency, or manual takeover."""
-        self._handle_pending_operator_command()
-        return (
-            self.stop_event.is_set()
-            or self.emergency_stop
-            or self.manual_controller.active
-        )
-
-    def _fixed_demo_is_avoiding(self) -> bool:
-        """Hold the route timer while obstacle avoidance is overriding it."""
-        if self.last_obstacle_result is None:
-            return False
-        return bool(self.last_obstacle_result.found)
-
-    def _show_pre_follow_progress(self, progress: FixedDemoProgress) -> bool:
-        """Display the raw camera during the route and keep m/q/e responsive."""
-        if self._handle_pending_operator_command() in ("stop", "emergency"):
-            return False
-        if not self.display_enabled:
-            return not self._pre_follow_should_abort()
-
-        frame = self._read_frame()
-        if frame is None:
-            return not self._pre_follow_should_abort()
-
-        import cv2
-
-        phase = "悬停稳定" if progress.settling else progress.step.name
-        cv2.putText(
-            frame,
-            f"FIXED DEMO {progress.step_index}/{progress.step_count}: {phase}",
-            (20, 36),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.65,
-            (0, 255, 255),
-            2,
-        )
-        cv2.putText(
-            frame,
-            "m: manual takeover, q: stop + land, e: emergency + land",
-            (20, 68),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.55,
-            (255, 255, 255),
-            1,
-        )
-        cv2.imshow(self.window_name, frame)
-        action = self.handle_key(cv2.waitKey(1) & 0xFF)
-        return action not in ("stop", "emergency")
-
     def _prepare_detector(self) -> None:
         """Preload optional detector models while the drone is still grounded."""
         prepare_method = getattr(self.detector, "prepare", None)
@@ -1170,34 +1116,6 @@ class FollowSession:
                 self._kernel._emit(command)
             return
         self._kernel._emit(command)
-
-    def send_motion_command(self, command: RCCommand) -> None:
-        """Apply the shared obstacle arbiter before sending an autonomous command."""
-        if self.manual_controller.active:
-            # A fixed-demo callback can observe ``m`` between two route ticks.
-            # Its ``finally`` block still sends one last zero command through
-            # this seam; never let that cleanup call restart an old autonomous
-            # obstacle plan after the operator has taken control.
-            self._safe_zero_output()
-            return
-        if self.motion_arbiter is None:
-            self.send_command(command)
-            return
-        frame = self._read_frame()
-        if frame is None:
-            self.send_command(self.follow_controller.hover())
-            return
-        decision = self.motion_arbiter.decide(
-            desired_command=command,
-            frame=frame,
-            # 预飞段（fixed-demo 固定航线）尚未进入目标跟随，故意不提供目标区域：
-            # 让避障检测器观察整个画面，避免目标排除逻辑误用于目标可能尚未进入
-            # 视野的阶段。进入正常跟随后由 _loop 传入真实检测结果。
-            context=MotionContext(mode=self.mode_label, target_result={"found": False}),
-        )
-        self.last_obstacle_result = decision.observation
-        self.last_avoidance_decision = decision
-        self.send_command(decision.command)
 
     @staticmethod
     def _follow_mode_name(mode: str) -> str:

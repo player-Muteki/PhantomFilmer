@@ -23,7 +23,6 @@ class MissionKind(str, Enum):
     MANUAL = "manual"
     FOLLOW = "follow"
     REID_FOLLOW = "reid_follow"
-    FIXED_DEMO = "fixed_demo"
     DRY_RUN = "dry_run"
 
 
