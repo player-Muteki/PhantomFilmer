@@ -7,6 +7,7 @@ Verifies that FollowSession still behaves identically after Step 5:
 """
 
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
@@ -121,6 +122,19 @@ class FollowSessionCompatTestCase(unittest.TestCase):
         session.emergency_stop = True
         session.send_command(RCCommand(50, 30, 20, 10))
         self.assertEqual(drone.last_rc_command, (0, 0, 0, 0))
+
+    def test_emit_blocks_forward_motion_at_final_seam_when_required_tof_is_blocked(self) -> None:
+        drone = FakeDroneAdapter(verbose_rc=False)
+        session = self.build_session(drone=drone)
+        session.config["obstacle"] = {"enabled": True}
+        session.front_tof_monitor = SimpleNamespace(
+            blocked_distance_cm=60.0,
+            snapshot=lambda: SimpleNamespace(status="valid", distance_cm=45.0),
+        )
+
+        session.send_command(RCCommand(left_right=12, forward_backward=20, yaw=5))
+
+        self.assertEqual(drone.last_rc_command, (12, 0, 0, 5))
 
     def test_display_state_reports_only_current_control_owner(self) -> None:
         session = self.build_session()

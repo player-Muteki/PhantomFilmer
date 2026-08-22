@@ -5,11 +5,11 @@ import os
 import secrets
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 
 PIXEL = base64.b64decode(
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+    "iVBORw0KGgoAAAANSUhEUgAAAAQAAAADCAIAAAA7ljmRAAAAEElEQVR4nGNomLAAjhhwcgCJlhRBlbH/hgAAAABJRU5ErkJggg=="
 )
 
 
@@ -36,6 +36,7 @@ state = {
     "preview_profile": None,
     "sequence": 0,
     "events": [],
+    "profiles": [{"name": "operator-a", "photoCount": 3, "modelName": "osnet_x0_25"}],
 }
 
 
@@ -250,7 +251,14 @@ class Handler(BaseHTTPRequestHandler):
                 },
             )
         elif parts.path == "/api/v1/profiles":
-            self._json(200, {"apiVersion": "1", "profiles": [{"name": "operator-a", "photoCount": 3}]})
+            self._json(200, {"apiVersion": "1", "profiles": state["profiles"]})
+        elif parts.path.startswith("/api/v1/profiles/"):
+            name = unquote(parts.path.removeprefix("/api/v1/profiles/"))
+            profile = next((item for item in state["profiles"] if item["name"] == name), None)
+            if profile is None:
+                self._json(404, {"error": {"message": "profile missing"}})
+            else:
+                self._json(200, {"apiVersion": "1", "profile": {**profile, "photos": []}})
         elif parts.path == "/api/v1/runtime/snapshot":
             self._json(200, {"apiVersion": "1", "snapshot": runtime_snapshot()})
         elif parts.path == "/api/v1/runtime/events":
@@ -354,6 +362,36 @@ class Handler(BaseHTTPRequestHandler):
             threading.Thread(target=self.server.shutdown, daemon=True).start()
         else:
             self._json(404, {"error": "missing"})
+
+    def do_PATCH(self):
+        if not self._authorized():
+            self._json(401, {"error": "unauthorized"})
+            return
+        path = urlsplit(self.path).path
+        if not path.startswith("/api/v1/profiles/"):
+            self._json(404, {"error": "missing"})
+            return
+        name = unquote(path.removeprefix("/api/v1/profiles/"))
+        new_name = self._read_json().get("name", "")
+        profile = next((item for item in state["profiles"] if item["name"] == name), None)
+        if profile is None or not new_name:
+            self._json(409, {"error": {"message": "rename failed"}})
+            return
+        profile["name"] = new_name
+        self._json(200, {"apiVersion": "1", "profile": {**profile, "photos": []}})
+
+    def do_DELETE(self):
+        if not self._authorized():
+            self._json(401, {"error": "unauthorized"})
+            return
+        path = urlsplit(self.path).path
+        name = unquote(path.removeprefix("/api/v1/profiles/"))
+        before = len(state["profiles"])
+        state["profiles"] = [item for item in state["profiles"] if item["name"] != name]
+        if len(state["profiles"]) == before:
+            self._json(409, {"error": {"message": "delete failed"}})
+            return
+        self._json(200, {"apiVersion": "1", "deleted": {"name": name, "deletedAt": "2026-01-01T00:00:00Z", "recoverable": True}})
 
     def log_message(self, _format, *_args):
         pass

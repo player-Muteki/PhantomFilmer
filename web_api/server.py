@@ -19,7 +19,7 @@ from pathlib import Path
 from threading import Event, Lock, RLock, Thread
 from time import monotonic, sleep, time
 from typing import Any, Callable, Iterator, Optional
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 from app.runtime.commands import (
     ConnectCommand,
@@ -43,6 +43,7 @@ from app.builder import build_obstacle_modules
 from app.config import load_runtime_config, read_control_interval
 from app.runtime.mission_factory import MissionFactory
 from app.runtime.mission_manager import MissionManager
+from app.runtime.event_recorder import RuntimeEventRecorder
 from app.runtime.models import (
     AllowedAction,
     ControlMode,
@@ -58,7 +59,13 @@ from drone.safety import SafetyManager
 from vision.detector_factory import create_detector
 from vision.reid_enrollment import build_reid_runtime_config
 from vision.reid_enrollment import validate_reference_images
-from vision.reid_profiles import list_reid_profiles, save_reid_profile
+from vision.reid_profiles import (
+    delete_reid_profile,
+    get_reid_profile,
+    list_reid_profiles,
+    rename_reid_profile,
+    save_reid_profile,
+)
 
 from .tello_adapter import RealTelloAdapter
 
@@ -96,7 +103,11 @@ def _load_sidecar_runtime_config() -> dict[str, Any]:
                 "maximum_ascent_height_cm": 200,
                 "front_stop_distance_cm": 60,
             },
-            "obstacle": {"front_tof_max_age_seconds": 0.8},
+            "obstacle": {
+                "enabled": True,
+                "front_tof_enabled": True,
+                "front_tof_max_age_seconds": 0.8,
+            },
             "vision": {},
         }
 
@@ -117,6 +128,8 @@ class DroneWebService(MissionManager):
         super().__init__()
         self.data_dir = Path(data_dir).expanduser().resolve()
         self.data_dir.mkdir(parents=True, exist_ok=True)
+        event_log = self.data_dir / "logs" / "runtime-events" / f"runtime-{int(time())}.jsonl"
+        self._event_recorder = RuntimeEventRecorder(self.events, event_log)
         self._adapter_factory = adapter_factory or partial(
             RealTelloAdapter, self.data_dir
         )
@@ -305,6 +318,46 @@ class DroneWebService(MissionManager):
     def list_profiles(self) -> list[dict[str, object]]:
         return list_reid_profiles(self.data_dir / "reid_profiles")
 
+    def get_profile(self, name: object) -> dict[str, object]:
+        if not isinstance(name, str):
+            raise RuntimeError("人物档案名格式无效。")
+        return get_reid_profile(name, self.data_dir / "reid_profiles")
+
+    def rename_profile(self, name: object, new_name: object) -> dict[str, object]:
+        self._require_profile_management_available()
+        if not isinstance(name, str) or not isinstance(new_name, str):
+            raise RuntimeError("人物档案名格式无效。")
+        profile = rename_reid_profile(
+            name,
+            new_name,
+            self.data_dir / "reid_profiles",
+        )
+        self.events.publish(
+            "profile.renamed",
+            {"name": name.strip(), "newName": profile["name"]},
+            snapshot=self.runtime_snapshot(),
+        )
+        return profile
+
+    def delete_profile(self, name: object) -> dict[str, object]:
+        self._require_profile_management_available()
+        if not isinstance(name, str):
+            raise RuntimeError("人物档案名格式无效。")
+        deleted = delete_reid_profile(name, self.data_dir / "reid_profiles")
+        self.events.publish(
+            "profile.deleted",
+            {"name": deleted["name"], "recoverable": True},
+            snapshot=self.runtime_snapshot(),
+        )
+        return deleted
+
+    def _require_profile_management_available(self) -> None:
+        with self._lock:
+            if self.connected or self._mission_session is not None:
+                raise RuntimeError("人物档案只能在无人机断开连接时修改。")
+            if self._preview_detector is not None:
+                raise RuntimeError("请先停止人物识别预览，再修改档案。")
+
     def enroll_profile(
         self,
         *,
@@ -314,8 +367,7 @@ class DroneWebService(MissionManager):
     ) -> dict[str, object]:
         """Create a local profile from main-process-selected image paths."""
 
-        if self.connected or self._mission_session is not None:
-            raise RuntimeError("人物建档只能在无人机断开连接时执行。")
+        self._require_profile_management_available()
         if not isinstance(name, str) or not name.strip():
             raise RuntimeError("人物档案名不能为空。")
         if not isinstance(image_paths, list) or not all(
@@ -830,6 +882,8 @@ class DroneWebService(MissionManager):
             MissionKind.FIXED_DEMO,
         }:
             raise RuntimeError(f"桌面端暂不支持任务：{command.mission.value}")
+        if command.obstacle_enabled is False:
+            raise RuntimeError("前向 ToF 安全保护为强制项，自动任务不能关闭。")
         with self._lock:
             if not self.connected or self._adapter is None:
                 raise RuntimeError("真机未连接，无法启动自动任务。")
@@ -1101,6 +1155,7 @@ class DroneWebService(MissionManager):
             self._watchdog.join(timeout=1.0)
             self._tof_monitor.join(timeout=3.0)
             self._telemetry_monitor.join(timeout=1.0)
+            self._event_recorder.close()
 
     def _refresh_front_tof(self, force: bool = False) -> None:
         adapter = self._adapter
@@ -1377,13 +1432,14 @@ class DroneWebService(MissionManager):
         profile_name: str,
         obstacle_enabled: Optional[bool] = None,
     ) -> dict[str, Any]:
-        config = self._runtime_config
-        if obstacle_enabled is not None:
-            config = dict(config)
-            obstacle = config.get("obstacle", {})
-            runtime_obstacle = dict(obstacle) if isinstance(obstacle, dict) else {}
-            runtime_obstacle["enabled"] = obstacle_enabled
-            config["obstacle"] = runtime_obstacle
+        if obstacle_enabled is False:
+            raise RuntimeError("前向 ToF 安全保护为强制项，自动任务不能关闭。")
+        config = dict(self._runtime_config)
+        obstacle = config.get("obstacle", {})
+        runtime_obstacle = dict(obstacle) if isinstance(obstacle, dict) else {}
+        runtime_obstacle["enabled"] = True
+        runtime_obstacle["front_tof_enabled"] = True
+        config["obstacle"] = runtime_obstacle
         config = build_reid_runtime_config(config, profile_name=profile_name)
         config = dict(config)
         config["display_console_camera"] = False
@@ -1791,6 +1847,18 @@ class DroneRequestHandler(BaseHTTPRequestHandler):
                 {"apiVersion": API_VERSION, "profiles": self.service.list_profiles()},
             )
             return
+        if path.startswith("/api/v1/profiles/"):
+            try:
+                name = unquote(path.removeprefix("/api/v1/profiles/"))
+                if not name or "/" in name:
+                    raise RuntimeError("人物档案名格式无效。")
+                self._json(
+                    HTTPStatus.OK,
+                    {"apiVersion": API_VERSION, "profile": self.service.get_profile(name)},
+                )
+            except Exception as exc:
+                self._v1_error(HTTPStatus.NOT_FOUND, "PROFILE_NOT_FOUND", str(exc))
+            return
         if path == "/api/v1/runtime/events":
             query = parse_qs(parsed.query)
             try:
@@ -1913,6 +1981,43 @@ class DroneRequestHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/sidecar/shutdown":
             self._safe_shutdown()
+            return
+        self._json(HTTPStatus.NOT_FOUND, {"error": "接口不存在。"})
+
+    def do_PATCH(self) -> None:  # noqa: N802
+        if not self._authorized_request():
+            self._json(HTTPStatus.UNAUTHORIZED, {"error": "会话令牌无效。"})
+            return
+        path = urlsplit(self.path).path
+        if path.startswith("/api/v1/profiles/"):
+            try:
+                name = unquote(path.removeprefix("/api/v1/profiles/"))
+                payload = self._read_json()
+                profile = self.service.rename_profile(name, payload.get("name"))
+                self._json(
+                    HTTPStatus.OK,
+                    {"apiVersion": API_VERSION, "profile": profile},
+                )
+            except Exception as exc:
+                self._v1_error(HTTPStatus.CONFLICT, "PROFILE_RENAME_FAILED", str(exc))
+            return
+        self._json(HTTPStatus.NOT_FOUND, {"error": "接口不存在。"})
+
+    def do_DELETE(self) -> None:  # noqa: N802
+        if not self._authorized_request():
+            self._json(HTTPStatus.UNAUTHORIZED, {"error": "会话令牌无效。"})
+            return
+        path = urlsplit(self.path).path
+        if path.startswith("/api/v1/profiles/"):
+            try:
+                name = unquote(path.removeprefix("/api/v1/profiles/"))
+                deleted = self.service.delete_profile(name)
+                self._json(
+                    HTTPStatus.OK,
+                    {"apiVersion": API_VERSION, "deleted": deleted},
+                )
+            except Exception as exc:
+                self._v1_error(HTTPStatus.CONFLICT, "PROFILE_DELETE_FAILED", str(exc))
             return
         self._json(HTTPStatus.NOT_FOUND, {"error": "接口不存在。"})
 

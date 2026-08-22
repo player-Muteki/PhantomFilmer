@@ -29,6 +29,11 @@ test('connects, streams, refreshes RC, lands, and cleans up', async () => {
   await window.getByRole('button', { name: '连接真机' }).click()
   await expect(window.getByText('真机已连接')).toBeVisible()
   await expect(window.getByAltText('无人机实时视频流')).toBeVisible()
+  const videoFrame = window.locator('.video-panel')
+  await expect.poll(async () => {
+    const box = await videoFrame.boundingBox()
+    return box ? box.width / box.height : 0
+  }).toBeCloseTo(4 / 3, 2)
 
   await window.getByRole('button', { name: /^起飞/ }).click()
   await window.getByRole('button', { name: /^确认起飞/ }).click()
@@ -116,6 +121,23 @@ test('disconnects the drone from the top bar while grounded', async () => {
   await application.close()
 })
 
+test('renames and recoverably deletes a local person profile', async () => {
+  const application = await launchTestApp()
+  const window = await application.firstWindow()
+  await expect(window.getByRole('combobox', { name: '人物档案' })).toHaveValue('operator-a')
+
+  await window.getByRole('button', { name: '重命名' }).click()
+  await window.getByRole('textbox', { name: '新档案名' }).fill('operator-renamed')
+  await window.getByRole('button', { name: '确认重命名' }).click()
+  await expect(window.getByRole('combobox', { name: '人物档案' })).toHaveValue('operator-renamed')
+
+  window.once('dialog', (dialog) => void dialog.accept())
+  await window.getByRole('button', { name: '删除档案' }).click()
+  await expect(window.getByRole('combobox', { name: '人物档案' })).toHaveValue('')
+  await expect(window.getByText('人物档案“operator-renamed”已删除。')).toBeVisible()
+  await application.close()
+})
+
 test('fits on one screen without page scrollbars at minimum and default sizes', async () => {
   const application = await launchTestApp()
   const window = await application.firstWindow()
@@ -135,6 +157,35 @@ test('fits on one screen without page scrollbars at minimum and default sizes', 
     }))
     expect(overflow.x).toBeLessThanOrEqual(0)
     expect(overflow.y).toBeLessThanOrEqual(0)
+
+    const layout = await window.evaluate(() => {
+      const panel = document.querySelector<HTMLElement>('.flight-panel')
+      const commandBar = document.querySelector<HTMLElement>('.topbar')
+      const footer = document.querySelector<HTMLElement>('.flight-panel > .flight-footer')
+      const viewport = document.querySelector<HTMLElement>('.video-viewport')
+      const commandBounds = commandBar?.getBoundingClientRect()
+      const clippedTopControls = commandBounds == null ? -1 : [...document.querySelectorAll<HTMLElement>('.topbar button')]
+        .filter((button) => {
+          const control = button.getBoundingClientRect()
+          return control.left < commandBounds.left || control.right > commandBounds.right
+        }).length
+      return {
+        commandBars: document.querySelectorAll('.topbar > .flight-command-bar').length,
+        footers: document.querySelectorAll('.flight-panel > .flight-footer').length,
+        commandHeight: commandBar?.getBoundingClientRect().height ?? 0,
+        footerHeight: footer?.getBoundingClientRect().height ?? 0,
+        videoShare: panel && viewport ? viewport.getBoundingClientRect().height / panel.getBoundingClientRect().height : 0,
+        noticeOverVideo: document.querySelector('.video-panel .footer-notice') != null,
+        clippedTopControls
+      }
+    })
+    expect(layout.commandBars).toBe(1)
+    expect(layout.footers).toBe(1)
+    expect(layout.commandHeight).toBeLessThanOrEqual(40)
+    expect(layout.footerHeight).toBeLessThanOrEqual(42)
+    expect(layout.videoShare).toBeGreaterThan(0.75)
+    expect(layout.noticeOverVideo).toBe(false)
+    expect(layout.clippedTopControls).toBe(0)
   }
   await application.close()
 })

@@ -84,6 +84,30 @@ class KernelSession:
         with self._emit_lock:
             if session.emergency_stop or session.paused or session.stop_event.is_set():
                 command = session.follow_controller.hover()
+            # Front-ToF collision protection is a final emission-boundary
+            # invariant.  Full sidestep/turn planning still belongs to the normal
+            # arbitration path, but side/front modes and fixed maneuvers may never
+            # send a positive forward component into a blocked or stale sensor.
+            monitor = getattr(session, "front_tof_monitor", None)
+            obstacle_config = getattr(session, "config", {}).get("obstacle", {})
+            collision_guard_enabled = bool(
+                isinstance(obstacle_config, dict) and obstacle_config.get("enabled", False)
+            )
+            if command.forward_backward > 0 and monitor is not None and collision_guard_enabled:
+                snapshot = monitor.snapshot()
+                blocked = (
+                    snapshot.status == "valid"
+                    and snapshot.distance_cm is not None
+                    and snapshot.distance_cm <= monitor.blocked_distance_cm
+                )
+                invalid = snapshot.status not in {"valid", "out_of_range"}
+                if blocked or invalid:
+                    command = type(command)(
+                        command.left_right,
+                        0,
+                        command.up_down,
+                        command.yaw,
+                    )
             limited = session.safety_manager.limit_rc_command(*command.as_tuple())
             session.last_command = type(command)(*limited)
             session.drone.move_rc(*session.last_command.as_tuple())

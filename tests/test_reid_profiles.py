@@ -8,8 +8,11 @@ import pytest
 
 from vision.reid_enrollment import build_reid_runtime_config
 from vision.reid_profiles import (
+    delete_reid_profile,
+    get_reid_profile,
     list_reid_profiles,
     load_reid_profile,
+    rename_reid_profile,
     save_reid_profile,
     validate_profile_name,
 )
@@ -148,3 +151,40 @@ def test_profile_listing_returns_safe_summary_and_skips_corrupt_entries(tmp_path
 
     assert [profile["name"] for profile in profiles] == ["person-a"]
     assert profiles[0]["photoCount"] == 1
+
+
+def test_profile_can_be_inspected_renamed_and_recoverably_deleted(tmp_path: Path) -> None:
+    config = build_config(tmp_path)
+    photo = tmp_path / "front.jpg"
+    photo.write_bytes(b"photo")
+    profile_root = tmp_path / "profiles"
+    save_reid_profile("person-a", [1.0, 0.0], config, [photo], profile_root=profile_root)
+
+    details = get_reid_profile("person-a", profile_root)
+    assert details["name"] == "person-a"
+    assert details["photos"][0]["sha256"]
+
+    renamed = rename_reid_profile("person-a", "person-b", profile_root)
+    assert renamed["name"] == "person-b"
+    assert not (profile_root / "person-a").exists()
+    embedding, _manifest = load_reid_profile("person-b", config, profile_root=profile_root)
+    assert np.allclose(embedding, [1.0, 0.0])
+
+    deleted = delete_reid_profile("person-b", profile_root)
+    assert deleted["recoverable"] is True
+    assert list_reid_profiles(profile_root) == []
+    assert any((profile_root / ".trash").iterdir())
+
+
+def test_profile_rename_rejects_existing_destination(tmp_path: Path) -> None:
+    config = build_config(tmp_path)
+    photo = tmp_path / "front.jpg"
+    photo.write_bytes(b"photo")
+    profile_root = tmp_path / "profiles"
+    save_reid_profile("person-a", [1.0, 0.0], config, [photo], profile_root=profile_root)
+    save_reid_profile("person-b", [0.0, 1.0], config, [photo], profile_root=profile_root)
+
+    with pytest.raises(RuntimeError, match="已存在"):
+        rename_reid_profile("person-a", "person-b", profile_root)
+
+    assert [item["name"] for item in list_reid_profiles(profile_root)] == ["person-a", "person-b"]
