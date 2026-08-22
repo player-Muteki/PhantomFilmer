@@ -284,6 +284,24 @@ class SideFollowControllerTestCase(unittest.TestCase):
         self.assertGreater(command.forward_backward, 0)
         self.assertGreater(command.up_down, 0)
 
+    def test_side_profile_distance_scale_holds_farther_than_front_follow(self):
+        # 面积 0.25 对普通/前向跟随仍在 0.22–0.32 的稳定带内；侧身使用
+        # 0.70 缩放后，稳定带变为 0.154–0.224，必须后退到更远距离。
+        side = controller(distance_area_scale=0.70)
+        front = front_controller()
+        area = 0.25 * 640 * 480
+
+        for now in range(3):
+            side_command = side.compute_command(result(90, area=area), 640, 480, now)
+            front_command = front.compute_command(
+                result(180, area=area), 640, 480, now
+            )
+
+        self.assertLess(side_command.forward_backward, 0)
+        self.assertEqual(front_command.forward_backward, 0)
+        self.assertEqual(side.distance_area_scale, 0.70)
+        self.assertEqual(front.distance_area_scale, 1.0)
+
     def test_unfinished_orbit_continues_without_time_limit(self):
         side = controller()
         for now in range(5):

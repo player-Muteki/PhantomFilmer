@@ -202,7 +202,12 @@ class FollowSession:
             self.follow_controller, config
         )
         self.front_follow_controller = SideFollowController.from_config(
-            self.follow_controller, config, target_angles=(180,)
+            self.follow_controller,
+            config,
+            target_angles=(180,),
+            # 正向跟随与普通跟随使用相同的人物框面积距离带；侧身缩放只适用于
+            # side_follow_controller。
+            distance_area_scale=1.0,
         )
         self.side_follow_logger = SideFollowEventRecorder(
             SideFollowLogConfig.from_config(config)

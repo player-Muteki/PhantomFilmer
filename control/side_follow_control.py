@@ -24,6 +24,7 @@ class SideFollowConfig:
     centered_turn_stable_frames: int = 5
     centered_turn_max_deviation_deg: float = 8.0
     center_tolerance_scale: float = 0.70
+    distance_area_scale: float = 1.0
     tracking_lateral_kp: float = 70.0
     minimum_tracking_lateral_speed: int = 8
     maximum_tracking_lateral_speed: int = 25
@@ -94,6 +95,7 @@ class SideFollowConfig:
                 45.0, as_float("centered_turn_max_deviation_deg", 8.0)
             ),
             center_tolerance_scale=min(1.0, as_float("center_tolerance_scale", 0.70)),
+            distance_area_scale=min(1.0, as_float("distance_area_scale", 1.0, 0.25)),
             tracking_lateral_kp=as_float("tracking_lateral_kp", 70.0),
             minimum_tracking_lateral_speed=minimum_tracking_speed,
             maximum_tracking_lateral_speed=maximum_tracking_speed,
@@ -140,10 +142,17 @@ class SideFollowController:
         config: SideFollowConfig,
         *,
         target_angles: tuple[int, ...] = (90, 270),
+        distance_area_scale: float | None = None,
     ):
         self.follow_controller = follow_controller
         self.safety_manager = follow_controller.safety_manager
         self.config = config
+        requested_distance_scale = (
+            config.distance_area_scale
+            if distance_area_scale is None
+            else distance_area_scale
+        )
+        self.distance_area_scale = max(0.25, min(1.0, float(requested_distance_scale)))
         normalized_targets = tuple(dict.fromkeys(int(angle) % 360 for angle in target_angles))
         if not normalized_targets:
             raise ValueError("target_angles must contain at least one angle")
@@ -167,11 +176,13 @@ class SideFollowController:
         config: dict[str, object],
         *,
         target_angles: tuple[int, ...] = (90, 270),
+        distance_area_scale: float | None = None,
     ) -> "SideFollowController":
         return cls(
             follow_controller,
             SideFollowConfig.from_config(config),
             target_angles=target_angles,
+            distance_area_scale=distance_area_scale,
         )
 
     @property
@@ -542,7 +553,7 @@ class SideFollowController:
 
         follow = self.follow_controller
         vertical = follow._compute_vertical(vertical_error)
-        forward = follow._compute_forward(area_ratio)
+        forward = self._compute_distance_forward(area_ratio)
         if vertical != 0 and forward != 0:
             forward = (
                 follow.forward_speed_while_aligning
@@ -550,6 +561,22 @@ class SideFollowController:
                 else -follow.forward_speed_while_aligning
             )
         return horizontal_error, forward, vertical
+
+    def _compute_distance_forward(self, area_ratio: float) -> int:
+        """Keep a side-profile target at the calibrated physical distance.
+
+        A side-view body produces a smaller ReID box than the same person viewed
+        from the front. Scaling only the side controller's area band prevents it
+        from closing in merely to match the normal-follow pixel area target.
+        """
+        follow = self.follow_controller
+        target_min = follow.target_area_ratio_min * self.distance_area_scale
+        target_max = follow.target_area_ratio_max * self.distance_area_scale
+        if area_ratio < target_min:
+            return follow.maximum_forward_speed
+        if area_ratio > target_max:
+            return -follow.maximum_forward_speed
+        return 0
 
     @staticmethod
     def _number(value: object) -> float | None:
